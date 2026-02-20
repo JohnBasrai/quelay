@@ -1,0 +1,24 @@
+[package]
+name        = "quelay-example"
+description = "Example Quelay client: sender/receiver over MockTransport and Thrift wiring"
+publish     = false
+
+version.workspace    = true
+edition.workspace    = true
+license.workspace    = true
+authors.workspace    = true
+repository.workspace = true
+
+[dependencies]
+quelay-domain      = { workspace = true }
+quelay-link-sim        = { workspace = true }
+quelay-thrift      = { workspace = true }
+quelay-quic        = { workspace = true }
+tokio              = { workspace = true }
+uuid               = { workspace = true }
+tracing            = { workspace = true }
+tracing-subscriber = "0.3"
+rustls-pki-types   = "1"
+clap               = { version = "4", features = ["derive"] }
+thrift             = "0.17"
+anyhow             = "1"

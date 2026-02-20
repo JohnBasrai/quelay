@@ -1,0 +1,13 @@
+/target
+Cargo.lock
+quelay-thrift/src/gen/
+
+# IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS files
+.DS_Store

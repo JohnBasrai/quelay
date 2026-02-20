@@ -1,0 +1,17 @@
+[package]
+name        = "quelay-domain"
+version.workspace   = true
+edition.workspace   = true
+license.workspace   = true
+authors.workspace   = true
+repository.workspace = true
+description = "Core traits, types, and DRR scheduler for the Quelay data relay"
+publish      = false
+
+[dependencies]
+tokio       = { workspace = true }
+async-trait = { workspace = true }
+uuid        = { workspace = true }
+thiserror   = { workspace = true }
+bytes       = { workspace = true }
+tracing     = { workspace = true }

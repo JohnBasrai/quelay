@@ -1,0 +1,15 @@
+[package]
+name        = "quelay-thrift"
+version.workspace    = true
+edition.workspace    = true
+license.workspace    = true
+authors.workspace    = true
+repository.workspace = true
+description = "Thrift C2I service stubs for the Quelay agent interface"
+publish      = false
+
+[dependencies]
+quelay-domain = { workspace = true }
+thrift        = "0.17"
+ordered-float = "4"
+uuid          = { workspace = true }
