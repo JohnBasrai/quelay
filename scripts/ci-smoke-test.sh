@@ -1,9 +1,22 @@
 #!/usr/bin/env bash
 # ci-smoke-test.sh
 #
-# Smoke test: start two quelay-agent instances on loopback, wait for the
-# QUIC handshake to complete, then run quelay-example against agent-1's
-# C2I interface to assert IDL version and link state.
+# Validates the two-agent QUIC handshake and C2I baseline:
+#
+#   1. Builds workspace.
+#   2. Starts agent-1 (server) and agent-2 (client) on loopback.
+#   3. Waits for the QUIC handshake to complete.
+#   4. Runs quelay-example against agent-1's C2I to assert:
+#        - IDL version match
+#        - get_link_state responds
+#        - LinkSim transport loopback (in-process, no agents)
+#        - Thrift wire-type mapping round-trips (in-process, no agents)
+#        - QUIC transport loopback (direct peer, no C2I)
+#
+# What this does NOT test (blocked on data pump):
+#   - set_callback / QueLayCallback notifications
+#   - stream_start end-to-end file transfer
+#   - ephemeral TCP port handoff to client
 #
 # Usage:
 #   ./scripts/ci-smoke-test.sh
@@ -133,4 +146,4 @@ echo "==> Running quelay-example smoke check against agent-1 ($AGENT1_C2I)..."
 "$EXAMPLE_BIN" --agent-endpoint "$AGENT1_C2I"
 
 echo ""
-echo "==> Smoke test PASSED."
+echo "==> Smoke test PASSED (QUIC handshake + C2I baseline — data pump not yet tested)."

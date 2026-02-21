@@ -26,11 +26,10 @@ use quelay_thrift::{
     TIoChannel,
     TQueLayAgentSyncClient,
     TTcpChannel,
-    // ---
     IDL_VERSION,
 };
 
-mod mock_demo;
+mod link_sim_demo;
 mod quic_demo;
 mod thrift_demo;
 
@@ -78,8 +77,8 @@ async fn main() -> anyhow::Result<()> {
         println!();
     }
 
-    println!("=== 1. LinkSimTransport demo ===");
-    mock_demo::run().await;
+    println!("=== 1. LinkSim transport demo ===");
+    link_sim_demo::run().await;
 
     println!();
     println!("=== 2. Thrift mapping demo ===");

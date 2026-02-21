@@ -209,6 +209,14 @@ service QueLayAgent {
 ///   - Receiver: connect to `port`, dispatch a receive task, begin reading.
 service QueLayCallback {
 
+    /// Liveness probe — the only blocking call in this service.
+    ///
+    /// Quelay sends this every 60 seconds. If the call does not return within
+    /// a reasonable timeout the client is considered dead, the callback socket
+    /// is closed, and `Option<client>` is set to `None` until the client
+    /// re-registers via `set_callback`.
+    void ping(),
+
     /// Fired when a stream becomes active (reaches the head of the queue).
     ///
     /// `port` is the ephemeral TCP port Quelay has opened for this stream.
@@ -217,7 +225,10 @@ service QueLayCallback {
     /// `info` is forwarded verbatim from the sender's `stream_start` call,
     /// giving the receiver full access to size and metadata without any
     /// additional round-trip.
-    void stream_started(
+    ///
+    /// Fired on both sender and receiver sides; clients distinguish by
+    /// whether they initiated the stream_start or not.
+    oneway void stream_started(
         1: string     uuid,
         2: StreamInfo info,
         3: i32        port),
@@ -226,26 +237,31 @@ service QueLayCallback {
     ///
     /// `progress.percent_done` is present only when the sender supplied
     /// `StreamInfo.size_bytes` at `stream_start`; absent for open-ended streams.
-    void stream_progress(
+    oneway void stream_progress(
         1: string       uuid,
         2: ProgressInfo progress),
 
     /// Fired when a stream completes successfully.
     ///
     /// Sender side: fired when the client closes the write socket (EOF sent).
-    /// Receiver side: fired when QUIC read returns EOF.
+    /// Receiver side: fired when QUIC stream read returns EOF.
     /// Quelay closes the ephemeral port after this call returns.
     /// Receivers should verify `info.attrs["sha256"]` if the sender
     /// populated that field.
-    void stream_done(
+    oneway void stream_done(
         1: string uuid,
         2: i64    bytes_transferred),
 
     /// Fired when a stream terminates abnormally.
     ///
+    /// Fired on both sides of the wormhole: the receiver fires it locally
+    /// when a write to the client socket fails, and also sends a WormholeMsg
+    /// back across the QUIC stream so the sender agent can fire it on the
+    /// sender side.
+    ///
     /// `code` allows polyglot clients to switch on the failure type.
     /// `reason` carries a human-readable detail string for logging.
-    void stream_failed(
+    oneway void stream_failed(
         1: string     uuid,
         2: FailReason code,
         3: string     reason),
@@ -254,13 +270,13 @@ service QueLayCallback {
     ///
     /// Clients can use this to gate writes, alert operators, or feed
     /// observability tooling (Prometheus, structured logs).
-    void link_status_update(
+    oneway void link_status_update(
         1: LinkState link_state),
 
     /// Fired on every enqueue or dequeue event.
     ///
     /// Provides a full snapshot of active and pending streams so clients
     /// can drive status UIs or feed metrics without polling.
-    void queue_status_update(
+    oneway void queue_status_update(
         1: QueueStatus queue_status),
 }

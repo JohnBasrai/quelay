@@ -1,5 +1,5 @@
-//! LinkSimTransport demo — sender and receiver exchange a payload over an
-//! in-process mock link, exercising the domain/transport layer end to end.
+//! LinkSim transport demo — sender and receiver exchange a payload over an
+//! in-process simulated link, exercising the domain/transport layer end to end.
 
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 

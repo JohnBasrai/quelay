@@ -27,6 +27,7 @@ use quelay_thrift::{
 // ---
 
 mod agent;
+mod callback;
 mod config;
 mod framing;
 mod session_manager;
@@ -35,11 +36,13 @@ mod thrift_srv;
 // ---
 
 use agent::Agent;
+use callback::{spawn_ping_timer, CallbackAgent};
 use config::{Config, Mode};
 use session_manager::{SessionManager, TransportConfig};
 use thrift_srv::AgentHandler;
 
 // Gateway re-exports — siblings import via super::Symbol per EMBP §2.3
+pub use callback::{CallbackCmd, CallbackTx};
 pub use framing::{write_header, StreamHeader};
 pub use session_manager::SessionManagerHandle;
 pub use thrift_srv::AgentCmd;
@@ -76,6 +79,10 @@ async fn main() -> anyhow::Result<()> {
 
     let link_state = Arc::new(Mutex::new(LinkState::Connecting));
     let (cmd_tx, cmd_rx) = mpsc::channel(64);
+
+    // Spawn the callback agent thread and the 60-second ping timer.
+    let cb_tx = CallbackAgent::spawn();
+    spawn_ping_timer(cb_tx.clone(), std::time::Duration::from_secs(60));
 
     // Establish the initial QUIC session and build the transport config
     // the session manager needs for reconnection.
@@ -147,7 +154,7 @@ async fn main() -> anyhow::Result<()> {
 
     // Thrift C2I server on a blocking thread pool.
     let rt = tokio::runtime::Handle::current();
-    let handler = AgentHandler::new(rt, cmd_tx, link_state);
+    let handler = AgentHandler::new(rt, cmd_tx, link_state, cb_tx);
     let processor = QueLayAgentSyncProcessor::new(handler);
     let agent_endpoint = cfg.agent_endpoint.to_string();
 
