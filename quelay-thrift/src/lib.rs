@@ -25,6 +25,7 @@ pub use gen::{
     QueLayAgentSyncHandler,
     QueLayAgentSyncProcessor,
     QueLayCallbackSyncClient,
+    QueLayCallbackSyncHandler,
     QueLayCallbackSyncProcessor,
     QueueStatus,
     StartStreamReturn,
@@ -36,7 +37,7 @@ pub use gen::{
 
 // ---
 
-// Re-export the thrift server and wire-protocol types needed by quelay-agent
+pub use ordered_float::OrderedFloat;
 // so that crate consumers import only from `quelay_thrift::` and never drill
 // into `thrift::protocol`, `thrift::server`, or `thrift::transport` directly.
 pub use thrift::protocol::{

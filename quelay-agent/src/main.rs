@@ -26,6 +26,7 @@ use quelay_thrift::{
 
 // ---
 
+mod active_stream;
 mod agent;
 mod callback;
 mod config;
@@ -42,8 +43,17 @@ use session_manager::{SessionManager, TransportConfig};
 use thrift_srv::AgentHandler;
 
 // Gateway re-exports — siblings import via super::Symbol per EMBP §2.3
+pub use active_stream::ActiveStream;
 pub use callback::{CallbackCmd, CallbackTx};
-pub use framing::{write_header, StreamHeader};
+pub use framing::{
+    // ---
+    read_header,
+    read_wormhole_msg,
+    write_header,
+    write_wormhole_msg,
+    StreamHeader,
+    WormholeMsg,
+};
 pub use session_manager::SessionManagerHandle;
 pub use thrift_srv::AgentCmd;
 
@@ -110,7 +120,7 @@ async fn main() -> anyhow::Result<()> {
             // Pass sess_rx into TransportConfig so the session manager can
             // call recv() again on reconnect — no second listen() needed.
             let tcfg = TransportConfig::Server { sess_rx };
-            (Box::new(session) as quelay_domain::QueLaySessionPtr, tcfg)
+            (Arc::new(session) as quelay_domain::QueLaySessionPtr, tcfg)
         }
 
         Mode::Client {
@@ -132,7 +142,7 @@ async fn main() -> anyhow::Result<()> {
                 server_name: server_name.clone(),
                 cert_der,
             };
-            (Box::new(session) as quelay_domain::QueLaySessionPtr, tcfg)
+            (Arc::new(session) as quelay_domain::QueLaySessionPtr, tcfg)
         }
     };
 
@@ -142,6 +152,7 @@ async fn main() -> anyhow::Result<()> {
         transport_cfg,
         link_state.clone(),
         cfg.spool_dir.clone(),
+        cb_tx.clone(),
     ));
     let sm_handle = SessionManagerHandle::new(sm.clone());
 
