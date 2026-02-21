@@ -26,6 +26,10 @@ use quelay_thrift::{
     IDL_VERSION,
 };
 
+// ---
+
+use super::{CallbackCmd, CallbackTx};
+
 // ---------------------------------------------------------------------------
 // AgentCmd
 // ---------------------------------------------------------------------------
@@ -51,7 +55,7 @@ pub struct AgentHandler {
     rt: Handle,
     cmd_tx: mpsc::Sender<AgentCmd>,
     link_state: Arc<Mutex<LinkState>>,
-    callback_ep: Arc<Mutex<Option<String>>>,
+    cb_tx: CallbackTx,
 }
 
 // ---
@@ -62,12 +66,13 @@ impl AgentHandler {
         rt: Handle,
         cmd_tx: mpsc::Sender<AgentCmd>,
         link_state: Arc<Mutex<LinkState>>,
+        cb_tx: CallbackTx,
     ) -> Self {
         Self {
             rt,
             cmd_tx,
             link_state,
-            callback_ep: Arc::new(Mutex::new(None)),
+            cb_tx,
         }
     }
 }
@@ -79,6 +84,8 @@ impl AgentHandler {
 impl QueLayAgentSyncHandler for AgentHandler {
     // ---
     fn handle_get_version(&self) -> thrift::Result<String> {
+        // ---
+        tracing::debug!("get_version");
         Ok(IDL_VERSION.to_string())
     }
 
@@ -91,6 +98,8 @@ impl QueLayAgentSyncHandler for AgentHandler {
         priority: i8,
     ) -> thrift::Result<StartStreamReturn> {
         // ---
+        tracing::info!(uuid = %uuid_str, priority, "stream_start");
+
         let uuid = Uuid::parse_str(&uuid_str).map_err(|e| {
             thrift::Error::Application(thrift::ApplicationError::new(
                 thrift::ApplicationErrorKind::InvalidTransform,
@@ -134,10 +143,10 @@ impl QueLayAgentSyncHandler for AgentHandler {
 
     fn handle_set_callback(&self, endpoint: String) -> thrift::Result<String> {
         // ---
-        self.rt.block_on(async {
-            *self.callback_ep.lock().await = Some(endpoint.clone());
-        });
-        tracing::info!("callback endpoint registered: {endpoint}");
+        tracing::info!(%endpoint, "callback endpoint registered");
+
+        self.rt
+            .block_on(self.cb_tx.send(CallbackCmd::Register(endpoint)));
         Ok(String::new())
     }
 
@@ -145,7 +154,9 @@ impl QueLayAgentSyncHandler for AgentHandler {
 
     fn handle_get_link_state(&self) -> thrift::Result<WireLinkState> {
         // ---
+
         let state = self.rt.block_on(async { *self.link_state.lock().await });
+        tracing::debug!(?state, "get_link_state");
 
         Ok(match state {
             LinkState::Connecting => WireLinkState::CONNECTING,

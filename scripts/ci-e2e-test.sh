@@ -1,25 +1,23 @@
 #!/usr/bin/env bash
-# ci-smoke-test.sh
+# ci-e2e-test.sh
 #
-# Validates the two-agent QUIC handshake and C2I baseline:
+# End-to-end transfer test: exercises the full data pump path through two
+# live agents.
 #
-#   1. Builds workspace.
-#   2. Starts agent-1 (server) and agent-2 (client) on loopback.
-#   3. Waits for the QUIC handshake to complete.
-#   4. Runs quelay-example against agent-1's C2I to assert:
-#        - IDL version match
-#        - get_link_state responds
-#        - LinkSim transport loopback (in-process, no agents)
-#        - Thrift wire-type mapping round-trips (in-process, no agents)
-#        - QUIC transport loopback (direct peer, no C2I)
-#
-# What this does NOT test (blocked on data pump):
-#   - set_callback / QueLayCallback notifications
-#   - stream_start end-to-end file transfer
-#   - ephemeral TCP port handoff to client
+# What this tests (once data pump is implemented):
+#   1. Sender client calls set_callback, stream_start
+#   2. Sender agent opens QUIC stream, writes StreamHeader
+#   3. Sender agent opens ephemeral TCP port, fires stream_started callback
+#   4. Sender client connects to ephemeral port, writes file bytes
+#   5. Receiver agent accepts QUIC stream, reads StreamHeader
+#   6. Receiver agent opens ephemeral TCP port, fires stream_started callback
+#   7. Receiver client connects, reads bytes, writes to disk
+#   8. Receiver agent fires stream_done callback on EOF
+#   9. Sender agent receives WormholeMsg::Done, fires stream_done callback
+#  10. Assert: received file matches sent file (size + sha256)
 #
 # Usage:
-#   ./scripts/ci-smoke-test.sh
+#   ./scripts/ci-e2e-test.sh
 #
 # Exit codes:
 #   0  all assertions passed
@@ -34,15 +32,14 @@ AGENT1_C2I="127.0.0.1:9090"
 AGENT2_C2I="127.0.0.1:9091"
 AGENT1_QUIC="127.0.0.1:5000"
 
-# Agent writes cert to its working directory ($WORKSPACE since we cd there).
 CERT_SRC="$WORKSPACE/quelay-server.der"
-CERT_FILE="/tmp/quelay-smoke-server.der"
+CERT_FILE="/tmp/quelay-e2e-server.der"
 
 AGENT1_PID=""
 AGENT2_PID=""
 
 # ---------------------------------------------------------------------------
-# Cleanup — kill both agents on exit (normal or error).
+# Cleanup
 # ---------------------------------------------------------------------------
 cleanup() {
     local exit_code=$?
@@ -58,34 +55,18 @@ trap cleanup EXIT
 # ---------------------------------------------------------------------------
 echo "==> Building workspace..."
 cd "$WORKSPACE"
-
-# Remove stale cert from any previous run so the cert-wait loop below
-# cannot be fooled by a leftover file.
 rm -f "$CERT_SRC" "$CERT_FILE"
 
 cargo build --bin quelay-agent --bin quelay-example
 
-# Resolve the actual target directory — CARGO_TARGET_DIR may redirect it
-# away from $WORKSPACE/target (e.g. to ~/.cargo/target).
 TARGET_DIR="$(cargo metadata --no-deps --format-version 1 \
     | python3 -c 'import sys,json; print(json.load(sys.stdin)["target_directory"])')"
 
 AGENT_BIN="$TARGET_DIR/debug/quelay-agent"
 EXAMPLE_BIN="$TARGET_DIR/debug/quelay-example"
 
-if [[ ! -x "$AGENT_BIN" ]]; then
-    echo "ERROR: $AGENT_BIN not found after build." >&2
-    ls -la "$TARGET_DIR/debug/" >&2
-    exit 1
-fi
-if [[ ! -x "$EXAMPLE_BIN" ]]; then
-    echo "ERROR: $EXAMPLE_BIN not found after build." >&2
-    ls -la "$TARGET_DIR/debug/" >&2
-    exit 1
-fi
-
 # ---------------------------------------------------------------------------
-# Start agent-1 (server role, writes cert)
+# Start agents
 # ---------------------------------------------------------------------------
 echo "==> Starting agent-1 (server, QUIC $AGENT1_QUIC, C2I $AGENT1_C2I)..."
 "$AGENT_BIN" \
@@ -95,7 +76,6 @@ echo "==> Starting agent-1 (server, QUIC $AGENT1_QUIC, C2I $AGENT1_C2I)..."
     &
 AGENT1_PID=$!
 
-# Wait for the cert file — agent-1 writes it to $WORKSPACE before accepting.
 echo "==> Waiting for server cert ($CERT_SRC)..."
 for i in $(seq 1 20); do
     if [[ -f "$CERT_SRC" ]]; then
@@ -104,15 +84,12 @@ for i in $(seq 1 20); do
     fi
     sleep 0.25
     if [[ $i -eq 20 ]]; then
-        echo "ERROR: server cert not written after 5s — agent-1 may have crashed." >&2
+        echo "ERROR: server cert not written after 5s." >&2
         exit 1
     fi
 done
 echo "==> Cert found, copied to $CERT_FILE"
 
-# ---------------------------------------------------------------------------
-# Start agent-2 (client role)
-# ---------------------------------------------------------------------------
 echo "==> Starting agent-2 (client, peer $AGENT1_QUIC, C2I $AGENT2_C2I)..."
 "$AGENT_BIN" \
     --agent-endpoint "$AGENT2_C2I" \
@@ -122,10 +99,6 @@ echo "==> Starting agent-2 (client, peer $AGENT1_QUIC, C2I $AGENT2_C2I)..."
     &
 AGENT2_PID=$!
 
-# ---------------------------------------------------------------------------
-# Wait for C2I to become reachable on agent-1.
-# The Thrift server only starts after the QUIC handshake completes.
-# ---------------------------------------------------------------------------
 echo "==> Waiting for agent-1 C2I ($AGENT1_C2I) to become reachable..."
 for i in $(seq 1 40); do
     if nc -z 127.0.0.1 9090 2>/dev/null; then
@@ -140,10 +113,12 @@ for i in $(seq 1 40); do
 done
 
 # ---------------------------------------------------------------------------
-# Run the smoke check via quelay-example.
+# Run e2e transfer test
 # ---------------------------------------------------------------------------
-echo "==> Running quelay-example smoke check against agent-1 ($AGENT1_C2I)..."
-"$EXAMPLE_BIN" --agent-endpoint "$AGENT1_C2I"
+echo "==> Running e2e transfer test..."
+"$EXAMPLE_BIN" \
+    --agent-endpoint    "$AGENT1_C2I" \
+    --receiver-endpoint "$AGENT2_C2I"
 
 echo ""
-echo "==> Smoke test PASSED (QUIC handshake + C2I baseline — data pump not yet tested)."
+echo "==> E2E test PASSED."

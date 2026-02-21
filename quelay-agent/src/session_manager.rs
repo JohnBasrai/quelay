@@ -35,17 +35,22 @@ use std::time::Duration;
 
 // ---
 
-use tokio::io::AsyncWriteExt;
-use tokio::sync::{mpsc, Mutex};
+use tokio::sync::{mpsc, Mutex, Notify};
 use uuid::Uuid;
 
 // ---
 
-use quelay_domain::{LinkState, Priority, QueLaySessionPtr, StreamInfo};
+use quelay_domain::{
+    //
+    LinkState,
+    Priority,
+    QueLaySessionPtr,
+    StreamInfo,
+};
 
 // ---
 
-use super::{write_header, StreamHeader};
+use super::{write_header, CallbackTx, StreamHeader};
 
 // ---------------------------------------------------------------------------
 // TransportConfig
@@ -60,6 +65,7 @@ use super::{write_header, StreamHeader};
 /// loop already writes into — rather than calling `listen()` again on
 /// reconnect (which would spawn a competing accept loop on the same endpoint).
 pub enum TransportConfig {
+    // --
     /// Server mode: hold the existing accept-loop receiver and `recv()` again
     /// after each disconnection.
     Server {
@@ -89,6 +95,7 @@ pub enum TransportConfig {
 /// before the link dropped will carry a `bytes_acked` watermark here.
 #[derive(Debug)]
 struct PendingStream {
+    // ---
     uuid: Uuid,
     info: StreamInfo,
     priority: Priority,
@@ -103,6 +110,7 @@ struct PendingStream {
 /// Today there is exactly one of these.  Future multi-peer support promotes
 /// this to a `HashMap<RemoteId, RemoteState>` in `SessionManager`.
 struct RemoteState {
+    // ---
     /// Live QUIC session.  `None` while reconnecting.
     session: Option<QueLaySessionPtr>,
 
@@ -117,7 +125,11 @@ struct RemoteState {
 // ---
 
 impl RemoteState {
+    // ---
+
     fn new(session: QueLaySessionPtr) -> Self {
+        // ---
+
         Self {
             session: Some(session),
             pending: HashMap::new(),
@@ -130,6 +142,7 @@ impl RemoteState {
 // ---------------------------------------------------------------------------
 
 pub struct SessionManager {
+    // ---
     /// Single remote peer.
     ///
     /// Future: `HashMap<RemoteId, RemoteState>`
@@ -144,27 +157,44 @@ pub struct SessionManager {
     /// Shared link state observable by `Agent` and the Thrift handler.
     link_state: Arc<Mutex<LinkState>>,
 
-    /// Spool directory.  Data is written here when the link is `Failed`.
+    /// Spool directory.  Data is written here when the link is `Failed`.\
     /// Stubbed: directory is created but no data is written yet.
     spool_dir: PathBuf,
+
+    /// Sender handle to the [`CallbackAgent`] thread.
+    ///
+    /// Cloned into each [`ActiveStream`] task so it can fire lifecycle
+    /// events (stream_started, stream_done, stream_failed) directly.
+    cb_tx: CallbackTx,
+
+    /// Notified by [`run`] after a successful reconnect so the accept loop
+    /// can resume calling `accept_stream` on the new session.
+    session_restored: Arc<Notify>,
 }
 
 // ---
 
 impl SessionManager {
+    // ---
+
     /// Create a new `SessionManager` with an already-established session.
     pub fn new(
         session: QueLaySessionPtr,
         transport_cfg: TransportConfig,
         link_state: Arc<Mutex<LinkState>>,
         spool_dir: PathBuf,
+        cb_tx: CallbackTx,
     ) -> Self {
+        // ---
+
         let remote = RemoteState::new(session);
         Self {
             remote: Arc::new(Mutex::new(Some(remote))),
             transport_cfg: Mutex::new(transport_cfg),
             link_state,
             spool_dir,
+            cb_tx,
+            session_restored: Arc::new(Notify::new()),
         }
     }
 
@@ -176,6 +206,8 @@ impl SessionManager {
     /// If the session is down the request is queued in `pending` and will
     /// be re-issued when the link recovers.
     pub async fn stream_start(&self, uuid: Uuid, info: StreamInfo, priority: Priority) {
+        // ---
+
         let mut guard = self.remote.lock().await;
         let remote = match guard.as_mut() {
             Some(r) => r,
@@ -194,15 +226,17 @@ impl SessionManager {
         };
 
         match remote.session.as_ref() {
-            Some(session) => match Self::open_stream_on_session(session, &pending).await {
-                Ok(()) => {
-                    tracing::info!(%uuid, "stream opened on live session");
+            Some(session) => {
+                match Self::open_stream_on_session(session, &pending, self.cb_tx.clone()).await {
+                    Ok(()) => {
+                        tracing::info!(%uuid, "stream opened on live session");
+                    }
+                    Err(e) => {
+                        tracing::warn!(%uuid, "open_stream failed ({e}), queuing for retry");
+                        remote.pending.insert(uuid, pending);
+                    }
                 }
-                Err(e) => {
-                    tracing::warn!(%uuid, "open_stream failed ({e}), queuing for retry");
-                    remote.pending.insert(uuid, pending);
-                }
-            },
+            }
             None => {
                 tracing::info!(%uuid, "session down, queuing stream for reconnect");
                 remote.pending.insert(uuid, pending);
@@ -217,7 +251,11 @@ impl SessionManager {
     /// Watches the session's `link_state_rx`.  On `Failed`, clears the live
     /// session, invokes the spool stub, then retries with exponential back-off.
     /// On recovery, drains `pending`.
+    ///
+    /// Also spawns the inbound accept loop, which runs concurrently and is
+    /// re-armed via `session_restored` after each reconnect.
     pub async fn run(self: Arc<Self>) {
+        // ---
         // Obtain the initial session's link state receiver.
         let mut state_rx = {
             let guard = self.remote.lock().await;
@@ -229,6 +267,9 @@ impl SessionManager {
                 }
             }
         };
+
+        // Spawn the inbound (downlink) accept loop.
+        tokio::spawn(Arc::clone(&self).accept_loop());
 
         loop {
             if state_rx.changed().await.is_err() {
@@ -251,7 +292,52 @@ impl SessionManager {
                     remote.session = Some(new_session);
                     *self.link_state.lock().await = LinkState::Normal;
                     tracing::info!("session restored — draining pending queue");
-                    Self::drain_pending(remote).await;
+                    Self::drain_pending(remote, self.cb_tx.clone()).await;
+                    // Re-arm the accept loop on the new session.
+                    self.session_restored.notify_one();
+                }
+            }
+        }
+    }
+
+    // ---
+
+    /// Inbound accept loop — runs as a sibling task to [`run`].
+    ///
+    /// Loops on `accept_stream()` and spawns a downlink [`ActiveStream`] for
+    /// each inbound QUIC stream.  When the session fails `accept_stream()`
+    /// returns an error; the loop then waits on `session_restored` before
+    /// resuming with the new session.
+    async fn accept_loop(self: Arc<Self>) {
+        // ---
+        loop {
+            // Snapshot the current session under a short-held lock.
+            let session = {
+                let guard = self.remote.lock().await;
+                guard.as_ref().and_then(|r| r.session.clone())
+            };
+
+            let session = match session {
+                Some(s) => s,
+                None => {
+                    self.session_restored.notified().await;
+                    continue;
+                }
+            };
+
+            match session.accept_stream().await {
+                Ok(stream) => {
+                    tracing::info!("downlink: inbound QUIC stream accepted");
+                    let cb_tx = self.cb_tx.clone();
+                    tokio::spawn(async move {
+                        if let Err(e) = super::ActiveStream::spawn_downlink(stream, cb_tx).await {
+                            tracing::warn!("downlink: spawn_downlink failed: {e}");
+                        }
+                    });
+                }
+                Err(e) => {
+                    tracing::warn!("accept_stream error ({e}) — waiting for session restore");
+                    self.session_restored.notified().await;
                 }
             }
         }
@@ -264,6 +350,7 @@ impl SessionManager {
     /// Clears the dead session from `RemoteState`.
     /// STUB: spool-to-disk will be added in the next iteration.
     async fn on_link_failed(&self) {
+        // ---
         tracing::warn!("link failed — clearing dead session");
 
         let mut guard = self.remote.lock().await;
@@ -286,6 +373,7 @@ impl SessionManager {
     ///
     /// Returns when a new live session is available.
     async fn reconnect_loop(&self) -> QueLaySessionPtr {
+        // ---
         let mut backoff = Duration::from_secs(1);
         const MAX_BACKOFF: Duration = Duration::from_secs(30);
 
@@ -310,6 +398,7 @@ impl SessionManager {
 
     /// Single attempt to (re)establish the session based on `transport_cfg`.
     async fn try_connect(&self) -> anyhow::Result<QueLaySessionPtr> {
+        // ---
         let mut cfg_guard = self.transport_cfg.lock().await;
         match &mut *cfg_guard {
             TransportConfig::Client {
@@ -321,7 +410,7 @@ impl SessionManager {
                 let transport =
                     quelay_quic::QuicTransport::client(cert_der.clone(), server_name.clone())?;
                 let session = transport.connect(*peer).await?;
-                Ok(Box::new(session))
+                Ok(Arc::new(session))
             }
 
             TransportConfig::Server { sess_rx } => {
@@ -331,7 +420,7 @@ impl SessionManager {
                     .recv()
                     .await
                     .ok_or_else(|| anyhow::anyhow!("accept channel closed — endpoint shut down"))?;
-                Ok(Box::new(session))
+                Ok(Arc::new(session))
             }
         }
     }
@@ -339,7 +428,8 @@ impl SessionManager {
     // ---
 
     /// Re-issue all pending streams onto a freshly reconnected session.
-    async fn drain_pending(remote: &mut RemoteState) {
+    async fn drain_pending(remote: &mut RemoteState, cb_tx: CallbackTx) {
+        // ---
         let session = match remote.session.as_ref() {
             Some(s) => s,
             None => return,
@@ -348,7 +438,7 @@ impl SessionManager {
         let uuids: Vec<Uuid> = remote.pending.keys().copied().collect();
         for uuid in uuids {
             if let Some(pending) = remote.pending.get(&uuid) {
-                match Self::open_stream_on_session(session, pending).await {
+                match Self::open_stream_on_session(session, pending, cb_tx.clone()).await {
                     Ok(()) => {
                         tracing::info!(%uuid, "pending stream re-issued after reconnect");
                         remote.pending.remove(&uuid);
@@ -363,15 +453,24 @@ impl SessionManager {
 
     // ---
 
-    /// Open one QUIC stream, write the framed header, then close.
+    /// Open one QUIC stream, write the framed header, open an ephemeral TCP
+    /// listener, fire `stream_started` callback, then spawn an [`ActiveStream`]
+    /// uplink task to pipe bytes from the client TCP socket into the QUIC stream.
     ///
-    /// Data pump is stubbed — the stream is closed after the header.
-    /// The full file pump (read from disk / spool, write to stream) will be
-    /// added in the data-path iteration.
+    /// # Why an associated function rather than `&self`?
+    ///
+    /// Both call sites hold a `MutexGuard<Option<RemoteState>>` when invoking
+    /// this.  An `&self` method would require a second borrow of `self`
+    /// overlapping the live guard — the borrow checker rejects this even though
+    /// the accessed fields are disjoint.  Taking only the arguments actually
+    /// needed sidesteps the conflict entirely.  Same reasoning applies to
+    /// [`Self::drain_pending`].
     async fn open_stream_on_session(
         session: &QueLaySessionPtr,
         pending: &PendingStream,
+        cb_tx: CallbackTx,
     ) -> anyhow::Result<()> {
+        // ---
         let mut stream = session.open_stream(pending.priority).await?;
 
         let file_name = pending
@@ -394,12 +493,10 @@ impl SessionManager {
 
         write_header(&mut stream, &header).await?;
 
-        // TODO(data-pump): pipe file bytes from local path / spool into stream.
-        // For now, send an empty body and close — proves the framing path end-to-end.
-        stream
-            .shutdown()
-            .await
-            .map_err(|e| anyhow::anyhow!("{e}"))?;
+        // Spawn the uplink pump — takes ownership of the QUIC stream and the
+        // CallbackTx; fires stream_started then pipes TCP → QUIC.
+        super::ActiveStream::spawn_uplink(pending.uuid, pending.info.clone(), stream, cb_tx)
+            .await?;
 
         Ok(())
     }
@@ -413,12 +510,14 @@ impl SessionManager {
 /// lock across await points.
 #[derive(Clone)]
 pub struct SessionManagerHandle {
+    // ---
     inner: Arc<SessionManager>,
 }
 
 // ---
 
 impl SessionManagerHandle {
+    // ---
     /// Wrap an `Arc<SessionManager>` for use by `Agent`.
     pub fn new(sm: Arc<SessionManager>) -> Self {
         Self { inner: sm }

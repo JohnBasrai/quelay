@@ -159,6 +159,108 @@ where
 }
 
 // ---------------------------------------------------------------------------
+// WormholeMsg
+// ---------------------------------------------------------------------------
+
+/// Messages flowing receiver → sender on the QUIC stream's read half.
+///
+/// After the sender writes the [`StreamHeader`] and raw bytes, the receiver
+/// sends these framed messages back on the same QUIC stream (using the same
+/// 6-byte fixed header + JSON payload format).
+///
+/// The sender's pump loop reads these while piping data forward.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "type")]
+pub enum WormholeMsg {
+    /// Periodic acknowledgement — receiver has written this many bytes to disk.
+    Ack { bytes_received: u64 },
+
+    /// Receiver finished writing successfully.
+    ///
+    /// `checksum` carries the sha256 hex digest if the receiver computed it.
+    Done { checksum: Option<String> },
+
+    /// Receiver encountered a fatal error.
+    ///
+    /// `code` maps to [`quelay_thrift::FailReason`] wire values.
+    Error { code: u32, reason: String },
+}
+
+// ---
+
+/// Serialize `msg` and write it as a framed message to `stream`.
+///
+/// Uses the same 6-byte fixed header as [`write_header`].
+pub async fn write_wormhole_msg<W>(stream: &mut W, msg: &WormholeMsg) -> Result<()>
+where
+    W: AsyncWrite + Unpin,
+{
+    let payload = serde_json::to_vec(msg)
+        .map_err(|e| QueLayError::Transport(format!("wormhole serialize error: {e}")))?;
+
+    let payload_len = u32::try_from(payload.len())
+        .map_err(|_| QueLayError::Transport("wormhole payload exceeds 4 GiB".into()))?;
+
+    let mut fixed = [0u8; FIXED_HEADER_LEN];
+    fixed[0] = MAGIC;
+    fixed[1] = VERSION;
+    fixed[2..6].copy_from_slice(&payload_len.to_be_bytes());
+
+    stream
+        .write_all(&fixed)
+        .await
+        .map_err(|e| QueLayError::Transport(format!("wormhole write fixed header: {e}")))?;
+
+    stream
+        .write_all(&payload)
+        .await
+        .map_err(|e| QueLayError::Transport(format!("wormhole write payload: {e}")))?;
+
+    Ok(())
+}
+
+// ---
+
+/// Read and deserialize a [`WormholeMsg`] from `stream`.
+pub async fn read_wormhole_msg<R>(stream: &mut R) -> Result<WormholeMsg>
+where
+    R: AsyncRead + Unpin,
+{
+    let mut fixed = [0u8; FIXED_HEADER_LEN];
+    stream
+        .read_exact(&mut fixed)
+        .await
+        .map_err(|e| QueLayError::Transport(format!("wormhole read fixed header: {e}")))?;
+
+    if fixed[0] != MAGIC {
+        return Err(QueLayError::Transport(format!(
+            "wormhole bad magic: expected 0x{MAGIC:02X}, got 0x{:02X}",
+            fixed[0]
+        )));
+    }
+
+    if fixed[1] != VERSION {
+        return Err(QueLayError::Transport(format!(
+            "wormhole unsupported version: expected {VERSION}, got {}",
+            fixed[1]
+        )));
+    }
+
+    let payload_len = u32::from_be_bytes(fixed[2..6].try_into().unwrap()) as usize;
+
+    let mut payload = vec![0u8; payload_len];
+    stream
+        .read_exact(&mut payload)
+        .await
+        .map_err(|e| QueLayError::Transport(format!("wormhole read payload: {e}")))?;
+
+    let msg: WormholeMsg = serde_json::from_slice(&payload)
+        .map_err(|e| QueLayError::Transport(format!("wormhole deserialize error: {e}")))?;
+
+    Ok(msg)
+}
+
+// ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 

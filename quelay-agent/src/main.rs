@@ -26,7 +26,9 @@ use quelay_thrift::{
 
 // ---
 
+mod active_stream;
 mod agent;
+mod callback;
 mod config;
 mod framing;
 mod session_manager;
@@ -35,12 +37,23 @@ mod thrift_srv;
 // ---
 
 use agent::Agent;
+use callback::{spawn_ping_timer, CallbackAgent};
 use config::{Config, Mode};
 use session_manager::{SessionManager, TransportConfig};
 use thrift_srv::AgentHandler;
 
 // Gateway re-exports — siblings import via super::Symbol per EMBP §2.3
-pub use framing::{write_header, StreamHeader};
+pub use active_stream::ActiveStream;
+pub use callback::{CallbackCmd, CallbackTx};
+pub use framing::{
+    // ---
+    read_header,
+    read_wormhole_msg,
+    write_header,
+    write_wormhole_msg,
+    StreamHeader,
+    WormholeMsg,
+};
 pub use session_manager::SessionManagerHandle;
 pub use thrift_srv::AgentCmd;
 
@@ -77,6 +90,10 @@ async fn main() -> anyhow::Result<()> {
     let link_state = Arc::new(Mutex::new(LinkState::Connecting));
     let (cmd_tx, cmd_rx) = mpsc::channel(64);
 
+    // Spawn the callback agent thread and the 60-second ping timer.
+    let cb_tx = CallbackAgent::spawn();
+    spawn_ping_timer(cb_tx.clone(), std::time::Duration::from_secs(60));
+
     // Establish the initial QUIC session and build the transport config
     // the session manager needs for reconnection.
     let (initial_session, transport_cfg) = match &cfg.mode {
@@ -103,7 +120,7 @@ async fn main() -> anyhow::Result<()> {
             // Pass sess_rx into TransportConfig so the session manager can
             // call recv() again on reconnect — no second listen() needed.
             let tcfg = TransportConfig::Server { sess_rx };
-            (Box::new(session) as quelay_domain::QueLaySessionPtr, tcfg)
+            (Arc::new(session) as quelay_domain::QueLaySessionPtr, tcfg)
         }
 
         Mode::Client {
@@ -125,7 +142,7 @@ async fn main() -> anyhow::Result<()> {
                 server_name: server_name.clone(),
                 cert_der,
             };
-            (Box::new(session) as quelay_domain::QueLaySessionPtr, tcfg)
+            (Arc::new(session) as quelay_domain::QueLaySessionPtr, tcfg)
         }
     };
 
@@ -135,6 +152,7 @@ async fn main() -> anyhow::Result<()> {
         transport_cfg,
         link_state.clone(),
         cfg.spool_dir.clone(),
+        cb_tx.clone(),
     ));
     let sm_handle = SessionManagerHandle::new(sm.clone());
 
@@ -147,7 +165,7 @@ async fn main() -> anyhow::Result<()> {
 
     // Thrift C2I server on a blocking thread pool.
     let rt = tokio::runtime::Handle::current();
-    let handler = AgentHandler::new(rt, cmd_tx, link_state);
+    let handler = AgentHandler::new(rt, cmd_tx, link_state, cb_tx);
     let processor = QueLayAgentSyncProcessor::new(handler);
     let agent_endpoint = cfg.agent_endpoint.to_string();
 

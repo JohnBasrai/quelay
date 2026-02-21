@@ -50,3 +50,6 @@ jobs:
 
       - name: Smoke test
         run: ./scripts/ci-smoke-test.sh
+
+      - name: End to end test
+        run: ./scripts/ci-e2e-test.sh

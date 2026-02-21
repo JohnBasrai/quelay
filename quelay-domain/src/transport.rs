@@ -1,4 +1,5 @@
 use std::net::SocketAddr;
+use std::sync::Arc;
 
 use async_trait::async_trait;
 use tokio::io::{AsyncRead, AsyncWrite};
@@ -69,7 +70,11 @@ pub trait QueLayStream: AsyncRead + AsyncWrite + Send + Unpin {
 pub type QueLayStreamPtr = Box<dyn QueLayStream>;
 
 /// Convenience type alias for a heap-allocated [`QueLaySession`].
-pub type QueLaySessionPtr = Box<dyn QueLaySession>;
+///
+/// `Arc` (rather than `Box`) allows the accept loop and reconnect loop to
+/// hold concurrent references to the live session without cloning the
+/// underlying connection object.
+pub type QueLaySessionPtr = Arc<dyn QueLaySession>;
 
 // ---------------------------------------------------------------------------
 // QueLaySession

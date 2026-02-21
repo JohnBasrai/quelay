@@ -164,3 +164,21 @@ impl From<DomainQueueStatus> for WireQueueStatus {
         }
     }
 }
+
+// ---------------------------------------------------------------------------
+// Display for wire types
+// ---------------------------------------------------------------------------
+
+impl std::fmt::Display for WireLinkState {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // ---
+        let s = match *self {
+            WireLinkState::CONNECTING => "Connecting",
+            WireLinkState::NORMAL => "Normal",
+            WireLinkState::DEGRADED => "Degraded",
+            WireLinkState::FAILED => "Failed",
+            _ => "Unknown",
+        };
+        f.write_str(s)
+    }
+}
