@@ -60,11 +60,11 @@ use quelay_thrift::{
 /// Events delivered from the callback handler to the async test task.
 #[derive(Debug)]
 #[allow(dead_code)]
-pub enum CallbackEvent {
+enum CallbackEvent {
     // ---
-    StreamStarted { uuid: String, port: u16 },
-    StreamDone { uuid: String, bytes: u64 },
-    StreamFailed { uuid: String, reason: String },
+    Started { uuid: String, port: u16 },
+    Done { uuid: String, bytes: u64 },
+    Failed { uuid: String, reason: String },
 }
 
 // ---------------------------------------------------------------------------
@@ -96,7 +96,7 @@ impl QueLayCallbackSyncHandler for CallbackHandler {
     ) -> thrift::Result<()> {
         // ---
         tracing::info!(%uuid, port, "callback: stream_started");
-        let _ = self.tx.lock().unwrap().send(CallbackEvent::StreamStarted {
+        let _ = self.tx.lock().unwrap().send(CallbackEvent::Started {
             uuid,
             port: port as u16,
         });
@@ -117,7 +117,7 @@ impl QueLayCallbackSyncHandler for CallbackHandler {
         tracing::info!(%uuid, bytes_transferred, "callback: stream_done");
         // ---
 
-        let _ = self.tx.lock().unwrap().send(CallbackEvent::StreamDone {
+        let _ = self.tx.lock().unwrap().send(CallbackEvent::Done {
             uuid,
             bytes: bytes_transferred as u64,
         });
@@ -137,7 +137,7 @@ impl QueLayCallbackSyncHandler for CallbackHandler {
             .tx
             .lock()
             .unwrap()
-            .send(CallbackEvent::StreamFailed { uuid, reason });
+            .send(CallbackEvent::Failed { uuid, reason });
         Ok(())
     }
 
@@ -307,7 +307,7 @@ pub async fn run(sender_c2i: SocketAddr, receiver_c2i: SocketAddr) -> anyhow::Re
 
     // --- wait for sender stream_started → connect and write ---
     let sender_port = match sender_cb.recv_timeout(timeout)? {
-        CallbackEvent::StreamStarted { port, .. } => port,
+        CallbackEvent::Started { port, .. } => port,
         other => anyhow::bail!("sender: expected StreamStarted, got {other:?}"),
     };
     println!("  sender ephemeral port: {sender_port}");
@@ -323,7 +323,7 @@ pub async fn run(sender_c2i: SocketAddr, receiver_c2i: SocketAddr) -> anyhow::Re
 
     // --- wait for receiver stream_started → connect and read ---
     let receiver_port = match receiver_cb.recv_timeout(timeout)? {
-        CallbackEvent::StreamStarted { port, .. } => port,
+        CallbackEvent::Started { port, .. } => port,
         other => anyhow::bail!("receiver: expected StreamStarted, got {other:?}"),
     };
     println!("  receiver ephemeral port: {receiver_port}");
@@ -338,14 +338,14 @@ pub async fn run(sender_c2i: SocketAddr, receiver_c2i: SocketAddr) -> anyhow::Re
 
     // --- wait for both stream_done callbacks ---
     match receiver_cb.recv_timeout(timeout)? {
-        CallbackEvent::StreamDone { bytes, .. } => {
+        CallbackEvent::Done { bytes, .. } => {
             println!("  receiver stream_done: {bytes} bytes");
         }
         other => anyhow::bail!("receiver: expected StreamDone, got {other:?}"),
     }
 
     match sender_cb.recv_timeout(timeout)? {
-        CallbackEvent::StreamDone { bytes, .. } => {
+        CallbackEvent::Done { bytes, .. } => {
             println!("  sender stream_done: {bytes} bytes");
         }
         other => anyhow::bail!("sender: expected StreamDone, got {other:?}"),
