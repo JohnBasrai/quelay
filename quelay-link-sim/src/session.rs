@@ -107,8 +107,9 @@ impl QueLaySession for LinkSimSession {
             reset_tx.clone(),
             bw_cap,
         ));
-        let remote: QueLayStreamPtr =
-            Box::new(LinkSimStream::new(id, remote_tx, remote_rx, reset_tx, bw_cap));
+        let remote: QueLayStreamPtr = Box::new(LinkSimStream::new(
+            id, remote_tx, remote_rx, reset_tx, bw_cap,
+        ));
 
         self.stream_tx
             .send(remote)
