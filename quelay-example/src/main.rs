@@ -1,12 +1,12 @@
 //! Quelay example — demonstrations and C2I smoke client.
 //!
 //! * When run without `--agent-endpoint` the three built-in demos
-//! execute (LinkSimTransport, Thrift mapping, QUIC loopback).
+//!   execute (LinkSimTransport, Thrift mapping, QUIC loopback).
 //!
 //! * When `--agent-endpoint` is supplied the binary connects to a
-//! live `quelay-agent`, asserts that the IDL wire version matches the
-//! locally compiled version, and reports the link state — then runs
-//! the demos as before.
+//!   live `quelay-agent`, asserts that the IDL wire version matches the
+//!   locally compiled version, and reports the link state — then runs
+//!   the demos as before.
 //!
 //! Run with:
 //!   cargo run -p quelay-example
@@ -105,7 +105,7 @@ async fn main() -> anyhow::Result<()> {
 fn smoke_check(addr: SocketAddr) -> anyhow::Result<()> {
     // ---
     let mut channel = TTcpChannel::new();
-    channel.open(&addr.to_string())?;
+    channel.open(addr.to_string())?;
 
     let (rx, tx) = channel.split()?;
     let mut client = QueLayAgentSyncClient::new(

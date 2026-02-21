@@ -210,8 +210,8 @@ mod tests {
     ///   small budget (3 000 B) against streams with huge backlogs to stress the
     ///   cap.
     /// - `c2i_does_not_starve_when_bulk_present` — C2I gets fully drained *and* bulk
-    ///    still gets budget remaining; both strict-priority and fairness in the same
-    ///    call.
+    ///   still gets budget remaining; both strict-priority and fairness in the same
+    ///   call.
     ///
     /// **Progress tracker**
     ///
