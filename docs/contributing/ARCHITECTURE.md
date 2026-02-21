@@ -3,9 +3,9 @@
 ## Crate Dependency Graph
 
 ```
-quelay-thrift ──┐
-quelay-quic   ──┼──► quelay-domain
-quelay-link-sim   ──┘
+quelay-thrift   ──┐
+quelay-quic     ──┼──► quelay-domain
+quelay-link-sim ──┘
 
 quelay-agent   ──► quelay-domain, quelay-thrift, quelay-quic
 quelay-example ──► quelay-domain, quelay-thrift, quelay-quic, quelay-link-sim
@@ -21,8 +21,8 @@ outside the library dependency graph and are not published.
 
 Defines the vocabulary of the system. No implementations live here.
 
-| Module | Contents |
-|---|---|
+| Module      | Contents |
+|-------------|----------|
 | `error`     | `QueLayError`, `Result<T>` |
 | `priority`  | `Priority` enum (`C2I`, `BulkTransfer`) |
 | `transport` | `QueLayStream`, `QueLaySession`, `QueLayTransport` traits; `LinkState` |
@@ -45,8 +45,8 @@ External clients (Rust / C++ / Python)
     DrrScheduler  ←→  AIMD Pacer (TODO)
             │
     QueLayTransport trait
-     ├── QuicTransport  (quelay-quic)
-     └── MockTransport  (quelay-link-sim)
+     ├── QuicTransport     (quelay-quic)
+     └── LinkSimTransport  (quelay-link-sim)
 ```
 
 ## Bandwidth Management
@@ -78,7 +78,7 @@ drops (link outage), Quelay:
 
 1. Transitions `LinkState` to `Failed`.
 2. Spools incoming data locally.
-3. Reconnects to the remote endpoint.
+3. Reconnects to the remote endpoint with exponential backoff (1 s → 30 s cap).
 4. Resumes each in-flight stream from the last ACK'd byte, identified
    by UUID.
 5. Transitions `LinkState` back to `Normal`.
@@ -101,10 +101,11 @@ breakdown of the internal structure.
 
 ## EMBP
 
-All library crates follow the
-[Explicit Module Boundary Pattern](../../EMBP.md):
+All library crates follow the Explicit Module Boundary Pattern (EMBP):
 
 - `lib.rs` is the gateway and defines the entire public API surface.
 - Submodules are declared with `mod` (never `pub mod`).
 - Public symbols are hoisted via `pub use` in `lib.rs`.
 - Sibling modules import from each other with `super::`.
+- External crates import only from the crate root, never drilling past
+  the gateway into submodules.

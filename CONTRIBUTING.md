@@ -11,23 +11,17 @@ New to the project? Start here:
 
 ## Before Submitting a PR
 
-Run these commands:
+Run the full CI check locally:
 
 ```bash
-./scripts/ci-lint.sh && ./scripts/ci-test.sh
-```
-
-Or for comprehensive testing:
-
-```bash
-./scripts/local-test.sh
+/scripts/local-test.sh
 ```
 
 **PR Checklist:**
 - Keep commits focused and descriptive
 - Add tests for new features
 - Update `CHANGELOG.md` under `[Unreleased]` if behaviour changes
-- Verify all CI checks pass locally
+- Verify all CI checks pass locally before pushing
 
 We follow [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) and
 [Semantic Versioning](https://semver.org/).
@@ -42,21 +36,26 @@ We follow [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) and
 
 ## Quick Reference
 
-| Task | Command |
-|---|---|
-| Format + lint | `./scripts/ci-lint.sh` |
-| Run tests | `./scripts/ci-test.sh` |
-| Full CI check | `./scripts/local-test.sh` |
-| Build docs | `cargo doc --open` |
+| Task         | Command           |
+|--------------|-------------------|
+| Format       | `cargo fmt --all` |
+| Format check | `cargo fmt --all -- --check` |
+| Lint         | `cargo clippy --workspace -- -D warnings` |
+| Unit tests   | `cargo test --workspace` |
+| Smoke test   | `./scripts/ci-smoke-test.sh` |
+| Build docs   | `cargo doc --workspace --no-deps --open` |
+| Regen Thrift | `./scripts/thrift-compile.sh` |
 
 ## For Maintainers
 
 **Publishing a release:**
 1. Update version in workspace `Cargo.toml` and `CHANGELOG.md`
 2. Run `./scripts/pre-publish.sh` to verify packaging
-3. `cargo publish -p quelay-domain` (publish domain crate first)
-4. `cargo publish -p quelay-mock`
-5. Tag and push: `git tag vX.Y.Z && git push origin vX.Y.Z`
+3. `cargo publish -p quelay-domain`
+4. `cargo publish -p quelay-link-sim`
+5. `cargo publish -p quelay-quic`
+6. `cargo publish -p quelay-thrift`
+7. Tag and push: `git tag vX.Y.Z && git push origin vX.Y.Z`
 
 ## Questions?
 

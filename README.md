@@ -1,4 +1,4 @@
-# Quelay — Quelay
+# Quelay
 
 A quelay in Rust, using QUIC as the transport layer,
 with support for both file transfers and open-ended streams of unknown
@@ -11,12 +11,12 @@ your option.
 
 ## Crates
 
-| Crate | Description |
-|---|---|
-| `quelay-domain` | Domain model: transport traits, DRR scheduler, priority types, session / handler interfaces |
+| Crate             | Description |
+|:------------------|:------------|
+| `quelay-domain`   | Domain model: transport traits, DRR scheduler, priority types, session / handler interfaces |
 | `quelay-link-sim` | In-process mock transport with link simulation (drops, duplication, BW cap, outages) |
-| `quelay-quic` | QUIC transport via `quinn` (**stub — not yet implemented**) |
-| `quelay-thrift` | Apache Thrift C2I service stubs (**IDL revision pending**) |
+| `quelay-quic`     | QUIC transport via `quinn` (**stub — not yet implemented**) |
+| `quelay-thrift`   | Apache Thrift C2I service stubs (**IDL revision pending**) |
 
 ---
 
@@ -24,15 +24,15 @@ your option.
 
 ```
 External clients (Rust / C++ / Python)
-            │ Apache Thrift C2I
-        quelay-thrift
+            │
+            │← quelay-thrift / Apache Thrift C2I
             │
     Quelay session manager (reconnection, spooling)
             │
     DRR Scheduler  ←→  AIMD Pacer (rate cap enforcement)
             │
     QueLayTransport trait  (quelay-domain)
-     ├── quelay-quic   (production — QUIC over UDP)
+     ├── quelay-quic       (production — QUIC over UDP)
      └── quelay-link-sim   (testing — in-process channels)
 ```
 
@@ -73,8 +73,8 @@ not something Quelay can correct.
 ## Building
 
 ```bash
-cargo build
-cargo test
+cargo build --workspace
+cargo test --workspace
 ```
 
 ---
