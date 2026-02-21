@@ -75,7 +75,7 @@ impl ActiveStream {
         quic: QueLayStreamPtr,
         cb_tx: CallbackTx,
     ) -> anyhow::Result<()> {
-    // ---
+        // ---
         // Bind the ephemeral listener before spawning so we can return the
         // error synchronously if the OS rejects the bind.
         let listener = TcpListener::bind("127.0.0.1:0").await?;
