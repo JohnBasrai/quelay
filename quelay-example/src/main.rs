@@ -121,7 +121,7 @@ fn smoke_check(addr: SocketAddr) -> anyhow::Result<()> {
 
     // --- link state
     let state = client.get_link_state()?;
-    println!("  Link state:  {state:?}");
+    println!("  Link state:  {state}");
 
     Ok(())
 }
