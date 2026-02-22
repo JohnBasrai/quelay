@@ -9,8 +9,8 @@
 //! | magic | ver   | payload_len (u32) | payload (payload_len bytes) |
 //! | 0x51  | 0x01  | big-endian        | UTF-8 JSON                  |
 //! +-------+-------+-------------------+-----------------------------+
-//!   1 byte  1 byte      4 bytes          variable
-//!                  ← fixed 6 bytes →
+//! | 1 byte| 1 byte|      4 bytes      |   variable
+//! |← fixed 6 bytes ------------------→|
 //! ```
 //!
 //! After the payload the raw stream data begins with no further framing;

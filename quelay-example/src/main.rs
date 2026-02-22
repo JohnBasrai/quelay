@@ -1,21 +1,27 @@
 //! Quelay example — demonstrations and C2I smoke client.
 //!
 //! * When run without `--agent-endpoint` the three built-in demos
-//!   execute (LinkSimTransport, Thrift mapping, QUIC loopback).
+//!   execute (Thrift mapping, QUIC loopback).
 //!
-//! * When `--agent-endpoint` is supplied the binary connects to a
-//!   live `quelay-agent`, asserts that the IDL wire version matches the
-//!   locally compiled version, and reports the link state — then runs
-//!   the demos as before.
+//! * When `--agent-endpoint` is supplied the example connects to a live
+//!   `quelay-agent`, asserts that the IDL wire version matches the locally
+//!   compiled version, and reports the link state.
 //!
 //! * When both `--agent-endpoint` and `--receiver-endpoint` are supplied
 //!   the full end-to-end transfer demo runs against two live agents.
+//!
+//! * Add `--spool-test` to also run the spool reconnect test (requires
+//!   `--agent-endpoint` and `--receiver-endpoint`).
 //!
 //! Run with:
 //!   cargo run -p quelay-example
 //!   cargo run -p quelay-example -- --agent-endpoint 127.0.0.1:9090
 //!   cargo run -p quelay-example -- --agent-endpoint 127.0.0.1:9090 \
 //!                                  --receiver-endpoint 127.0.0.1:9091
+//!   cargo run -p quelay-example -- --agent-endpoint 127.0.0.1:9090 \
+//!                                  --receiver-endpoint 127.0.0.1:9091 \
+//!                                  --spool-test \
+//!                                  --bw-cap-mbps 50
 
 use std::net::SocketAddr;
 
@@ -49,17 +55,39 @@ mod thrift_demo;
 )]
 struct Config {
     // ---
-    /// TCP address of a running quelay-agent C2I interface (sender / agent-1).
-    /// When supplied, the example connects and runs a live smoke check
-    /// (version assertion + link state query) before the built-in demos.
+    /// TCP address of the sending agent's C2I interface (agent-1).
     #[arg(long)]
     agent_endpoint: Option<SocketAddr>,
 
-    /// TCP address of the receiver agent's C2I interface (agent-2).
-    /// When supplied together with `--agent-endpoint`, the full end-to-end
-    /// transfer demo runs.
+    /// TCP address of the receiving agent's C2I interface (agent-2).
+    /// Required for e2e transfer and spool tests.
     #[arg(long)]
     receiver_endpoint: Option<SocketAddr>,
+
+    /// Also run the spool reconnect test after the straight e2e transfer.
+    ///
+    /// Drops the link mid-transfer, verifies the spool replays correctly,
+    /// and asserts the received sha256 matches the sent sha256.
+    /// Requires both `--agent-endpoint` and `--receiver-endpoint`.
+    /// Best paired with `--bw-cap-mbps` for deterministic timing.
+    #[arg(long, default_value_t = false)]
+    spool_test: bool,
+
+    /// Expected uplink bandwidth cap in Mbit/s (must match `--bw-cap-mbps`
+    /// passed to the agents).  Used for BW utilization reporting only.
+    /// 0 = uncapped (no utilization report printed).
+    #[arg(long, default_value_t = 0)]
+    bw_cap_mbps: u64,
+}
+
+impl Config {
+    fn bw_cap(&self) -> Option<u64> {
+        if self.bw_cap_mbps == 0 {
+            None
+        } else {
+            Some(self.bw_cap_mbps)
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -89,7 +117,6 @@ async fn main() -> anyhow::Result<()> {
     }
 
     println!("=== 1. LinkSim transport demo === (REMOVED/SKIPPED)");
-    //link_sim_demo::run().await;
 
     println!();
     println!("=== 2. Thrift mapping demo ===");
@@ -101,7 +128,13 @@ async fn main() -> anyhow::Result<()> {
 
     if let (Some(sender), Some(receiver)) = (cfg.agent_endpoint, cfg.receiver_endpoint) {
         println!();
-        e2e_demo::run(sender, receiver).await?;
+        e2e_demo::run(sender, receiver, cfg.bw_cap()).await?;
+
+        if cfg.spool_test {
+            e2e_demo::run_spool_test(sender, receiver, cfg.bw_cap()).await?;
+        }
+    } else if cfg.spool_test {
+        anyhow::bail!("--spool-test requires both --agent-endpoint and --receiver-endpoint");
     }
 
     Ok(())
@@ -111,9 +144,6 @@ async fn main() -> anyhow::Result<()> {
 // smoke_check
 // ---------------------------------------------------------------------------
 
-/// Connects to a live `quelay-agent` C2I endpoint, asserts the remote IDL
-/// version matches the locally compiled `IDL_VERSION`, and logs the current
-/// link state.
 fn smoke_check(addr: SocketAddr) -> anyhow::Result<()> {
     // ---
     let mut channel = TTcpChannel::new();
@@ -125,14 +155,12 @@ fn smoke_check(addr: SocketAddr) -> anyhow::Result<()> {
         TBinaryOutputProtocol::new(TBufferedWriteTransport::new(tx), true),
     );
 
-    // --- version assertion
     let remote_version = client.get_version()?;
     if remote_version != IDL_VERSION {
         anyhow::bail!("IDL version mismatch: local={IDL_VERSION:?} remote={remote_version:?}");
     }
     println!("  IDL version: {remote_version} ✓");
 
-    // --- link state
     let state = client.get_link_state()?;
     println!("  Link state:  {state}");
 

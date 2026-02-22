@@ -117,6 +117,7 @@ done
 # ---------------------------------------------------------------------------
 echo "==> Running e2e transfer test..."
 "$EXAMPLE_BIN" \
+    --bw-cap-mbps 500 \
     --agent-endpoint    "$AGENT1_C2I" \
     --receiver-endpoint "$AGENT2_C2I"
 

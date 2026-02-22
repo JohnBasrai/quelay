@@ -66,7 +66,14 @@ use quelay_thrift::FailReason;
 // ---
 
 use super::{
-    read_chunk, read_wormhole_msg, write_chunk, CallbackCmd, CallbackTx, Chunk, WormholeMsg,
+    // ---
+    read_chunk,
+    read_wormhole_msg,
+    write_chunk,
+    CallbackCmd,
+    CallbackTx,
+    Chunk,
+    WormholeMsg,
     CHUNK_SIZE,
 };
 
@@ -114,6 +121,7 @@ impl SpoolBuffer {
     // ---
 
     fn new() -> Self {
+        // ---
         Self {
             buf: VecDeque::with_capacity(SPOOL_CAPACITY),
             bytes_acked: 0,
@@ -131,6 +139,7 @@ impl SpoolBuffer {
 
     /// Append `data`, advancing `T`.  Caller must ensure `data.len() <= available()`.
     fn push(&mut self, data: &[u8]) {
+        // ---
         debug_assert!(data.len() <= self.available());
         self.buf.extend(data.iter().copied());
         self.head += data.len() as u64;
@@ -140,6 +149,7 @@ impl SpoolBuffer {
 
     /// Advance `A` to `up_to`, freeing space.  Called on `WormholeMsg::Ack`.
     fn ack(&mut self, up_to: u64) {
+        // ---
         if up_to <= self.bytes_acked {
             return;
         }
@@ -155,6 +165,7 @@ impl SpoolBuffer {
     /// Returns one or both VecDeque segments — callers may need to call
     /// twice if the data wraps around the internal ring.
     fn slice_from(&self, from: u64) -> &[u8] {
+        // ---
         debug_assert!(from >= self.bytes_acked);
         debug_assert!(from <= self.head || self.head == u64::MAX);
         let start = (from - self.bytes_acked) as usize;
@@ -171,7 +182,7 @@ impl SpoolBuffer {
 // UplinkHandle
 // ---------------------------------------------------------------------------
 
-/// Held by [`RemoteState`] in `SessionManager`.
+/// Held by [`remote`] in `SessionManager`.
 ///
 /// On reconnect, `SessionManager` opens a new QUIC stream and sends it via
 /// `stream_tx`.  On permanent failure it sends `None` (or drops the sender).
@@ -193,6 +204,7 @@ pub struct UplinkHandle {
 // ---------------------------------------------------------------------------
 
 pub(crate) struct ActiveStream {
+    // ---
     uuid: Uuid,
     _info: StreamInfo,
     quic: QueLayStreamPtr,
@@ -214,6 +226,7 @@ impl ActiveStream {
     ///
     /// Returns an [`UplinkHandle`] for [`SessionManager`] to use on reconnect.
     pub async fn spawn_uplink(
+        // ---
         uuid: Uuid,
         info: StreamInfo,
         priority: Priority,

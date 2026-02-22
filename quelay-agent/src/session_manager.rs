@@ -31,6 +31,7 @@
 use super::ActiveStream;
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -51,7 +52,7 @@ use quelay_domain::{
 
 // ---
 
-use super::{write_header, CallbackTx, StreamHeader};
+use super::{write_header, BandwidthGate, CallbackTx, StreamHeader};
 
 // ---------------------------------------------------------------------------
 // TransportConfig
@@ -177,6 +178,20 @@ pub struct SessionManager {
     /// events (stream_started, stream_done, stream_failed) directly.
     cb_tx: CallbackTx,
 
+    /// Shared link-enabled flag, checked by [`BandwidthGate`] on every write.
+    ///
+    /// Set to `false` by `link_enable(false)` to inject a link-down error
+    /// into the uplink pump without dropping the QUIC session.  Set back to
+    /// `true` by `link_enable(true)` to allow the pump to proceed after the
+    /// reconnect loop delivers a fresh stream.
+    link_enabled: Arc<AtomicBool>,
+
+    /// Uplink bandwidth cap in bytes/second.  `None` = uncapped.
+    ///
+    /// Passed to each [`BandwidthGate`] on stream open.  Configured via
+    /// `--bw-cap-mbps` CLI flag (0 = uncapped).
+    bw_cap_bps: Option<u64>,
+
     /// Notified by [`run`] after a successful reconnect so the accept loop
     /// can resume calling `accept_stream` on the new session.
     session_restored: Arc<Notify>,
@@ -194,6 +209,7 @@ impl SessionManager {
         link_state: Arc<Mutex<LinkState>>,
         spool_dir: PathBuf,
         cb_tx: CallbackTx,
+        bw_cap_bps: Option<u64>,
     ) -> Self {
         // ---
 
@@ -204,6 +220,8 @@ impl SessionManager {
             link_state,
             spool_dir,
             cb_tx,
+            link_enabled: Arc::new(AtomicBool::new(true)),
+            bw_cap_bps,
             session_restored: Arc::new(Notify::new()),
         }
     }
@@ -237,7 +255,15 @@ impl SessionManager {
 
         match remote.session.as_ref() {
             Some(session) => {
-                match Self::open_stream_on_session(session, &pending, self.cb_tx.clone()).await {
+                match Self::open_stream_on_session(
+                    session,
+                    &pending,
+                    self.cb_tx.clone(),
+                    Arc::clone(&self.link_enabled),
+                    self.bw_cap_bps,
+                )
+                .await
+                {
                     Ok(Some(handle)) => {
                         tracing::info!(%uuid, "stream opened on live session");
                         remote.active.insert(uuid, handle);
@@ -308,8 +334,20 @@ impl SessionManager {
                     tracing::info!(
                         "session restored — restoring active streams and draining pending queue"
                     );
-                    Self::restore_active(remote, self.cb_tx.clone()).await;
-                    Self::drain_pending(remote, self.cb_tx.clone()).await;
+                    Self::restore_active(
+                        remote,
+                        self.cb_tx.clone(),
+                        Arc::clone(&self.link_enabled),
+                        self.bw_cap_bps,
+                    )
+                    .await;
+                    Self::drain_pending(
+                        remote,
+                        self.cb_tx.clone(),
+                        Arc::clone(&self.link_enabled),
+                        self.bw_cap_bps,
+                    )
+                    .await;
                     // Re-arm the accept loop on the new session.
                     self.session_restored.notify_one();
                 }
@@ -450,31 +488,31 @@ impl SessionManager {
     // Test / debug — disabled in production builds
     // -----------------------------------------------------------------------
 
-    /// Drop the active QUIC session to simulate a link failure.
+    /// Inject a link-down event (`enabled = false`) or re-enable the link
+    /// (`enabled = true`).
     ///
-    /// The existing `LinkState` watch machinery fires `on_link_failed` and
-    /// the reconnect loop resumes naturally — no separate code path needed.
-    /// Calling `link_enable(true)` is a no-op since the reconnect loop never
-    /// stops.
+    /// When `false`: sets the shared `link_enabled` flag to `false`.  The
+    /// next `BandwidthGate::poll_write` on any active uplink pump returns
+    /// `ConnectionAborted`, driving the pump into the spool-and-reconnect
+    /// path — identical to what happens on a real satellite link outage.
+    ///
+    /// When `true`: sets `link_enabled` back to `true` so the reconnect loop
+    /// can deliver a fresh stream and the pump can resume writing.
     async fn link_enable(&self, enabled: bool) {
         // ---
-        if !enabled {
-            tracing::info!("link_enable(false) — forcing session drop");
-            let mut guard = self.remote.lock().await;
-            if let Some(remote) = guard.as_mut() {
-                // Drop the session handle.  The LinkState watch will detect
-                // the connection closure and fire on_link_failed → reconnect.
-                remote.session = None;
-            }
-        } else {
-            tracing::info!("link_enable(true) — reconnect loop already running, no-op");
-        }
+        tracing::info!(enabled, "link_enable");
+        self.link_enabled.store(enabled, Ordering::Relaxed);
     }
 
     // ---
 
     /// Re-issue all pending streams onto a freshly reconnected session.
-    async fn drain_pending(remote: &mut RemoteState, cb_tx: CallbackTx) {
+    async fn drain_pending(
+        remote: &mut RemoteState,
+        cb_tx: CallbackTx,
+        link_enabled: Arc<AtomicBool>,
+        bw_cap_bps: Option<u64>,
+    ) {
         // ---
         let session = match remote.session.as_ref() {
             Some(s) => s,
@@ -484,7 +522,15 @@ impl SessionManager {
         let uuids: Vec<Uuid> = remote.pending.keys().copied().collect();
         for uuid in uuids {
             if let Some(pending) = remote.pending.get(&uuid) {
-                match Self::open_stream_on_session(session, pending, cb_tx.clone()).await {
+                match Self::open_stream_on_session(
+                    session,
+                    pending,
+                    cb_tx.clone(),
+                    Arc::clone(&link_enabled),
+                    bw_cap_bps,
+                )
+                .await
+                {
                     Ok(Some(handle)) => {
                         tracing::info!(%uuid, "pending stream re-issued after reconnect");
                         remote.pending.remove(&uuid);
@@ -520,9 +566,17 @@ impl SessionManager {
         session: &QueLaySessionPtr,
         pending: &PendingStream,
         cb_tx: CallbackTx,
+        link_enabled: Arc<AtomicBool>,
+        bw_cap_bps: Option<u64>,
     ) -> anyhow::Result<Option<super::UplinkHandle>> {
         // ---
-        let mut stream = session.open_stream(pending.priority).await?;
+        let stream = session.open_stream(pending.priority).await?;
+
+        // Wrap in BandwidthGate before handing to the pump.
+        // The gate enforces the rate cap and intercepts writes when
+        // link_enabled is false, driving the spool-and-reconnect path.
+        let mut gated: quelay_domain::QueLayStreamPtr =
+            Box::new(BandwidthGate::new(stream, bw_cap_bps, link_enabled));
 
         let file_name = pending
             .info
@@ -542,15 +596,13 @@ impl SessionManager {
             attrs: pending.info.attrs.clone(),
         };
 
-        write_header(&mut stream, &header).await?;
+        write_header(&mut gated, &header).await?;
 
-        // Spawn the uplink pump — takes ownership of the QUIC stream and the
-        // CallbackTx; fires stream_started then pipes TCP → QUIC via spool.
         let handle = ActiveStream::spawn_uplink(
             pending.uuid,
             pending.info.clone(),
             pending.priority,
-            stream,
+            gated,
             cb_tx,
         )
         .await?;
@@ -564,7 +616,12 @@ impl SessionManager {
     /// deliver it via the pump's watch channel so it can replay and resume.
     ///
     /// Handles whose pump has already exited (watch sender closed) are pruned.
-    async fn restore_active(remote: &mut RemoteState, _cb_tx: CallbackTx) {
+    async fn restore_active(
+        remote: &mut RemoteState,
+        _cb_tx: CallbackTx,
+        link_enabled: Arc<AtomicBool>,
+        bw_cap_bps: Option<u64>,
+    ) {
         // ---
         let session = match remote.session.as_ref() {
             Some(s) => s,
@@ -581,8 +638,6 @@ impl SessionManager {
 
             match session.open_stream(handle.priority).await {
                 Ok(mut stream) => {
-                    // Write the StreamHeader so the receiver knows which stream
-                    // this is and can correlate with its first stream_started.
                     use super::{write_header, StreamHeader};
                     let file_name = handle
                         .info
@@ -602,10 +657,16 @@ impl SessionManager {
                     };
                     if let Err(e) = write_header(&mut stream, &header).await {
                         tracing::warn!(%uuid, "restore_active: header write failed: {e}");
-                        // Pump will retry on the next reconnect cycle.
                         continue;
                     }
-                    if handle.stream_tx.try_send(stream).is_err() {
+                    // Wrap in BandwidthGate so the pump continues to be
+                    // rate-limited and subject to link_enable on the new stream.
+                    let gated: quelay_domain::QueLayStreamPtr = Box::new(BandwidthGate::new(
+                        stream,
+                        bw_cap_bps,
+                        Arc::clone(&link_enabled),
+                    ));
+                    if handle.stream_tx.try_send(gated).is_err() {
                         // Pump already exited or channel full (shouldn't happen).
                         tracing::debug!(%uuid, "restore_active: pump already exited, pruning");
                         remote.active.remove(&uuid);

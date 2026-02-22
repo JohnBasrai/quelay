@@ -69,6 +69,26 @@ pub trait QueLayStream: AsyncRead + AsyncWrite + Send + Unpin {
 /// Convenience type alias for a heap-allocated [`QueLayStream`].
 pub type QueLayStreamPtr = Box<dyn QueLayStream>;
 
+// Blanket impl so `Box<dyn QueLayStream>` can itself be used as a
+// `QueLayStream`.  This allows `BandwidthGate<QueLayStreamPtr>` to satisfy
+// the `S: QueLayStream` bound in its own `QueLayStream` impl, enabling
+// the session manager to box it as a new `QueLayStreamPtr`.
+#[async_trait]
+impl QueLayStream for Box<dyn QueLayStream> {
+    // ---
+    fn stream_id(&self) -> Uuid {
+        (**self).stream_id()
+    }
+
+    async fn finish(&mut self) -> Result<()> {
+        (**self).finish().await
+    }
+
+    async fn reset(&mut self, code: u64) -> Result<()> {
+        (**self).reset(code).await
+    }
+}
+
 /// Convenience type alias for a heap-allocated [`QueLaySession`].
 ///
 /// `Arc` (rather than `Box`) allows the accept loop and reconnect loop to

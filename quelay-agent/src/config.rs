@@ -31,6 +31,30 @@ pub struct Config {
     /// Future: each remote peer gets a subdirectory `<spool-dir>/<remote-id>/`.
     #[arg(long, default_value = "/tmp/quelay-spool")]
     pub spool_dir: PathBuf,
+
+    /// Uplink bandwidth cap in Mbit/s.
+    ///
+    /// Applied by [`BandwidthGate`] on every QUIC write.  Set to 0 (default)
+    /// to disable rate limiting entirely (loopback CI, uncapped production).
+    ///
+    /// Example: `--bw-cap-mbps 10` → cap at 10 Mbit/s (1.25 MB/s).
+    #[arg(long, default_value_t = 0)]
+    pub bw_cap_mbps: u64,
+}
+
+// ---
+
+impl Config {
+    // ---
+
+    /// Convert `bw_cap_mbps` to bytes-per-second, or `None` if uncapped.
+    pub fn bw_cap_bps(&self) -> Option<u64> {
+        if self.bw_cap_mbps == 0 {
+            None
+        } else {
+            Some(self.bw_cap_mbps * 1_000_000 / 8)
+        }
+    }
 }
 
 // ---

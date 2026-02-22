@@ -21,3 +21,5 @@ rustls-pki-types   = "1"
 clap               = { version = "4", features = ["derive"] }
 thrift             = "0.17"
 anyhow             = "1"
+sha2               = "0.10"
+rand               = { version = "0.8", features = ["small_rng"] }

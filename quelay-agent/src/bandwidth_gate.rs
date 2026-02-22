@@ -46,7 +46,13 @@ use std::time::Instant;
 
 // ---
 
+use async_trait::async_trait;
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
+use uuid::Uuid;
+
+// ---
+
+use quelay_domain::{QueLayStream, Result};
 
 // ---------------------------------------------------------------------------
 // TokenBucket
@@ -212,6 +218,28 @@ impl<S: AsyncWrite + Unpin> AsyncWrite for BandwidthGate<S> {
 
     fn poll_shutdown(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
         Pin::new(&mut self.inner).poll_shutdown(cx)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// QueLayStream delegation
+// ---------------------------------------------------------------------------
+
+/// Delegate [`QueLayStream`] to the inner stream so `BandwidthGate<S>` can
+/// be boxed as a `QueLayStreamPtr` and handed directly to `spawn_uplink`.
+#[async_trait]
+impl<S: QueLayStream + Send> QueLayStream for BandwidthGate<S> {
+    // ---
+    fn stream_id(&self) -> Uuid {
+        self.inner.stream_id()
+    }
+
+    async fn finish(&mut self) -> Result<()> {
+        self.inner.finish().await
+    }
+
+    async fn reset(&mut self, code: u64) -> Result<()> {
+        self.inner.reset(code).await
     }
 }
 

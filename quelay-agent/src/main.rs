@@ -20,8 +20,14 @@ use tracing::info;
 use quelay_domain::{LinkState, QueLayTransport};
 use quelay_quic::{CertBundle, QuicTransport};
 use quelay_thrift::{
-    QueLayAgentSyncProcessor, TBinaryInputProtocolFactory, TBinaryOutputProtocolFactory,
-    TBufferedReadTransportFactory, TBufferedWriteTransportFactory, TServer, IDL_VERSION,
+    // ---
+    QueLayAgentSyncProcessor,
+    TBinaryInputProtocolFactory,
+    TBinaryOutputProtocolFactory,
+    TBufferedReadTransportFactory,
+    TBufferedWriteTransportFactory,
+    TServer,
+    IDL_VERSION,
 };
 
 // ---
@@ -161,6 +167,7 @@ async fn main() -> anyhow::Result<()> {
         link_state.clone(),
         cfg.spool_dir.clone(),
         cb_tx.clone(),
+        cfg.bw_cap_bps(),
     ));
     let sm_handle = SessionManagerHandle::new(sm.clone());
 
