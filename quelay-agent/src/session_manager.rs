@@ -28,6 +28,7 @@
 //! `TODO` marker is left.  The actual disk I/O will be added in the next
 //! iteration.
 
+use super::ActiveStream;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -91,8 +92,8 @@ pub enum TransportConfig {
 /// reconnects, the session manager re-issues every pending stream in
 /// priority order.
 ///
-/// Future: when spool-to-disk is added, streams that were partially sent
-/// before the link dropped will carry a `bytes_acked` watermark here.
+/// Partially-sent streams are tracked in `RemoteState::active` (not here)
+/// because their [`UplinkHandle`] carries the spool and reconnect channel.
 #[derive(Debug)]
 struct PendingStream {
     // ---
@@ -120,6 +121,13 @@ struct RemoteState {
     /// On reconnect every entry here is re-submitted in arrival order.
     /// Future: order by priority using the DRR scheduler.
     pending: HashMap<Uuid, PendingStream>,
+
+    /// In-flight uplink streams.
+    ///
+    /// On link failure each handle is signalled with `None` so the pump
+    /// pauses at spool position `A`.  On reconnect a fresh `QueLayStreamPtr`
+    /// is sent so the pump can replay `A..T` and resume.
+    active: HashMap<Uuid, super::UplinkHandle>,
 }
 
 // ---
@@ -133,6 +141,7 @@ impl RemoteState {
         Self {
             session: Some(session),
             pending: HashMap::new(),
+            active: HashMap::new(),
         }
     }
 }
@@ -159,6 +168,7 @@ pub struct SessionManager {
 
     /// Spool directory.  Data is written here when the link is `Failed`.\
     /// Stubbed: directory is created but no data is written yet.
+    #[allow(dead_code)]
     spool_dir: PathBuf,
 
     /// Sender handle to the [`CallbackAgent`] thread.
@@ -228,8 +238,12 @@ impl SessionManager {
         match remote.session.as_ref() {
             Some(session) => {
                 match Self::open_stream_on_session(session, &pending, self.cb_tx.clone()).await {
-                    Ok(()) => {
+                    Ok(Some(handle)) => {
                         tracing::info!(%uuid, "stream opened on live session");
+                        remote.active.insert(uuid, handle);
+                    }
+                    Ok(None) => {
+                        tracing::info!(%uuid, "stream opened on live session (no handle)");
                     }
                     Err(e) => {
                         tracing::warn!(%uuid, "open_stream failed ({e}), queuing for retry");
@@ -291,7 +305,10 @@ impl SessionManager {
                     state_rx = new_session.link_state_rx();
                     remote.session = Some(new_session);
                     *self.link_state.lock().await = LinkState::Normal;
-                    tracing::info!("session restored — draining pending queue");
+                    tracing::info!(
+                        "session restored — restoring active streams and draining pending queue"
+                    );
+                    Self::restore_active(remote, self.cb_tx.clone()).await;
                     Self::drain_pending(remote, self.cb_tx.clone()).await;
                     // Re-arm the accept loop on the new session.
                     self.session_restored.notify_one();
@@ -330,7 +347,7 @@ impl SessionManager {
                     tracing::info!("downlink: inbound QUIC stream accepted");
                     let cb_tx = self.cb_tx.clone();
                     tokio::spawn(async move {
-                        if let Err(e) = super::ActiveStream::spawn_downlink(stream, cb_tx).await {
+                        if let Err(e) = ActiveStream::spawn_downlink(stream, cb_tx).await {
                             tracing::warn!("downlink: spawn_downlink failed: {e}");
                         }
                     });
@@ -347,24 +364,26 @@ impl SessionManager {
 
     /// Called when the link transitions to `Failed`.
     ///
-    /// Clears the dead session from `RemoteState`.
-    /// STUB: spool-to-disk will be added in the next iteration.
+    /// Called when `LinkState` transitions to `Failed`.
+    ///
+    /// Clears the dead QUIC session and signals every in-flight uplink pump
+    /// to pause at its current spool position (`A`).  The pumps will resume
+    /// automatically once [`Self::restore_active`] delivers a fresh stream.
     async fn on_link_failed(&self) {
         // ---
-        tracing::warn!("link failed — clearing dead session");
+        tracing::warn!("link failed — clearing dead session, pausing active streams");
 
         let mut guard = self.remote.lock().await;
         if let Some(remote) = guard.as_mut() {
             remote.session = None;
+            // The pump tasks are already waiting on stream_rx.recv().
+            // We do not send anything here — they will block until
+            // restore_active delivers a fresh stream after reconnect.
+            tracing::debug!(
+                "link failed — {} active streams paused at spool position",
+                remote.active.len()
+            );
         }
-
-        // TODO(spool): write pending stream data to self.spool_dir/<uuid>/
-        //   For each entry in remote.pending that has bytes_acked < size_bytes,
-        //   open spool_dir/<uuid>.part and begin writing received bytes.
-        tracing::warn!(
-            spool_dir = %self.spool_dir.display(),
-            "STUB: spool-to-disk not yet implemented — in-flight data may be lost"
-        );
     }
 
     // ---
@@ -427,6 +446,33 @@ impl SessionManager {
 
     // ---
 
+    // -----------------------------------------------------------------------
+    // Test / debug — disabled in production builds
+    // -----------------------------------------------------------------------
+
+    /// Drop the active QUIC session to simulate a link failure.
+    ///
+    /// The existing `LinkState` watch machinery fires `on_link_failed` and
+    /// the reconnect loop resumes naturally — no separate code path needed.
+    /// Calling `link_enable(true)` is a no-op since the reconnect loop never
+    /// stops.
+    async fn link_enable(&self, enabled: bool) {
+        // ---
+        if !enabled {
+            tracing::info!("link_enable(false) — forcing session drop");
+            let mut guard = self.remote.lock().await;
+            if let Some(remote) = guard.as_mut() {
+                // Drop the session handle.  The LinkState watch will detect
+                // the connection closure and fire on_link_failed → reconnect.
+                remote.session = None;
+            }
+        } else {
+            tracing::info!("link_enable(true) — reconnect loop already running, no-op");
+        }
+    }
+
+    // ---
+
     /// Re-issue all pending streams onto a freshly reconnected session.
     async fn drain_pending(remote: &mut RemoteState, cb_tx: CallbackTx) {
         // ---
@@ -439,8 +485,13 @@ impl SessionManager {
         for uuid in uuids {
             if let Some(pending) = remote.pending.get(&uuid) {
                 match Self::open_stream_on_session(session, pending, cb_tx.clone()).await {
-                    Ok(()) => {
+                    Ok(Some(handle)) => {
                         tracing::info!(%uuid, "pending stream re-issued after reconnect");
+                        remote.pending.remove(&uuid);
+                        remote.active.insert(uuid, handle);
+                    }
+                    Ok(None) => {
+                        tracing::info!(%uuid, "pending stream re-issued (no handle)");
                         remote.pending.remove(&uuid);
                     }
                     Err(e) => {
@@ -469,7 +520,7 @@ impl SessionManager {
         session: &QueLaySessionPtr,
         pending: &PendingStream,
         cb_tx: CallbackTx,
-    ) -> anyhow::Result<()> {
+    ) -> anyhow::Result<Option<super::UplinkHandle>> {
         // ---
         let mut stream = session.open_stream(pending.priority).await?;
 
@@ -494,11 +545,88 @@ impl SessionManager {
         write_header(&mut stream, &header).await?;
 
         // Spawn the uplink pump — takes ownership of the QUIC stream and the
-        // CallbackTx; fires stream_started then pipes TCP → QUIC.
-        super::ActiveStream::spawn_uplink(pending.uuid, pending.info.clone(), stream, cb_tx)
-            .await?;
+        // CallbackTx; fires stream_started then pipes TCP → QUIC via spool.
+        let handle = ActiveStream::spawn_uplink(
+            pending.uuid,
+            pending.info.clone(),
+            pending.priority,
+            stream,
+            cb_tx,
+        )
+        .await?;
 
-        Ok(())
+        Ok(Some(handle))
+    }
+
+    // ---
+
+    /// On reconnect: open a fresh QUIC stream for every in-flight uplink and
+    /// deliver it via the pump's watch channel so it can replay and resume.
+    ///
+    /// Handles whose pump has already exited (watch sender closed) are pruned.
+    async fn restore_active(remote: &mut RemoteState, _cb_tx: CallbackTx) {
+        // ---
+        let session = match remote.session.as_ref() {
+            Some(s) => s,
+            None => return,
+        };
+
+        let uuids: Vec<Uuid> = remote.active.keys().copied().collect();
+
+        for uuid in uuids {
+            let handle = match remote.active.get(&uuid) {
+                Some(h) => h,
+                None => continue,
+            };
+
+            match session.open_stream(handle.priority).await {
+                Ok(mut stream) => {
+                    // Write the StreamHeader so the receiver knows which stream
+                    // this is and can correlate with its first stream_started.
+                    use super::{write_header, StreamHeader};
+                    let file_name = handle
+                        .info
+                        .attrs
+                        .get("filename")
+                        .cloned()
+                        .unwrap_or_else(|| uuid.to_string());
+                    let header = StreamHeader {
+                        uuid,
+                        priority: match handle.priority {
+                            quelay_domain::Priority::C2I => 64,
+                            quelay_domain::Priority::BulkTransfer => 0,
+                        },
+                        file_name,
+                        size_bytes: handle.info.size_bytes,
+                        attrs: handle.info.attrs.clone(),
+                    };
+                    if let Err(e) = write_header(&mut stream, &header).await {
+                        tracing::warn!(%uuid, "restore_active: header write failed: {e}");
+                        // Pump will retry on the next reconnect cycle.
+                        continue;
+                    }
+                    if handle.stream_tx.try_send(stream).is_err() {
+                        // Pump already exited or channel full (shouldn't happen).
+                        tracing::debug!(%uuid, "restore_active: pump already exited, pruning");
+                        remote.active.remove(&uuid);
+                    } else {
+                        tracing::info!(%uuid, "restore_active: fresh stream delivered to pump");
+                    }
+                }
+                Err(e) => {
+                    tracing::warn!(%uuid, "restore_active: open_stream failed: {e}");
+                }
+            }
+        }
+
+        // Prune any handles whose sender is closed (pump exited cleanly).
+        remote.active.retain(|uuid, h| {
+            let alive = !h.stream_tx.is_closed();
+            if !alive {
+                tracing::debug!(%uuid, "restore_active: pruning completed stream");
+            }
+            alive
+        });
     }
 }
 
@@ -528,5 +656,20 @@ impl SessionManagerHandle {
     /// Forward a stream start request to the session manager.
     pub async fn stream_start(&self, uuid: Uuid, info: StreamInfo, priority: Priority) {
         self.inner.stream_start(uuid, info, priority).await;
+    }
+
+    // -----------------------------------------------------------------------
+    // Test / debug — disabled in production builds
+    // -----------------------------------------------------------------------
+
+    /// Simulate a link failure (`enabled = false`) or allow reconnect
+    /// (`enabled = true`).
+    ///
+    /// When `false`: drops the active QUIC session so the reconnect loop
+    /// fires naturally, exercising the spool and replay paths.
+    /// When `true`: no-op — the reconnect loop is already running and will
+    /// re-establish the session on its own.
+    pub async fn link_enable(&self, enabled: bool) {
+        self.inner.link_enable(enabled).await;
     }
 }

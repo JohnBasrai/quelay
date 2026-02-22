@@ -44,6 +44,10 @@ impl Agent {
                     tracing::info!(%uuid, ?priority, "stream_start → session manager");
                     self.sm.stream_start(uuid, info, priority).await;
                 }
+
+                AgentCmd::LinkEnable(enabled) => {
+                    self.sm.link_enable(enabled).await;
+                }
             }
         }
 

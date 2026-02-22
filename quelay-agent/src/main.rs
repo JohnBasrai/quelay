@@ -28,6 +28,7 @@ use quelay_thrift::{
 
 mod active_stream;
 mod agent;
+mod bandwidth_gate;
 mod callback;
 mod config;
 mod framing;
@@ -43,16 +44,23 @@ use session_manager::{SessionManager, TransportConfig};
 use thrift_srv::AgentHandler;
 
 // Gateway re-exports — siblings import via super::Symbol per EMBP §2.3
-pub use active_stream::ActiveStream;
+pub(crate) use active_stream::ActiveStream;
+pub use active_stream::UplinkHandle;
+pub use bandwidth_gate::BandwidthGate;
 pub use callback::{CallbackCmd, CallbackTx};
 pub use framing::{
     // ---
+    read_chunk,
     read_header,
     read_wormhole_msg,
+    write_chunk,
     write_header,
     write_wormhole_msg,
+    Chunk,
     StreamHeader,
     WormholeMsg,
+    CHUNK_HEADER_LEN,
+    CHUNK_SIZE,
 };
 pub use session_manager::SessionManagerHandle;
 pub use thrift_srv::AgentCmd;

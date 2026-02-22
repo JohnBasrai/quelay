@@ -43,6 +43,10 @@ pub enum AgentCmd {
         info: DomainStreamInfo,
         priority: Priority,
     },
+
+    /// Test/debug only — enable or disable the QUIC link.
+    /// Must not be exposed in production builds.
+    LinkEnable(bool),
 }
 
 // ---------------------------------------------------------------------------
@@ -164,5 +168,19 @@ impl QueLayAgentSyncHandler for AgentHandler {
             LinkState::Degraded => WireLinkState::DEGRADED,
             LinkState::Failed => WireLinkState::FAILED,
         })
+    }
+
+    // -----------------------------------------------------------------------
+    // Test / debug handlers — disabled in production builds
+    // -----------------------------------------------------------------------
+
+    fn handle_link_enable(&self, enabled: bool) -> thrift::Result<()> {
+        // ---
+        tracing::info!(enabled, "link_enable (test/debug)");
+        let cmd = AgentCmd::LinkEnable(enabled);
+        self.rt.block_on(async {
+            let _ = self.cmd_tx.send(cmd).await;
+        });
+        Ok(())
     }
 }

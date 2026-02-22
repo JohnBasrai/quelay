@@ -176,9 +176,7 @@ pub enum WormholeMsg {
     Ack { bytes_received: u64 },
 
     /// Receiver finished writing successfully.
-    ///
-    /// `checksum` carries the sha256 hex digest if the receiver computed it.
-    Done { checksum: Option<String> },
+    Done,
 
     /// Receiver encountered a fatal error.
     ///
@@ -261,6 +259,112 @@ where
 }
 
 // ---------------------------------------------------------------------------
+// Chunk framing
+// ---------------------------------------------------------------------------
+
+/// Payload size for each data chunk written to the QUIC stream.
+///
+/// This is the granularity of the spool and ack system.  Smaller values give
+/// finer-grained acks; larger values reduce per-chunk framing overhead.
+///
+/// TODO: wire to config.
+pub const CHUNK_SIZE: usize = 16 * 1024; // 16 KiB
+
+/// Fixed chunk header: u64 stream offset (8 bytes) + u32 payload length (4 bytes).
+pub const CHUNK_HEADER_LEN: usize = 12;
+
+// ---
+
+/// Write one chunk to `stream`.
+///
+/// Frame layout:
+/// ```text
+/// +-------------------+-------------------+------------------+
+/// | stream_offset(u64)| payload_len (u32) | payload bytes    |
+/// | big-endian        | big-endian        | (payload_len B)  |
+/// +-------------------+-------------------+------------------+
+/// |     8 bytes              4 bytes      |  variable
+/// |←————— CHUNK_HEADER_LEN = 12 bytes ———→|
+/// ```
+///
+/// `stream_offset` is the absolute byte position of the first payload byte
+/// in the logical stream.  The receiver uses this to detect duplicate chunks
+/// (offset already delivered) and to assert ordering (gap = logic error).
+pub async fn write_chunk<W>(stream: &mut W, stream_offset: u64, payload: &[u8]) -> Result<()>
+where
+    W: AsyncWrite + Unpin,
+{
+    let payload_len = u32::try_from(payload.len())
+        .map_err(|_| QueLayError::Transport("chunk payload exceeds 4 GiB".into()))?;
+
+    let mut hdr = [0u8; CHUNK_HEADER_LEN];
+    hdr[0..8].copy_from_slice(&stream_offset.to_be_bytes());
+    hdr[8..12].copy_from_slice(&payload_len.to_be_bytes());
+
+    stream
+        .write_all(&hdr)
+        .await
+        .map_err(|e| QueLayError::Transport(format!("chunk write header: {e}")))?;
+
+    stream
+        .write_all(payload)
+        .await
+        .map_err(|e| QueLayError::Transport(format!("chunk write payload: {e}")))?;
+
+    Ok(())
+}
+
+// ---
+
+/// One decoded chunk read from the QUIC stream.
+pub struct Chunk {
+    /// Absolute byte offset of the first payload byte in the logical stream.
+    pub stream_offset: u64,
+    /// Payload bytes.
+    pub payload: Vec<u8>,
+}
+
+// ---
+
+/// Read one chunk from `stream`.
+///
+/// Returns `None` on clean EOF (zero-length read of the header), which
+/// signals that the sender has closed the QUIC write half.
+pub async fn read_chunk<R>(stream: &mut R) -> Result<Option<Chunk>>
+where
+    R: AsyncRead + Unpin,
+{
+    let mut hdr = [0u8; CHUNK_HEADER_LEN];
+
+    // Peek at the first byte to distinguish clean EOF from a real header.
+    match stream.read(&mut hdr[..1]).await {
+        Ok(0) => return Ok(None), // clean EOF
+        Ok(_) => {}
+        Err(e) => return Err(QueLayError::Transport(format!("chunk read header[0]: {e}"))),
+    }
+
+    // Read the remaining 11 header bytes.
+    stream
+        .read_exact(&mut hdr[1..])
+        .await
+        .map_err(|e| QueLayError::Transport(format!("chunk read header[1..]: {e}")))?;
+
+    let stream_offset = u64::from_be_bytes(hdr[0..8].try_into().unwrap());
+    let payload_len = u32::from_be_bytes(hdr[8..12].try_into().unwrap()) as usize;
+
+    let mut payload = vec![0u8; payload_len];
+    stream
+        .read_exact(&mut payload)
+        .await
+        .map_err(|e| QueLayError::Transport(format!("chunk read payload: {e}")))?;
+
+    Ok(Some(Chunk {
+        stream_offset,
+        payload,
+    }))
+}
+
+// ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 
@@ -284,7 +388,7 @@ mod tests {
             priority: 64,
             file_name: "telemetry.bin".into(),
             size_bytes: Some(1_048_576),
-            attrs: [("sha256".into(), "deadbeef".into())].into(),
+            attrs: [("content_type".into(), "application/octet-stream".into())].into(),
         };
 
         // Write into an in-memory buffer.
@@ -302,7 +406,7 @@ mod tests {
         assert_eq!(recovered.priority, original.priority);
         assert_eq!(recovered.file_name, original.file_name);
         assert_eq!(recovered.size_bytes, original.size_bytes);
-        assert_eq!(recovered.attrs["sha256"], "deadbeef");
+        assert_eq!(recovered.attrs["content_type"], "application/octet-stream");
 
         // Confirm raw data is still available after header read.
         let mut tail = Vec::new();

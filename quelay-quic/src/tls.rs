@@ -33,7 +33,7 @@ impl CertBundle {
     pub fn generate(server_name: &str) -> Result<Self, QuicError> {
         // ---
         let cert = rcgen::generate_simple_self_signed(vec![server_name.to_string()])
-            .map_err(|e| QuicError::Tls(e.to_string()))?;
+            .map_err(|e| QuicError::Endpoint(e.to_string()))?;
 
         let cert_der = CertificateDer::from(cert.cert);
         let key_der = PrivatePkcs8KeyDer::from(cert.key_pair.serialize_der());
@@ -55,7 +55,7 @@ pub fn server_config(bundle: &CertBundle) -> Result<rustls::ServerConfig, QuicEr
             vec![bundle.cert_der.clone()],
             rustls::pki_types::PrivateKeyDer::Pkcs8(bundle.key_der.clone_key()),
         )
-        .map_err(|e| QuicError::Tls(e.to_string()))?;
+        .map_err(|e| QuicError::Endpoint(e.to_string()))?;
 
     Ok(cfg)
 }
@@ -76,7 +76,7 @@ pub fn client_config(
     let mut roots = rustls::RootCertStore::empty();
     roots
         .add(server_cert_der)
-        .map_err(|e| QuicError::Tls(e.to_string()))?;
+        .map_err(|e| QuicError::Endpoint(e.to_string()))?;
 
     let cfg = rustls::ClientConfig::builder()
         .with_root_certificates(Arc::new(roots))

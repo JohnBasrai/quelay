@@ -70,7 +70,7 @@ impl QueLaySession for QuicSession {
             .conn
             .open_bi()
             .await
-            .map_err(QuicError::Connection)
+            .map_err(|e| QuicError::ConnectionLost(e.to_string()))
             .map_err(QueLayError::from)?;
 
         let stream = QuicStream {
@@ -91,7 +91,7 @@ impl QueLaySession for QuicSession {
             .conn
             .accept_bi()
             .await
-            .map_err(QuicError::Connection)
+            .map_err(|e| QuicError::ConnectionLost(e.to_string()))
             .map_err(QueLayError::from)?;
 
         let stream = QuicStream {

@@ -35,7 +35,6 @@ use quelay_thrift::{
 };
 
 mod e2e_demo;
-mod link_sim_demo;
 mod quic_demo;
 mod thrift_demo;
 
@@ -89,8 +88,8 @@ async fn main() -> anyhow::Result<()> {
         println!();
     }
 
-    println!("=== 1. LinkSim transport demo ===");
-    link_sim_demo::run().await;
+    println!("=== 1. LinkSim transport demo === (REMOVED/SKIPPED)");
+    //link_sim_demo::run().await;
 
     println!();
     println!("=== 2. Thrift mapping demo ===");

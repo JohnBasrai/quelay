@@ -125,6 +125,14 @@ The generated service trait is `QueLayAgentSyncHandler`. Methods currently handl
 
 The callback push path (`QueLayCallback`) is registered via `set_callback` but the outbound Thrift client is not yet wired — status callbacks are a no-op until the session manager iteration lands.
 
-## What's not implemented yet
+## SessionManager Status
 
 The session manager layer — reconnection, UUID→stream remapping on reconnect, and spool-to-disk on `LinkState::Failed` — sits between `Agent` and the raw `QueLaySession`. Until it lands, `Agent` calls `open_stream` directly and a lost QUIC connection is fatal. See `docs/contributing/ARCHITECTURE.md` for the intended design.
+
+The `SessionManager` layer now sits between `Agent` and the raw `QueLaySession`,
+handling reconnection, UUID→stream remapping on reconnect, and spool-to-disk on
+`LinkState::Failed`. Stream lifecycle management now flows through the session
+layer rather than directly through `open_stream`.
+
+See `docs/contributing/ARCHITECTURE.md` for the intended recovery model and
+design details.

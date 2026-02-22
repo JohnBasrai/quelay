@@ -16,9 +16,8 @@ use super::transport::LinkState;
 /// Mirrors `StreamInfo` in the Thrift IDL. Quelay never reads or modifies
 /// `attrs` — it is owned entirely by the client and forwarded verbatim.
 ///
-/// Suggested `attrs` keys (all optional):
-///   "filename"     — original file name, used by receiver for storage
-///   "sha256"       — hex digest; receiver verifies after `stream_done`
+/// Suggested `attrs` keys (all optional, agent treats all as opaque):
+///   "filename"     — original file name, for receiver's use
 ///   "content_type" — MIME type hint
 ///   "source"       — originating system identifier
 #[derive(Debug, Clone)]

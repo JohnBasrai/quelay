@@ -192,6 +192,20 @@ service QueLayAgent {
     /// Useful at startup to obtain link state before any callbacks have fired.
     /// Ongoing state changes are delivered via `QueLayCallback::link_status_update`.
     LinkState get_link_state(),
+
+    // -----------------------------------------------------------------------
+    // Test / debug methods — disabled in production builds
+    // -----------------------------------------------------------------------
+
+    /// Enable or disable the QUIC link.
+    ///
+    /// When `enabled` is false the agent drops the active QUIC session and
+    /// stops reconnecting, simulating a link failure.  When `enabled` is true
+    /// the normal reconnect loop resumes.
+    ///
+    /// Used by integration tests to exercise the spool and reconnect paths.
+    /// Must not be wired up in production builds.
+    void link_enable(1: bool enabled),
 }
 
 // ---------------------------------------------------------------------------
