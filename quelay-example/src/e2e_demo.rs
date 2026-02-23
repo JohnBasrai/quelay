@@ -81,7 +81,10 @@ const AGENT_SPOOL_CAPACITY: usize = 1024 * 1024; // 1 MiB
 const SPOOL_FILL_FRACTION: f64 = 0.50;
 
 /// Phase 1 BW tolerance: ±5% of configured cap.
+/// Both bounds retained for future enforcement; currently informational only.
+#[allow(dead_code)]
 const BW_TOLERANCE_LOW: f64 = 0.95;
+#[allow(dead_code)]
 const BW_TOLERANCE_HIGH: f64 = 1.05;
 
 // ---------------------------------------------------------------------------
@@ -332,6 +335,7 @@ enum LinkInject {
         drop_after: usize,
         link_down_secs: f64,
         sender_c2i: SocketAddr,
+        #[allow(unused)]
         receiver_c2i: SocketAddr,
     },
 }
@@ -421,7 +425,7 @@ async fn run_transfer(
                 drop_after,
                 link_down_secs,
                 sender_c2i,
-                receiver_c2i,
+                receiver_c2i: _,
             } => {
                 tcp.write_all(&payload[..drop_after])?;
                 tcp.flush()?;
@@ -432,19 +436,14 @@ async fn run_transfer(
                     drop_after / 1024,
                 );
                 let mut s = connect_agent(sender_c2i)?;
-                let mut r = connect_agent(receiver_c2i)?;
                 s.link_enable(false)?;
-                r.link_enable(false)?;
 
                 let delay = std::time::Duration::from_secs_f64(link_down_secs);
                 std::thread::spawn(move || {
                     std::thread::sleep(delay);
                     println!("  [spool] link_enable(true) (background)");
-                    if let (Ok(mut s2), Ok(mut r2)) =
-                        (connect_agent(sender_c2i), connect_agent(receiver_c2i))
-                    {
+                    if let Ok(mut s2) = connect_agent(sender_c2i) {
                         let _ = s2.link_enable(true);
-                        let _ = r2.link_enable(true);
                     }
                 });
 
@@ -544,11 +543,10 @@ pub async fn run(
     println!("  sha256 match ✓  ({}...)", &stats.sha256_sent[..16]);
 
     if let Some(cap_mbps) = bw_cap_mbps {
-        let cap_bps = cap_mbps as f64 * 1_000_000.0 / 8.0;
+        let _cap_bps = cap_mbps as f64 * 1_000_000.0 / 8.0;
         // Report BW utilization only — no tolerance gate.
         // The transfer report already shows realized vs cap; phase 1 passes
         // as long as the transfer completes and sha256 matches.
-        let _ = BW_TOLERANCE_LOW; // suppress unused-constant warning
         let cap_kbps = cap_mbps as f64 * 1_000.0 / 8.0;
         println!(
             "  BW info   realized {:.1} KB/s vs cap {:.1} KB/s ({:.1}%)",

@@ -51,20 +51,24 @@ use thrift_srv::AgentHandler;
 
 // Gateway re-exports — siblings import via super::Symbol per EMBP §2.3
 pub(crate) use active_stream::ActiveStream;
-pub use active_stream::UplinkHandle;
+pub use active_stream::{DownlinkHandle, UplinkHandle};
 pub use bandwidth_gate::BandwidthGate;
 pub use callback::{CallbackCmd, CallbackTx};
 pub use framing::{
     // ---
     read_chunk,
-    read_header,
+    read_stream_open,
     read_wormhole_msg,
     write_chunk,
-    write_header,
+    write_connect_header,
+    write_reconnect_header,
     write_wormhole_msg,
     Chunk,
+    ReconnectHeader,
     StreamHeader,
+    StreamOpen,
     WormholeMsg,
+    ACK_INTERVAL,
     CHUNK_HEADER_LEN,
     CHUNK_SIZE,
 };
