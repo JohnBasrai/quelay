@@ -34,10 +34,10 @@ use quelay_thrift::{
 
 mod active_stream;
 mod agent;
-mod bandwidth_gate;
 mod callback;
 mod config;
 mod framing;
+mod rate_limiter;
 mod session_manager;
 mod thrift_srv;
 
@@ -52,7 +52,7 @@ use thrift_srv::AgentHandler;
 // Gateway re-exports — siblings import via super::Symbol per EMBP §2.3
 pub(crate) use active_stream::ActiveStream;
 pub use active_stream::{DownlinkHandle, UplinkHandle};
-pub use bandwidth_gate::BandwidthGate;
+
 pub use callback::{CallbackCmd, CallbackTx};
 pub use framing::{
     // ---

@@ -74,7 +74,6 @@ use super::{
     // ---
     read_chunk,
     read_wormhole_msg,
-    write_chunk,
     write_wormhole_msg,
     CallbackCmd,
     CallbackTx,
@@ -83,6 +82,7 @@ use super::{
     ACK_INTERVAL,
     CHUNK_SIZE,
 };
+// (write_chunk no longer used directly — encode_chunk + RateLimiter replaces it)
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -263,6 +263,8 @@ impl ActiveStream {
         priority: Priority,
         quic: QueLayStreamPtr,
         cb_tx: CallbackTx,
+        rate_bps: Option<u64>,
+        link_enabled: Arc<std::sync::atomic::AtomicBool>,
     ) -> anyhow::Result<UplinkHandle> {
         // ---
         let listener = TcpListener::bind("127.0.0.1:0").await?;
@@ -309,6 +311,8 @@ impl ActiveStream {
             space_ready,
             stream_rx,
             cb_tx,
+            rate_bps,
+            link_enabled,
         ));
 
         Ok(handle)
@@ -694,10 +698,25 @@ async fn run_tcp_reader(
 
 // ---
 
+/// Encode a chunk into a flat `Vec<u8>` (10-byte header + payload) suitable
+/// for passing to [`RateLimiter::enqueue`].
+fn encode_chunk(stream_offset: u64, payload: &[u8]) -> Vec<u8> {
+    // ---
+    use crate::CHUNK_HEADER_LEN;
+    let mut buf = Vec::with_capacity(CHUNK_HEADER_LEN + payload.len());
+    buf.extend_from_slice(&stream_offset.to_be_bytes());
+    buf.extend_from_slice(&(payload.len() as u16).to_be_bytes());
+    buf.extend_from_slice(payload);
+    buf
+}
+
+// ---
+
 /// Drains the spool into the QUIC stream.
 ///
 /// On QUIC write error: rewinds `Q` to `A`, waits for a new stream via
 /// `stream_rx`, then replays `A..T` on the new stream before resuming.
+#[allow(clippy::too_many_arguments)]
 async fn run_quic_pump(
     // ---
     uuid: Uuid,
@@ -706,6 +725,8 @@ async fn run_quic_pump(
     space_ready: Arc<Notify>,
     mut stream_rx: mpsc::Receiver<QueLayStreamPtr>,
     cb_tx: CallbackTx,
+    rate_bps: Option<u64>,
+    link_enabled: Arc<std::sync::atomic::AtomicBool>,
 ) {
     // ---
     // Internal message type forwarded from the ack-reader task to the pump.
@@ -774,10 +795,13 @@ async fn run_quic_pump(
             return;
         }
     };
-    let (initial_rx, mut quic_tx) = tokio::io::split(initial);
+    let (initial_rx, initial_tx) = tokio::io::split(initial);
     if stream_ack_tx.send(initial_rx).await.is_err() {
         return;
     }
+    #[allow(clippy::too_many_arguments)]
+    let mut rate_limiter =
+        super::rate_limiter::RateLimiter::new(initial_tx, rate_bps, Arc::clone(&link_enabled));
 
     // Q: absolute offset of the next byte to write to QUIC.
     let mut q: u64 = 0;
@@ -866,7 +890,7 @@ async fn run_quic_pump(
         // --- EOF sentinel: spool drained, shut down QUIC write half ---
         if head == u64::MAX && chunk.is_empty() {
             tracing::info!(%uuid, bytes = bytes_sent, "uplink: flushed, shutting down QUIC stream");
-            let _ = quic_tx.shutdown().await;
+            let _ = rate_limiter.shutdown().await;
             // Drain remaining acks/done from ack task.
             loop {
                 match ack_rx.recv().await {
@@ -924,15 +948,11 @@ async fn run_quic_pump(
             continue;
         }
 
-        // --- Write chunk to QUIC ---
-        // Acks arrive via the ack task so write_chunk can block on flow-control
-        // without starving ack processing.
-        if let Err(e) = write_chunk(&mut quic_tx, q, &chunk).await {
-            tracing::warn!(%uuid, "uplink: QUIC write error: {e} — waiting for reconnect");
-
-            // Rewind Q to A — replay from last-acked byte on the new stream.
+        // --- Write chunk via rate limiter ---
+        // poll_error checks for async write failures from the timer task.
+        if let Some(e) = rate_limiter.poll_error() {
+            tracing::warn!(%uuid, "uplink: write error: {e} — waiting for reconnect");
             q = spool.lock().await.bytes_acked;
-
             match stream_rx.recv().await {
                 Some(new_stream) => {
                     tracing::info!(%uuid, replay_from = q, "uplink: new stream — replaying spool");
@@ -941,7 +961,43 @@ async fn run_quic_pump(
                         tracing::warn!(%uuid, "uplink: ack task gone on reconnect");
                         return;
                     }
-                    quic_tx = tx;
+                    rate_limiter = super::rate_limiter::RateLimiter::new(
+                        tx,
+                        rate_bps,
+                        Arc::clone(&link_enabled),
+                    );
+                }
+                None => {
+                    tracing::warn!(%uuid, "uplink: stream handle dropped — failing stream");
+                    cb_tx
+                        .send(CallbackCmd::StreamFailed {
+                            uuid,
+                            code: FailReason::LINK_FAILED,
+                            reason: "link failed permanently".into(),
+                        })
+                        .await;
+                    return;
+                }
+            }
+            continue;
+        }
+
+        if let Err(e) = rate_limiter.enqueue(encode_chunk(q, &chunk)).await {
+            tracing::warn!(%uuid, "uplink: enqueue error: {e} — waiting for reconnect");
+            q = spool.lock().await.bytes_acked;
+            match stream_rx.recv().await {
+                Some(new_stream) => {
+                    tracing::info!(%uuid, replay_from = q, "uplink: new stream — replaying spool");
+                    let (rx, tx) = tokio::io::split(new_stream);
+                    if stream_ack_tx.send(rx).await.is_err() {
+                        tracing::warn!(%uuid, "uplink: ack task gone on reconnect");
+                        return;
+                    }
+                    rate_limiter = super::rate_limiter::RateLimiter::new(
+                        tx,
+                        rate_bps,
+                        Arc::clone(&link_enabled),
+                    );
                 }
                 None => {
                     tracing::warn!(%uuid, "uplink: stream handle dropped — failing stream");

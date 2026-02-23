@@ -57,7 +57,6 @@ use super::{
     // ---
     write_connect_header,
     write_reconnect_header,
-    BandwidthGate,
     CallbackTx,
     ReconnectHeader,
     StreamHeader,
@@ -333,15 +332,12 @@ impl SessionManager {
                 let new_session = self.reconnect_loop().await;
 
                 // Wait for link_enabled before restoring active streams.
-                // restore_active delivers a fresh stream to each uplink pump;
-                // if link_enabled is still false the pump immediately hits a
-                // BandwidthGate "link disabled" write error, burns the stream,
-                // and blocks on stream_rx.recv() — using the one reconnect
-                // stream before link_enable(true) has a chance to fire.
-                while !self.link_enabled.load(Ordering::Relaxed) {
-                    tokio::time::sleep(Duration::from_millis(10)).await;
-                }
-
+                // The RateLimiter's timer task checks link_enabled on every
+                // tick and discards chunks when false — so restore_active can
+                // run immediately.  The pump will see poll_error() fire on the
+                // first tick after restore_active delivers the stream, and will
+                // wait in stream_rx.recv() until the timer task reports the
+                // link is back up.  This is handled inside the timer task.
                 let mut guard = self.remote.lock().await;
                 if let Some(remote) = guard.as_mut() {
                     state_rx = new_session.link_state_rx();
@@ -350,7 +346,7 @@ impl SessionManager {
                     tracing::info!(
                         "session restored — restoring active streams and draining pending queue"
                     );
-                    Self::restore_active(remote, Arc::clone(&self.link_enabled), self.bw_cap_bps)
+                    Self::restore_active(remote)
                         .await;
                     Self::drain_pending(
                         remote,
@@ -663,10 +659,7 @@ impl SessionManager {
         bw_cap_bps: Option<u64>,
     ) -> anyhow::Result<super::UplinkHandle> {
         // ---
-        let stream = session.open_stream(pending.priority).await?;
-
-        let mut gated: quelay_domain::QueLayStreamPtr =
-            Box::new(BandwidthGate::new(stream, bw_cap_bps, link_enabled));
+        let mut stream = session.open_stream(pending.priority).await?;
 
         let header = StreamHeader {
             uuid: pending.uuid,
@@ -678,14 +671,16 @@ impl SessionManager {
             attrs: pending.info.attrs.clone(),
         };
 
-        write_connect_header(&mut gated, &header).await?;
+        write_connect_header(&mut stream, &header).await?;
 
         let handle = ActiveStream::spawn_uplink(
             pending.uuid,
             pending.info.clone(),
             pending.priority,
-            gated,
+            stream,
             cb_tx,
+            bw_cap_bps,
+            Arc::clone(&link_enabled),
         )
         .await?;
 
@@ -704,8 +699,6 @@ impl SessionManager {
     /// Handles whose pump has already exited are pruned.
     async fn restore_active(
         remote: &mut RemoteState,
-        link_enabled: Arc<AtomicBool>,
-        bw_cap_bps: Option<u64>,
     ) {
         // ---
         let session = match remote.session.as_ref() {
@@ -730,12 +723,7 @@ impl SessionManager {
                         tracing::warn!(%uuid, "restore_active: reconnect header write failed: {e}");
                         continue;
                     }
-                    let gated: quelay_domain::QueLayStreamPtr = Box::new(BandwidthGate::new(
-                        stream,
-                        bw_cap_bps,
-                        Arc::clone(&link_enabled),
-                    ));
-                    if handle.stream_tx.try_send(gated).is_err() {
+                    if handle.stream_tx.try_send(stream).is_err() {
                         tracing::debug!(%uuid, "restore_active: pump already exited, pruning");
                         remote.active_uplinks.remove(&uuid);
                     } else {
