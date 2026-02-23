@@ -32,7 +32,6 @@
 use super::ActiveStream;
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -191,17 +190,9 @@ pub struct SessionManager {
     /// events (stream_started, stream_done, stream_failed) directly.
     cb_tx: CallbackTx,
 
-    /// Shared link-enabled flag, checked by [`BandwidthGate`] on every write.
+    /// Uplink bandwidth cap in bits/second.  `None` = uncapped.
     ///
-    /// Set to `false` by `link_enable(false)` to inject a link-down error
-    /// into the uplink pump without dropping the QUIC session.  Set back to
-    /// `true` by `link_enable(true)` to allow the pump to proceed after the
-    /// reconnect loop delivers a fresh stream.
-    link_enabled: Arc<AtomicBool>,
-
-    /// Uplink bandwidth cap in bytes/second.  `None` = uncapped.
-    ///
-    /// Passed to each [`BandwidthGate`] on stream open.  Configured via
+    /// Passed to each [`RateLimiter`] on stream open.  Configured via
     /// `--bw-cap-mbps` CLI flag (0 = uncapped).
     bw_cap_bps: Option<u64>,
 
@@ -232,7 +223,6 @@ impl SessionManager {
             link_state,
             spool_dir,
             cb_tx,
-            link_enabled: Arc::new(AtomicBool::new(true)),
             bw_cap_bps,
             session_restored: Arc::new(Notify::new()),
         }
@@ -268,7 +258,6 @@ impl SessionManager {
                     session,
                     &pending,
                     self.cb_tx.clone(),
-                    Arc::clone(&self.link_enabled),
                     self.bw_cap_bps,
                 )
                 .await
@@ -331,13 +320,9 @@ impl SessionManager {
 
                 let new_session = self.reconnect_loop().await;
 
-                // Wait for link_enabled before restoring active streams.
-                // The RateLimiter's timer task checks link_enabled on every
-                // tick and discards chunks when false — so restore_active can
-                // run immediately.  The pump will see poll_error() fire on the
-                // first tick after restore_active delivers the stream, and will
-                // wait in stream_rx.recv() until the timer task reports the
-                // link is back up.  This is handled inside the timer task.
+                // restore_active delivers fresh streams to pumps; each pump
+                // splits the new stream and calls rate_limiter.link_up(tx)
+                // which unblocks the timer task.  No link_enabled flag needed.
                 let mut guard = self.remote.lock().await;
                 if let Some(remote) = guard.as_mut() {
                     state_rx = new_session.link_state_rx();
@@ -346,15 +331,8 @@ impl SessionManager {
                     tracing::info!(
                         "session restored — restoring active streams and draining pending queue"
                     );
-                    Self::restore_active(remote)
-                        .await;
-                    Self::drain_pending(
-                        remote,
-                        self.cb_tx.clone(),
-                        Arc::clone(&self.link_enabled),
-                        self.bw_cap_bps,
-                    )
-                    .await;
+                    Self::restore_active(remote).await;
+                    Self::drain_pending(remote, self.cb_tx.clone(), self.bw_cap_bps).await;
                     // Re-arm the accept loop on the new session.
                     self.session_restored.notify_one();
                 }
@@ -574,19 +552,27 @@ impl SessionManager {
     /// Inject a link-down event (`enabled = false`) or re-enable the link
     /// (`enabled = true`).
     ///
-    /// When `false`: sets the shared `link_enabled` flag to `false`.  The
-    /// next `BandwidthGate::poll_write` on any active uplink pump returns
-    /// `ConnectionAborted`, driving the pump into the spool-and-reconnect
-    /// path — identical to what happens on a real satellite link outage.
+    /// When `false`: sends `RateCmd::LinkDown` to every active uplink's timer
+    /// task (so each pump drains queued chunks and rewinds `Q = A`), then
+    /// closes the QUIC session to trigger the reconnect loop.
     ///
-    /// When `true`: sets `link_enabled` back to `true` so the reconnect loop
-    /// can deliver a fresh stream and the pump can resume writing.
+    /// When `true`: no-op — `restore_active` calls `link_up` after the
+    /// reconnect loop delivers fresh streams.
     async fn link_enable(&self, enabled: bool) {
         // ---
         tracing::info!(enabled, "link_enable");
-        self.link_enabled.store(enabled, Ordering::Relaxed);
 
         if !enabled {
+            // Signal all active uplinks to drain and rewind.
+            {
+                let guard = self.remote.lock().await;
+                if let Some(remote) = guard.as_ref() {
+                    for handle in remote.active_uplinks.values() {
+                        handle.notify_link_down();
+                    }
+                }
+            }
+
             let session = {
                 let guard = self.remote.lock().await;
                 guard.as_ref().and_then(|r| r.session.clone())
@@ -596,17 +582,13 @@ impl SessionManager {
                 let _ = s.close().await;
             }
         }
+        // link_enable(true) is a no-op: restore_active calls link_up on reconnect.
     }
 
     // ---
 
     /// Re-issue all pending streams onto a freshly reconnected session.
-    async fn drain_pending(
-        remote: &mut RemoteState,
-        cb_tx: CallbackTx,
-        link_enabled: Arc<AtomicBool>,
-        bw_cap_bps: Option<u64>,
-    ) {
+    async fn drain_pending(remote: &mut RemoteState, cb_tx: CallbackTx, bw_cap_bps: Option<u64>) {
         // ---
         let session = match remote.session.as_ref() {
             Some(s) => s,
@@ -616,14 +598,8 @@ impl SessionManager {
         let uuids: Vec<Uuid> = remote.pending.keys().copied().collect();
         for uuid in uuids {
             if let Some(pending) = remote.pending.get(&uuid) {
-                match Self::open_stream_on_session(
-                    session,
-                    pending,
-                    cb_tx.clone(),
-                    Arc::clone(&link_enabled),
-                    bw_cap_bps,
-                )
-                .await
+                match Self::open_stream_on_session(session, pending, cb_tx.clone(), bw_cap_bps)
+                    .await
                 {
                     Ok(handle) => {
                         tracing::info!(%uuid, "pending stream re-issued after reconnect");
@@ -655,7 +631,6 @@ impl SessionManager {
         session: &QueLaySessionPtr,
         pending: &PendingStream,
         cb_tx: CallbackTx,
-        link_enabled: Arc<AtomicBool>,
         bw_cap_bps: Option<u64>,
     ) -> anyhow::Result<super::UplinkHandle> {
         // ---
@@ -680,7 +655,6 @@ impl SessionManager {
             stream,
             cb_tx,
             bw_cap_bps,
-            Arc::clone(&link_enabled),
         )
         .await?;
 
@@ -697,9 +671,7 @@ impl SessionManager {
     /// where the sender's replay starts.
     ///
     /// Handles whose pump has already exited are pruned.
-    async fn restore_active(
-        remote: &mut RemoteState,
-    ) {
+    async fn restore_active(remote: &mut RemoteState) {
         // ---
         let session = match remote.session.as_ref() {
             Some(s) => s,

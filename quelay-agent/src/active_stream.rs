@@ -205,6 +205,13 @@ pub struct UplinkHandle {
 
     /// Priority for re-opening.
     pub priority: Priority,
+
+    /// Rate limiter link-down notifier.  `None` when uncapped (rate_bps = None).
+    ///
+    /// Call `notify_link_down()` when `link_enable(false)` fires so the timer
+    /// task can drain+discard its queue and signal the pump to rewind before
+    /// waiting for a fresh stream.
+    link_down_tx: Option<mpsc::Sender<super::rate_limiter::RateCmd>>,
 }
 
 impl UplinkHandle {
@@ -213,6 +220,18 @@ impl UplinkHandle {
     /// Used by `session_manager::restore_active` to populate `ReconnectHeader`.
     pub async fn bytes_acked(&self) -> u64 {
         self.spool.lock().await.bytes_acked
+    }
+
+    // ---
+
+    /// Signal the rate limiter timer task that the link is going down.
+    ///
+    /// The timer task will drain queued chunks and report an error so the pump
+    /// rewinds `Q = A` and waits for a fresh stream.  No-op when uncapped.
+    pub fn notify_link_down(&self) {
+        if let Some(tx) = &self.link_down_tx {
+            let _ = tx.try_send(super::rate_limiter::RateCmd::LinkDown);
+        }
     }
 }
 
@@ -264,7 +283,6 @@ impl ActiveStream {
         quic: QueLayStreamPtr,
         cb_tx: CallbackTx,
         rate_bps: Option<u64>,
-        link_enabled: Arc<std::sync::atomic::AtomicBool>,
     ) -> anyhow::Result<UplinkHandle> {
         // ---
         let listener = TcpListener::bind("127.0.0.1:0").await?;
@@ -281,15 +299,22 @@ impl ActiveStream {
             .await;
 
         let (stream_tx, stream_rx) = mpsc::channel::<QueLayStreamPtr>(1);
-        let _ = stream_tx.try_send(quic);
 
         let spool = Arc::new(Mutex::new(SpoolBuffer::new()));
+
+        // Split the initial QUIC stream into read/write halves here so we
+        // can construct the RateLimiter (and extract link_down_tx) before
+        // spawning run_quic_pump.
+        let (initial_rx, initial_tx) = tokio::io::split(quic);
+        let rate_limiter = super::rate_limiter::RateLimiter::new(initial_tx, rate_bps);
+        let link_down_tx = rate_limiter.link_down_tx_clone();
 
         let handle = UplinkHandle {
             stream_tx,
             spool: Arc::clone(&spool),
             info: info.clone(),
             priority,
+            link_down_tx,
         };
 
         let data_ready = Arc::new(Notify::new());
@@ -311,8 +336,8 @@ impl ActiveStream {
             space_ready,
             stream_rx,
             cb_tx,
-            rate_bps,
-            link_enabled,
+            initial_rx,
+            rate_limiter,
         ));
 
         Ok(handle)
@@ -459,16 +484,27 @@ impl ActiveStream {
         let mut bytes_written = 0u64;
         let mut last_acked = 0u64;
 
+        // Split the initial QUIC stream.  We need separate halves so that
+        // on clean EOF we can shutdown the write half (sending Done + FIN)
+        // without closing the read half, and without triggering a stream error
+        // on the sender's ack task.  On reconnect we re-split the new stream.
+        let (mut quic_rx, mut quic_tx) = tokio::io::split(quic);
+
         loop {
-            match read_chunk(&mut quic).await {
+            match read_chunk(&mut quic_rx).await {
                 Ok(None) => {
-                    // Clean QUIC EOF / FIN — sender finished.
+                    // Sender closed its write half (QUIC FIN) — all chunks
+                    // delivered.  Stop reading; write Done and close our write
+                    // half cleanly so the sender's ack task reads Done then
+                    // sees a clean EOF on the read half it holds.
                     tracing::info!(
                         %uuid,
                         bytes = bytes_written,
                         "downlink: QUIC EOF, transfer complete",
                     );
-                    let _ = write_wormhole_msg(&mut quic, &WormholeMsg::Done).await;
+                    let _ = write_wormhole_msg(&mut quic_tx, &WormholeMsg::Done).await;
+                    let _ = quic_tx.shutdown().await;
+                    // quic_rx dropped here — no more reading needed.
                     self.cb_tx
                         .send(CallbackCmd::StreamDone {
                             uuid,
@@ -510,7 +546,7 @@ impl ActiveStream {
                             "downlink: chunk offset gap — logic error in pump",
                         );
                         let _ = write_wormhole_msg(
-                            &mut quic,
+                            &mut quic_tx,
                             &WormholeMsg::Error {
                                 code: FailReason::UNKNOWN.0 as u32,
                                 reason: format!(
@@ -535,7 +571,7 @@ impl ActiveStream {
                         if let Err(e) = tcp.write_all(to_write).await {
                             tracing::warn!(%uuid, "downlink: TCP write error: {e}");
                             let _ = write_wormhole_msg(
-                                &mut quic,
+                                &mut quic_tx,
                                 &WormholeMsg::Error {
                                     code: FailReason::UNKNOWN.0 as u32,
                                     reason: format!("TCP write error: {e}"),
@@ -558,7 +594,7 @@ impl ActiveStream {
                     if bytes_written - last_acked >= ACK_INTERVAL {
                         last_acked = bytes_written;
                         let _ = write_wormhole_msg(
-                            &mut quic,
+                            &mut quic_tx,
                             &WormholeMsg::Ack {
                                 bytes_received: bytes_written,
                             },
@@ -584,7 +620,10 @@ impl ActiveStream {
                                 bytes_written,
                                 "downlink: fresh stream received — resuming",
                             );
-                            quic = new_stream;
+                            // Re-split the new stream; old halves are dropped.
+                            let (new_rx, new_tx) = tokio::io::split(new_stream);
+                            quic_rx = new_rx;
+                            quic_tx = new_tx;
                             // Continue the loop: duplicate detection handles
                             // any replayed chunks via bytes_written.
                         }
@@ -655,7 +694,7 @@ async fn run_tcp_reader(
                 break;
             }
             if !logged_full {
-                tracing::warn!(
+                tracing::debug!(
                     %uuid,
                     spool_capacity = SPOOL_CAPACITY,
                     "uplink: spool full — pausing TCP reader",
@@ -725,8 +764,8 @@ async fn run_quic_pump(
     space_ready: Arc<Notify>,
     mut stream_rx: mpsc::Receiver<QueLayStreamPtr>,
     cb_tx: CallbackTx,
-    rate_bps: Option<u64>,
-    link_enabled: Arc<std::sync::atomic::AtomicBool>,
+    initial_rx: tokio::io::ReadHalf<QueLayStreamPtr>,
+    mut rate_limiter: super::rate_limiter::RateLimiter,
 ) {
     // ---
     // Internal message type forwarded from the ack-reader task to the pump.
@@ -787,21 +826,10 @@ async fn run_quic_pump(
         });
     }
 
-    // Receive the initial QUIC stream and split into read/write halves.
-    let initial = match stream_rx.recv().await {
-        Some(s) => s,
-        None => {
-            tracing::warn!(%uuid, "uplink pump: stream_tx dropped before initial stream");
-            return;
-        }
-    };
-    let (initial_rx, initial_tx) = tokio::io::split(initial);
+    // Send the initial read half to the ack task.
     if stream_ack_tx.send(initial_rx).await.is_err() {
         return;
     }
-    #[allow(clippy::too_many_arguments)]
-    let mut rate_limiter =
-        super::rate_limiter::RateLimiter::new(initial_tx, rate_bps, Arc::clone(&link_enabled));
 
     // Q: absolute offset of the next byte to write to QUIC.
     let mut q: u64 = 0;
@@ -889,9 +917,13 @@ async fn run_quic_pump(
 
         // --- EOF sentinel: spool drained, shut down QUIC write half ---
         if head == u64::MAX && chunk.is_empty() {
-            tracing::info!(%uuid, bytes = bytes_sent, "uplink: flushed, shutting down QUIC stream");
-            let _ = rate_limiter.shutdown().await;
-            // Drain remaining acks/done from ack task.
+            tracing::info!(%uuid, bytes = bytes_sent, "uplink: spool flushed");
+            let _ = rate_limiter.finish().await;
+            // Write half is now closed (FIN sent).  The downlink will read
+            // Ok(None), write WormholeMsg::Done, then shut down its write half.
+            // We sit on the read half waiting for exactly that Done signal.
+            // StreamError here means the downlink closed its write half before
+            // we read Done — treat as unexpected failure.
             loop {
                 match ack_rx.recv().await {
                     Some(AckMsg::Ack { bytes_received }) => {
@@ -919,23 +951,55 @@ async fn run_quic_pump(
                         return;
                     }
                     Some(AckMsg::StreamError(e)) => {
-                        tracing::warn!(%uuid, "uplink: wormhole closed after EOF: {e}");
-                        cb_tx
-                            .send(CallbackCmd::StreamFailed {
-                                uuid,
-                                code: FailReason::LINK_FAILED,
-                                reason: format!("wormhole closed: {e}"),
-                            })
-                            .await;
-                        return;
+                        // Ack task read-half errored while we're waiting for Done.
+                        // This can happen if the QUIC connection drops after we've
+                        // finished sending. Treat it like any other link failure:
+                        // wait for reconnect and resume replay from last acked.
+                        tracing::warn!(%uuid, "uplink: read half error while waiting for Done: {e} — waiting for reconnect");
+
+                        rate_limiter.link_down();
+                        q = spool.lock().await.bytes_acked;
+
+                        match stream_rx.recv().await {
+                            Some(new_stream) => {
+                                tracing::info!(%uuid, replay_from = q, "uplink: new stream — resuming");
+                                let (rx, tx) = tokio::io::split(new_stream);
+
+                                if stream_ack_tx.send(rx).await.is_err() {
+                                    tracing::warn!(%uuid, "uplink: ack task gone on reconnect");
+                                    return;
+                                }
+                                if let Err(e) = rate_limiter.link_up(tx).await {
+                                    tracing::warn!(%uuid, "uplink: link_up failed: {e}");
+                                    return;
+                                }
+
+                                // Return to the outer loop to replay any remaining
+                                // bytes and re-send FIN on the new stream.
+                                break;
+                            }
+                            None => {
+                                tracing::warn!(%uuid, "uplink: stream handle dropped — failing stream");
+                                cb_tx
+                                    .send(CallbackCmd::StreamFailed {
+                                        uuid,
+                                        code: FailReason::LINK_FAILED,
+                                        reason: "link failed permanently".into(),
+                                    })
+                                    .await;
+                                return;
+                            }
+                        }
                     }
                     None => {
-                        tracing::warn!(%uuid, "uplink: ack task exited unexpectedly");
+                        // Ack task exited — it already sent Done or Error above.
+                        // If we get here without having returned, something is wrong.
+                        tracing::warn!(%uuid, "uplink: ack task exited without Done");
                         cb_tx
                             .send(CallbackCmd::StreamFailed {
                                 uuid,
                                 code: FailReason::LINK_FAILED,
-                                reason: "ack task exited".into(),
+                                reason: "ack task exited without Done".into(),
                             })
                             .await;
                         return;
@@ -952,6 +1016,7 @@ async fn run_quic_pump(
         // poll_error checks for async write failures from the timer task.
         if let Some(e) = rate_limiter.poll_error() {
             tracing::warn!(%uuid, "uplink: write error: {e} — waiting for reconnect");
+            rate_limiter.link_down();
             q = spool.lock().await.bytes_acked;
             match stream_rx.recv().await {
                 Some(new_stream) => {
@@ -961,11 +1026,10 @@ async fn run_quic_pump(
                         tracing::warn!(%uuid, "uplink: ack task gone on reconnect");
                         return;
                     }
-                    rate_limiter = super::rate_limiter::RateLimiter::new(
-                        tx,
-                        rate_bps,
-                        Arc::clone(&link_enabled),
-                    );
+                    if let Err(e) = rate_limiter.link_up(tx).await {
+                        tracing::warn!(%uuid, "uplink: link_up failed: {e}");
+                        return;
+                    }
                 }
                 None => {
                     tracing::warn!(%uuid, "uplink: stream handle dropped — failing stream");
@@ -984,6 +1048,7 @@ async fn run_quic_pump(
 
         if let Err(e) = rate_limiter.enqueue(encode_chunk(q, &chunk)).await {
             tracing::warn!(%uuid, "uplink: enqueue error: {e} — waiting for reconnect");
+            rate_limiter.link_down();
             q = spool.lock().await.bytes_acked;
             match stream_rx.recv().await {
                 Some(new_stream) => {
@@ -993,11 +1058,10 @@ async fn run_quic_pump(
                         tracing::warn!(%uuid, "uplink: ack task gone on reconnect");
                         return;
                     }
-                    rate_limiter = super::rate_limiter::RateLimiter::new(
-                        tx,
-                        rate_bps,
-                        Arc::clone(&link_enabled),
-                    );
+                    if let Err(e) = rate_limiter.link_up(tx).await {
+                        tracing::warn!(%uuid, "uplink: link_up failed: {e}");
+                        return;
+                    }
                 }
                 None => {
                     tracing::warn!(%uuid, "uplink: stream handle dropped — failing stream");

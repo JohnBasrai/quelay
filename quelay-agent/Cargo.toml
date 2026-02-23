@@ -12,6 +12,10 @@ publish     = false
 name = "quelay-agent"
 path = "src/main.rs"
 
+[[bin]]
+name = "e2e_test"
+path = "src/bin/e2e_test.rs"
+
 [dependencies]
 quelay-domain  = { workspace = true }
 quelay-quic    = { workspace = true }
@@ -28,3 +32,5 @@ rustls-pki-types = "1"
 anyhow         = "1"
 serde          = { version = "1", features = ["derive"] }
 serde_json     = "1"
+rand           = { version = "0.8", features = ["small_rng"] }
+sha2           = "0.10"

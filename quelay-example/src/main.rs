@@ -1,27 +1,17 @@
 //! Quelay example — demonstrations and C2I smoke client.
 //!
-//! * When run without `--agent-endpoint` the three built-in demos
-//!   execute (Thrift mapping, QUIC loopback).
+//! Shows how to write a minimal quelay client. Three built-in demos run
+//! automatically; with `--agent-endpoint` the example also performs a live
+//! smoke check against a running agent.
 //!
-//! * When `--agent-endpoint` is supplied the example connects to a live
-//!   `quelay-agent`, asserts that the IDL wire version matches the locally
-//!   compiled version, and reports the link state.
-//!
-//! * When both `--agent-endpoint` and `--receiver-endpoint` are supplied
-//!   the full end-to-end transfer demo runs against two live agents.
-//!
-//! * Add `--spool-test` to also run the spool reconnect test (requires
-//!   `--agent-endpoint` and `--receiver-endpoint`).
+//! For integration testing (link outage, DRR priority, BW validation, etc.)
+//! see the `e2e_test` binary in `quelay-agent/src/bin/`.
 //!
 //! Run with:
 //!   cargo run -p quelay-example
 //!   cargo run -p quelay-example -- --agent-endpoint 127.0.0.1:9090
 //!   cargo run -p quelay-example -- --agent-endpoint 127.0.0.1:9090 \
 //!                                  --receiver-endpoint 127.0.0.1:9091
-//!   cargo run -p quelay-example -- --agent-endpoint 127.0.0.1:9090 \
-//!                                  --receiver-endpoint 127.0.0.1:9091 \
-//!                                  --spool-test \
-//!                                  --bw-cap-mbps 50
 
 use std::net::SocketAddr;
 
@@ -55,39 +45,16 @@ mod thrift_demo;
 )]
 struct Config {
     // ---
-    /// TCP address of the sending agent's C2I interface (agent-1).
+    /// TCP address of the agent's C2I interface.
+    /// When supplied, a live smoke check runs against the agent.
     #[arg(long)]
     agent_endpoint: Option<SocketAddr>,
 
-    /// TCP address of the receiving agent's C2I interface (agent-2).
-    /// Required for e2e transfer and spool tests.
+    /// TCP address of a second agent's C2I interface.
+    /// When both --agent-endpoint and --receiver-endpoint are supplied,
+    /// a single end-to-end transfer demo runs between the two agents.
     #[arg(long)]
     receiver_endpoint: Option<SocketAddr>,
-
-    /// Also run the spool reconnect test after the straight e2e transfer.
-    ///
-    /// Drops the link mid-transfer, verifies the spool replays correctly,
-    /// and asserts the received sha256 matches the sent sha256.
-    /// Requires both `--agent-endpoint` and `--receiver-endpoint`.
-    /// Best paired with `--bw-cap-mbps` for deterministic timing.
-    #[arg(long, default_value_t = false)]
-    spool_test: bool,
-
-    /// Expected uplink bandwidth cap in Mbit/s (must match `--bw-cap-mbps`
-    /// passed to the agents).  Used for BW utilization reporting only.
-    /// 0 = uncapped (no utilization report printed).
-    #[arg(long, default_value_t = 0)]
-    bw_cap_mbps: u64,
-}
-
-impl Config {
-    fn bw_cap(&self) -> Option<u64> {
-        if self.bw_cap_mbps == 0 {
-            None
-        } else {
-            Some(self.bw_cap_mbps)
-        }
-    }
 }
 
 // ---------------------------------------------------------------------------
@@ -116,29 +83,25 @@ async fn main() -> anyhow::Result<()> {
         println!();
     }
 
-    println!("=== 1. LinkSim transport demo === (REMOVED/SKIPPED)");
-
-    println!();
-    println!("=== 2. Thrift mapping demo ===");
+    println!("=== 1. Thrift mapping demo ===");
     thrift_demo::run();
 
     println!();
-    println!("=== 3. QUIC transport demo ===");
+    println!("=== 2. QUIC transport demo ===");
     quic_demo::run().await;
 
     if let (Some(sender), Some(receiver)) = (cfg.agent_endpoint, cfg.receiver_endpoint) {
         println!();
-        if cfg.spool_test {
-            // Phase 2: spool test requires a cap to derive timing.
-            let cap = cfg.bw_cap_mbps;
-            anyhow::ensure!(cap > 0, "--spool-test requires --bw-cap-mbps > 0");
-            e2e_demo::run_spool_test(sender, receiver, cap).await?;
-        } else {
-            // Phase 1: straight transfer + BW validation.
-            e2e_demo::run(sender, receiver, cfg.bw_cap()).await?;
-        }
-    } else if cfg.spool_test {
-        anyhow::bail!("--spool-test requires both --agent-endpoint and --receiver-endpoint");
+        println!("=== 3. End-to-end transfer demo ===");
+        // Generate a small fixed payload — this is a demo, not a benchmark.
+        let payload = {
+            use rand::{RngCore, SeedableRng};
+            let mut rng = rand::rngs::SmallRng::seed_from_u64(0xDEAD_BEEF);
+            let mut buf = vec![0u8; 64 * 1024]; // 64 KiB
+            rng.fill_bytes(&mut buf);
+            buf
+        };
+        e2e_demo::run(sender, receiver, payload).await?;
     }
 
     Ok(())

@@ -92,9 +92,6 @@ struct StreamInfo {
 ///
 /// `pending` is ordered from next-to-start (index 0, highest priority /
 /// longest waiting) to most-recently-enqueued (last index).
-///
-/// Future extension: a `cancel_stream(uuid)` call will search `pending`
-/// by UUID and remove the matching entry.
 struct QueueStatus {
 
     /// Streams currently transferring (queue_position == 0).
@@ -113,11 +110,7 @@ struct QueueStatus {
 /// Progress snapshot delivered periodically while a stream is active.
 ///
 /// `size_bytes` and `percent_done` are present only when the sender supplied
-/// `StreamInfo.size_bytes` at `stream_start`; both are absent for open-ended
-/// streams (sensors, live feeds, unknown-length data).
-///
-/// Easy to extend later — add throughput, ETA, etc. as optional fields
-/// without breaking existing clients.
+/// `StreamInfo.size_bytes` at `stream_start`.
 struct ProgressInfo {
 
     /// Bytes transferred so far.
@@ -138,11 +131,18 @@ struct StartStreamReturn {
     1: string err_msg,
 
     /// Position in the pending queue.
-    ///   0  — stream is active; wait for `stream_started` callback before
-    ///        connecting to the ephemeral port.
+    ///   0  — stream is active; wait for `stream_started` callback.
     ///  >0  — stream is queued; wait for `stream_started` callback.
     ///  -1  — queue is full; request rejected (see err_msg).
     2: i32    queue_position,
+
+    /// Snapshot of the pending queue at the moment of enqueue, ordered
+    /// highest-priority first.  Each entry is "<priority>\t<uuid>".
+    ///
+    /// Present on success; empty list when err_msg is non-empty.
+    /// Used by the `drr` integration test to assert priority ordering
+    /// without polling `get_queue_status`.
+    3: list<string> pending_queue,
 }
 
 // ---------------------------------------------------------------------------
@@ -152,11 +152,8 @@ struct StartStreamReturn {
 /// Command and control interface exposed by the Quelay daemon.
 ///
 /// Clients call this service to start streams, register their callback
-/// endpoint, and query link state. All transfer progress and status
-/// notifications are delivered asynchronously via `QueLayCallback`.
-///
-/// TODO: consider Thrift `exception` types for structured error handling
-///       once the polyglot client set is known.
+/// endpoint, and query or adjust agent configuration.  All transfer progress
+/// and status notifications are delivered asynchronously via `QueLayCallback`.
 service QueLayAgent {
 
     /// Returns the IDL version the server was compiled with.
@@ -182,8 +179,6 @@ service QueLayAgent {
     ///
     /// Quelay connects to this address and invokes `QueLayCallback` methods
     /// for all asynchronous notifications (both send and receive events).
-    /// If the endpoint is unreachable Quelay logs the error and marks the
-    /// client as uncallable until a valid endpoint is registered.
     /// Returns an empty string on success, or an error description.
     string set_callback(1: string endpoint),
 
@@ -192,6 +187,13 @@ service QueLayAgent {
     /// Useful at startup to obtain link state before any callbacks have fired.
     /// Ongoing state changes are delivered via `QueLayCallback::link_status_update`.
     LinkState get_link_state(),
+
+    /// Returns the agent's current uplink BW cap in Mbit/s.
+    /// Returns 0 if the agent is uncapped.
+    ///
+    /// Used by the integration test binary to derive transfer timing without
+    /// duplicating the cap value on the test command line.
+    i32 get_bandwidth_cap_mbps(),
 
     // -----------------------------------------------------------------------
     // Test / debug methods — disabled in production builds
@@ -206,6 +208,25 @@ service QueLayAgent {
     /// Used by integration tests to exercise the spool and reconnect paths.
     /// Must not be wired up in production builds.
     void link_enable(1: bool enabled),
+
+    /// Set the maximum number of concurrent active streams.
+    ///
+    /// Pass 0 to restore the startup default (`--max-concurrent`).
+    /// Used by the `drr` integration test to force single-slot scheduling
+    /// so that queued streams are reordered by priority before activation.
+    ///
+    /// Must not be wired up in production builds.
+    void set_max_concurrent(1: i32 n),
+
+    /// Set the chunk payload size in bytes for subsequent streams.
+    ///
+    /// Pass 0 to restore the startup default (`--chunk-size-bytes`).
+    /// Used by `e2e_test small-file-edge-cases` to set 1 KiB chunks,
+    /// reproducing the legacy FTA block size and exercising multi-block
+    /// framing boundaries that are invisible at the default 16 KiB.
+    ///
+    /// Must not be wired up in production builds.
+    void set_chunk_size_bytes(1: i32 n),
 }
 
 // ---------------------------------------------------------------------------
@@ -227,8 +248,7 @@ service QueLayCallback {
     ///
     /// Quelay sends this every 60 seconds. If the call does not return within
     /// a reasonable timeout the client is considered dead, the callback socket
-    /// is closed, and `Option<client>` is set to `None` until the client
-    /// re-registers via `set_callback`.
+    /// is closed, and the client is marked uncallable until re-registered.
     void ping(),
 
     /// Fired when a stream becomes active (reaches the head of the queue).
@@ -236,12 +256,9 @@ service QueLayCallback {
     /// `port` is the ephemeral TCP port Quelay has opened for this stream.
     /// The client connects to 127.0.0.1:`port` to begin I/O.
     ///
-    /// `info` is forwarded verbatim from the sender's `stream_start` call,
-    /// giving the receiver full access to size and metadata without any
-    /// additional round-trip.
+    /// `info` is forwarded verbatim from the sender's `stream_start` call.
     ///
-    /// Fired on both sender and receiver sides; clients distinguish by
-    /// whether they initiated the stream_start or not.
+    /// Fired on both sender and receiver sides.
     oneway void stream_started(
         1: string     uuid,
         2: StreamInfo info,
@@ -250,7 +267,7 @@ service QueLayCallback {
     /// Periodic progress update while a stream is active.
     ///
     /// `progress.percent_done` is present only when the sender supplied
-    /// `StreamInfo.size_bytes` at `stream_start`; absent for open-ended streams.
+    /// `StreamInfo.size_bytes` at `stream_start`.
     oneway void stream_progress(
         1: string       uuid,
         2: ProgressInfo progress),
@@ -259,19 +276,11 @@ service QueLayCallback {
     ///
     /// Sender side: fired when the client closes the write socket (EOF sent).
     /// Receiver side: fired when QUIC stream read returns EOF.
-    /// Quelay closes the ephemeral port after this call returns.
-    /// Receivers should verify `info.attrs["sha256"]` if the sender
-    /// populated that field.
     oneway void stream_done(
         1: string uuid,
         2: i64    bytes_transferred),
 
     /// Fired when a stream terminates abnormally.
-    ///
-    /// Fired on both sides of the wormhole: the receiver fires it locally
-    /// when a write to the client socket fails, and also sends a WormholeMsg
-    /// back across the QUIC stream so the sender agent can fire it on the
-    /// sender side.
     ///
     /// `code` allows polyglot clients to switch on the failure type.
     /// `reason` carries a human-readable detail string for logging.
@@ -281,9 +290,6 @@ service QueLayCallback {
         3: string     reason),
 
     /// Fired on link state changes (Connecting, Normal, Degraded, Failed).
-    ///
-    /// Clients can use this to gate writes, alert operators, or feed
-    /// observability tooling (Prometheus, structured logs).
     oneway void link_status_update(
         1: LinkState link_state),
 
