@@ -502,6 +502,22 @@ impl SessionManager {
         // ---
         tracing::info!(enabled, "link_enable");
         self.link_enabled.store(enabled, Ordering::Relaxed);
+
+        if !enabled {
+            // Close the live QUIC session. This calls set_link_state(Failed)
+            // on the session, which fires link_state_rx.changed() and wakes
+            // the reconnect loop in run().  The pump is also gated by
+            // link_enabled via BandwidthGate so writes return an error,
+            // sending the pump into stream_rx.recv() to await a new stream.
+            let session = {
+                let guard = self.remote.lock().await;
+                guard.as_ref().and_then(|r| r.session.clone())
+            };
+            if let Some(s) = session {
+                tracing::info!("link_enable(false) — closing session to trigger reconnect loop");
+                let _ = s.close().await;
+            }
+        }
     }
 
     // ---

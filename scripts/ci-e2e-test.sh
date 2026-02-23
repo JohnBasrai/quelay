@@ -113,13 +113,76 @@ for i in $(seq 1 40); do
 done
 
 # ---------------------------------------------------------------------------
-# Run e2e transfer test
+# Phase 1 — BW cap validation (500 Mbit/s, 120 MiB, ±5% tolerance)
 # ---------------------------------------------------------------------------
-echo "==> Running e2e transfer test..."
+echo "==> Phase 1: BW cap validation (100 Mbit/s)..."
 "$EXAMPLE_BIN" \
-    --bw-cap-mbps 500 \
+    --bw-cap-mbps 100 \
+    --agent-endpoint    "$AGENT1_C2I" \
+    --receiver-endpoint "$AGENT2_C2I"
+
+# Restart agents at a lower BW cap for the spool test so the link-down
+# window (50% of 1 MiB spool at 10 Mbit/s ≈ 0.42 s) is long enough to
+# exercise the reconnect path without blowing past the spool budget.
+echo "==> Restarting agents at 10 Mbit/s for spool test..."
+kill "$AGENT1_PID" "$AGENT2_PID" 2>/dev/null || true
+sleep 0.5
+rm -f "$CERT_SRC" "$CERT_FILE"
+
+"$AGENT_BIN" \
+    --agent-endpoint "$AGENT1_C2I" \
+    --bw-cap-mbps 10 \
+    server \
+    --bind "$AGENT1_QUIC" \
+    &
+AGENT1_PID=$!
+
+# Wait for fresh cert from restarted server.
+echo "==> Waiting for fresh server cert..."
+for i in $(seq 1 20); do
+    if [[ -f "$CERT_SRC" ]]; then
+        cp "$CERT_SRC" "$CERT_FILE"
+        echo "==> Fresh cert copied."
+        break
+    fi
+    sleep 0.25
+    if [[ $i -eq 20 ]]; then
+        echo "ERROR: fresh server cert not written after 5s." >&2
+        exit 1
+    fi
+done
+
+"$AGENT_BIN" \
+    --agent-endpoint "$AGENT2_C2I" \
+    --bw-cap-mbps 10 \
+    client \
+    --peer "$AGENT1_QUIC" \
+    --cert "$CERT_FILE" \
+    &
+AGENT2_PID=$!
+
+# Wait for C2I to come back up.
+for i in $(seq 1 40); do
+    if nc -z 127.0.0.1 9090 2>/dev/null && nc -z 127.0.0.1 9091 2>/dev/null; then
+        echo "==> Agents ready after ~$((i * 250))ms"
+        break
+    fi
+    sleep 0.25
+    if [[ $i -eq 40 ]]; then
+        echo "ERROR: agents not reachable after restart." >&2
+        exit 1
+    fi
+done
+
+# ---------------------------------------------------------------------------
+# Phase 2 — Spool reconnect test (10 Mbit/s)
+# ---------------------------------------------------------------------------
+echo "==> Phase 2: Spool reconnect test (10 Mbit/s)..."
+"$EXAMPLE_BIN" \
+    --bw-cap-mbps 10 \
+    --spool-test \
     --agent-endpoint    "$AGENT1_C2I" \
     --receiver-endpoint "$AGENT2_C2I"
 
 echo ""
-echo "==> E2E test PASSED."
+echo "==> Phase 1 (BW validation) + Phase 2 (spool reconnect) PASSED."

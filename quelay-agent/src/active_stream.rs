@@ -525,12 +525,25 @@ async fn run_tcp_reader(
 
     loop {
         // Block until spool has space for one full chunk.
+        let mut logged_full = false;
         loop {
             if spool.lock().await.available() >= CHUNK_SIZE {
                 break;
             }
-            tracing::warn!(%uuid, "uplink: spool full — pausing TCP reader");
+            if !logged_full {
+                tracing::warn!(
+                    %uuid,
+                    spool_capacity = SPOOL_CAPACITY,
+                    "uplink: spool full — pausing TCP reader",
+                );
+                logged_full = true;
+            } else {
+                tracing::trace!(%uuid, "uplink: spool still full — waiting");
+            }
             space_ready.notified().await;
+        }
+        if logged_full {
+            tracing::info!(%uuid, "uplink: spool space available — resuming TCP reader");
         }
 
         match tcp.read(&mut tcp_buf).await {
@@ -574,20 +587,121 @@ async fn run_quic_pump(
     cb_tx: CallbackTx,
 ) {
     // ---
-    // Receive the initial QUIC stream from spawn_uplink.
-    let mut quic = match stream_rx.recv().await {
+    // Receive the initial QUIC stream from spawn_uplink and split into
+    // independent read/write halves so they can be borrowed concurrently.
+    // WormholeMsg variants the ack reader task forwards to the pump.
+    enum AckMsg {
+        Ack { bytes_received: u64 },
+        Done,
+        Error { code: u32, reason: String },
+        StreamError(String),
+    }
+
+    // Spawn a dedicated ack-reader task that owns quic_rx exclusively.
+    // This decouples ack reading from QUIC write back-pressure: even when
+    // write_chunk is blocked waiting for quinn's send buffer to drain, the
+    // ack task keeps running and forwarding acks via the channel so
+    // space_ready gets notified and the TCP reader stays unblocked.
+    //
+    // On reconnect the pump sends a new quic_rx over stream_ack_tx and the
+    // ack task loops back to read from the new half.
+    let (stream_ack_tx, mut stream_ack_rx) =
+        mpsc::channel::<tokio::io::ReadHalf<QueLayStreamPtr>>(1);
+    let (ack_tx, mut ack_rx) = mpsc::channel::<AckMsg>(32);
+
+    {
+        let ack_tx = ack_tx.clone();
+        let uuid = uuid.clone();
+        tokio::spawn(async move {
+            loop {
+                // Wait for a (new) read half from the pump.
+                let mut rx = match stream_ack_rx.recv().await {
+                    Some(r) => r,
+                    None => return, // pump dropped, exit
+                };
+                // Forward wormhole messages until the stream errors.
+                loop {
+                    let msg = match read_wormhole_msg(&mut rx).await {
+                        Ok(WormholeMsg::Ack { bytes_received }) => {
+                            tracing::debug!(%uuid, bytes_received, "uplink: receiver ack");
+                            AckMsg::Ack { bytes_received }
+                        }
+                        Ok(WormholeMsg::Done) => {
+                            tracing::info!(%uuid, "uplink: receiver done (ack task)");
+                            let _ = ack_tx.send(AckMsg::Done).await;
+                            return; // done is terminal
+                        }
+                        Ok(WormholeMsg::Error { code, reason }) => {
+                            tracing::warn!(%uuid, code, %reason, "uplink: receiver error (ack task)");
+                            let _ = ack_tx.send(AckMsg::Error { code, reason }).await;
+                            return;
+                        }
+                        Err(e) => {
+                            // Stream error — send notification and break to wait
+                            // for a new read half from the pump on reconnect.
+                            tracing::debug!(%uuid, "uplink: ack task stream error: {e}");
+                            let _ = ack_tx.send(AckMsg::StreamError(e.to_string())).await;
+                            break;
+                        }
+                    };
+                    if ack_tx.send(msg).await.is_err() {
+                        return; // pump dropped
+                    }
+                }
+            }
+        });
+    }
+
+    // Send the initial read half to the ack task.
+    let initial = match stream_rx.recv().await {
         Some(s) => s,
         None => {
             tracing::warn!(%uuid, "uplink pump: stream_tx dropped before initial stream");
             return;
         }
     };
+    let (initial_rx, mut quic_tx) = tokio::io::split(initial);
+    if stream_ack_tx.send(initial_rx).await.is_err() {
+        return;
+    }
 
     // Q: absolute offset of the next byte to write to QUIC.
     let mut q: u64 = 0;
     let mut bytes_sent: u64 = 0;
 
     loop {
+        // --- Drain any pending acks before checking spool ---
+        while let Ok(msg) = ack_rx.try_recv() {
+            match msg {
+                AckMsg::Ack { bytes_received } => {
+                    let mut s = spool.lock().await;
+                    s.ack(bytes_received);
+                    space_ready.notify_one();
+                }
+                AckMsg::Done => {
+                    tracing::info!(%uuid, bytes = bytes_sent, "uplink: receiver done");
+                    cb_tx
+                        .send(CallbackCmd::StreamDone {
+                            uuid,
+                            bytes: bytes_sent,
+                        })
+                        .await;
+                    return;
+                }
+                AckMsg::Error { code, reason } => {
+                    cb_tx
+                        .send(CallbackCmd::StreamFailed {
+                            uuid,
+                            code: FailReason(code as i32),
+                            reason,
+                        })
+                        .await;
+                    return;
+                }
+                AckMsg::StreamError(_) => {} // pump will handle via write error
+            }
+        }
+
         // --- Wait for data in spool (Q < T) ---
         loop {
             let s = spool.lock().await;
@@ -596,28 +710,53 @@ async fn run_quic_pump(
                 break;
             }
             drop(s);
-            data_ready.notified().await;
+            // Also wake on ack so we can drain and recheck.
+            tokio::select! {
+                _ = data_ready.notified() => {}
+                msg = ack_rx.recv() => {
+                    if let Some(msg) = msg {
+                        match msg {
+                            AckMsg::Ack { bytes_received } => {
+                                let mut s = spool.lock().await;
+                                s.ack(bytes_received);
+                                space_ready.notify_one();
+                            }
+                            AckMsg::Done => {
+                                tracing::info!(%uuid, bytes = bytes_sent, "uplink: receiver done");
+                                cb_tx.send(CallbackCmd::StreamDone { uuid, bytes: bytes_sent }).await;
+                                return;
+                            }
+                            AckMsg::Error { code, reason } => {
+                                cb_tx.send(CallbackCmd::StreamFailed {
+                                    uuid, code: FailReason(code as i32), reason,
+                                }).await;
+                                return;
+                            }
+                            AckMsg::StreamError(_) => {}
+                        }
+                    }
+                }
+            }
         }
 
-        let (head, a, chunk) = {
+        let (head, chunk) = {
             let s = spool.lock().await;
-            // Collect a contiguous slice from Q.
             let chunk: Vec<u8> = s.slice_from(q).to_vec();
-            (s.head, s.bytes_acked, chunk)
+            (s.head, chunk)
         };
 
         // --- EOF sentinel: spool drained, shutdown QUIC write half ---
         if head == u64::MAX && chunk.is_empty() {
             tracing::info!(%uuid, bytes = bytes_sent, "uplink: flushed, shutting down QUIC stream");
-            let _ = quic.shutdown().await;
-            // Wait for WormholeMsg::Done from receiver.
+            let _ = quic_tx.shutdown().await;
+            // Drain remaining acks/done from ack task.
             loop {
-                match read_wormhole_msg(&mut quic).await {
-                    Ok(WormholeMsg::Ack { bytes_received }) => {
+                match ack_rx.recv().await {
+                    Some(AckMsg::Ack { bytes_received }) => {
                         spool.lock().await.ack(bytes_received);
                         space_ready.notify_one();
                     }
-                    Ok(WormholeMsg::Done) => {
+                    Some(AckMsg::Done) => {
                         tracing::info!(%uuid, bytes = bytes_sent, "uplink: receiver done");
                         cb_tx
                             .send(CallbackCmd::StreamDone {
@@ -627,8 +766,7 @@ async fn run_quic_pump(
                             .await;
                         return;
                     }
-                    Ok(WormholeMsg::Error { code, reason }) => {
-                        tracing::warn!(%uuid, code, %reason, "uplink: receiver error");
+                    Some(AckMsg::Error { code, reason }) => {
                         cb_tx
                             .send(CallbackCmd::StreamFailed {
                                 uuid,
@@ -638,7 +776,7 @@ async fn run_quic_pump(
                             .await;
                         return;
                     }
-                    Err(e) => {
+                    Some(AckMsg::StreamError(e)) => {
                         tracing::warn!(%uuid, "uplink: wormhole closed after EOF: {e}");
                         cb_tx
                             .send(CallbackCmd::StreamFailed {
@@ -649,34 +787,29 @@ async fn run_quic_pump(
                             .await;
                         return;
                     }
+                    None => {
+                        tracing::warn!(%uuid, "uplink: ack task exited unexpectedly");
+                        cb_tx
+                            .send(CallbackCmd::StreamFailed {
+                                uuid,
+                                code: FailReason::LINK_FAILED,
+                                reason: "ack task exited".into(),
+                            })
+                            .await;
+                        return;
+                    }
                 }
             }
-        }
-
-        // --- Check spool capacity while link is down ---
-        if (head != u64::MAX) && ((head - a) as usize >= SPOOL_CAPACITY) {
-            tracing::error!(
-                %uuid,
-                held = head - a,
-                "uplink: spool capacity exceeded — failing stream (increase SPOOL_CAPACITY)",
-            );
-            cb_tx
-                .send(CallbackCmd::StreamFailed {
-                    uuid,
-                    code: FailReason::UNKNOWN,
-                    reason: "spool capacity exceeded — link outage bridging window exhausted"
-                        .into(),
-                })
-                .await;
-            return;
         }
 
         if chunk.is_empty() {
             continue;
         }
 
-        // --- Write chunk to QUIC (framed with stream offset) ---
-        if let Err(e) = write_chunk(&mut quic, q, &chunk).await {
+        // --- Write chunk to QUIC ---
+        // Acks arrive independently via the ack task channel so write_chunk
+        // can block on flow-control without starving ack processing.
+        if let Err(e) = write_chunk(&mut quic_tx, q, &chunk).await {
             tracing::warn!(%uuid, "uplink: QUIC write error: {e} — waiting for reconnect");
 
             // Rewind Q to A — replay from last-acked byte on new stream.
@@ -686,7 +819,13 @@ async fn run_quic_pump(
             match stream_rx.recv().await {
                 Some(new_stream) => {
                     tracing::info!(%uuid, replay_from = q, "uplink: new stream — replaying spool");
-                    quic = new_stream;
+                    let (rx, tx) = tokio::io::split(new_stream);
+                    // Hand new read half to ack task.
+                    if stream_ack_tx.send(rx).await.is_err() {
+                        tracing::warn!(%uuid, "uplink: ack task gone on reconnect");
+                        return;
+                    }
+                    quic_tx = tx;
                 }
                 None => {
                     tracing::warn!(%uuid, "uplink: stream handle dropped — failing stream");
@@ -700,42 +839,42 @@ async fn run_quic_pump(
                     return;
                 }
             }
-            // Q is at A — outer loop will replay from there.
             continue;
         }
 
         q += chunk.len() as u64;
         bytes_sent += chunk.len() as u64;
 
-        // --- Non-blocking wormhole poll ---
-        tokio::select! {
-            biased;
-            result = read_wormhole_msg(&mut quic) => {
-                match result {
-                    Ok(WormholeMsg::Ack { bytes_received }) => {
-                        let mut s = spool.lock().await;
-                        s.ack(bytes_received);
-                        space_ready.notify_one();
-                        tracing::debug!(%uuid, bytes_received, "uplink: receiver ack");
-                    }
-                    Ok(WormholeMsg::Done) => {
-                        tracing::info!(%uuid, bytes = bytes_sent, "uplink: receiver done early");
-                        cb_tx.send(CallbackCmd::StreamDone { uuid, bytes: bytes_sent }).await;
-                        return;
-                    }
-                    Ok(WormholeMsg::Error { code, reason }) => {
-                        tracing::warn!(%uuid, code, %reason, "uplink: receiver error");
-                        cb_tx.send(CallbackCmd::StreamFailed {
+        // Drain acks that arrived during the write.
+        while let Ok(msg) = ack_rx.try_recv() {
+            match msg {
+                AckMsg::Ack { bytes_received } => {
+                    let mut s = spool.lock().await;
+                    s.ack(bytes_received);
+                    space_ready.notify_one();
+                }
+                AckMsg::Done => {
+                    tracing::info!(%uuid, bytes = bytes_sent, "uplink: receiver done");
+                    cb_tx
+                        .send(CallbackCmd::StreamDone {
+                            uuid,
+                            bytes: bytes_sent,
+                        })
+                        .await;
+                    return;
+                }
+                AckMsg::Error { code, reason } => {
+                    cb_tx
+                        .send(CallbackCmd::StreamFailed {
                             uuid,
                             code: FailReason(code as i32),
                             reason,
-                        }).await;
-                        return;
-                    }
-                    Err(_) => { /* wormhole not ready — keep pumping */ }
+                        })
+                        .await;
+                    return;
                 }
+                AckMsg::StreamError(_) => {}
             }
-            _ = tokio::time::sleep(std::time::Duration::ZERO) => {}
         }
     }
 }

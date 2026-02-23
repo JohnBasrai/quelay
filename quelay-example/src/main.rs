@@ -128,10 +128,14 @@ async fn main() -> anyhow::Result<()> {
 
     if let (Some(sender), Some(receiver)) = (cfg.agent_endpoint, cfg.receiver_endpoint) {
         println!();
-        e2e_demo::run(sender, receiver, cfg.bw_cap()).await?;
-
         if cfg.spool_test {
-            e2e_demo::run_spool_test(sender, receiver, cfg.bw_cap()).await?;
+            // Phase 2: spool test requires a cap to derive timing.
+            let cap = cfg.bw_cap_mbps;
+            anyhow::ensure!(cap > 0, "--spool-test requires --bw-cap-mbps > 0");
+            e2e_demo::run_spool_test(sender, receiver, cap).await?;
+        } else {
+            // Phase 1: straight transfer + BW validation.
+            e2e_demo::run(sender, receiver, cfg.bw_cap()).await?;
         }
     } else if cfg.spool_test {
         anyhow::bail!("--spool-test requires both --agent-endpoint and --receiver-endpoint");

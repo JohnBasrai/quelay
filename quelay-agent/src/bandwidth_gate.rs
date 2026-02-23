@@ -94,7 +94,7 @@ impl TokenBucket {
 
     // ---
 
-    /// Refill from elapsed time, then consume up to `n` bytes.
+    /// Refill, then consume up to `n` bytes.
     ///
     /// Returns the number of bytes actually consumed; `0` means the bucket
     /// is empty and the caller should yield and retry.
@@ -111,6 +111,18 @@ impl TokenBucket {
         let consumed = (self.tokens as usize).min(n);
         self.tokens -= consumed as f64;
         consumed
+    }
+
+    /// How long until at least `n` bytes are available in the bucket.
+    ///
+    /// Used by [`BandwidthGate::poll_write`] to schedule a precise sleep
+    /// instead of busy-looping on `Poll::Pending`.
+    pub(crate) fn time_to_fill(&self, n: usize) -> std::time::Duration {
+        // ---
+        let needed = (n as f64 - self.tokens).max(0.0);
+        let secs = needed / self.rate_bps as f64;
+        // Add a small margin so the refill is definitely ready on wake.
+        std::time::Duration::from_secs_f64(secs + 0.0005)
     }
 }
 
@@ -201,10 +213,20 @@ impl<S: AsyncWrite + Unpin> AsyncWrite for BandwidthGate<S> {
         };
 
         if allowed == 0 {
-            // Bucket empty — reschedule immediately so tokens can refill
-            // before the next poll.  This yields the task without blocking
-            // the executor thread.
-            cx.waker().wake_by_ref();
+            // Bucket empty — sleep until enough tokens have refilled rather
+            // than busy-looping with wake_by_ref.  A busy-loop starves other
+            // tasks on the same executor thread, preventing the downlink from
+            // sending acks and the TCP reader from being unblocked.
+            let delay = self
+                .bucket
+                .as_ref()
+                .map(|b| b.time_to_fill(data.len()))
+                .unwrap_or(std::time::Duration::from_millis(1));
+            let waker = cx.waker().clone();
+            tokio::spawn(async move {
+                tokio::time::sleep(delay).await;
+                waker.wake();
+            });
             return Poll::Pending;
         }
 
