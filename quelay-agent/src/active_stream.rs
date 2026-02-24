@@ -56,6 +56,7 @@
 //! at the end.
 
 use std::collections::VecDeque;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -253,6 +254,10 @@ pub struct DownlinkHandle {
     /// Deliver a fresh `QueLayStreamPtr` here after reconnect.
     /// Drop the sender to permanently fail the stream.
     pub stream_tx: mpsc::Sender<QueLayStreamPtr>,
+    /// Live count of bytes the pump has written to the TCP client.
+    /// Updated atomically by `run_downlink`; read by `accept_loop` to
+    /// validate `replay_from` before delivering a reconnect stream.
+    pub bytes_written: Arc<AtomicU64>,
 }
 
 // ---------------------------------------------------------------------------
@@ -388,7 +393,12 @@ impl ActiveStream {
         let (stream_tx, stream_rx) = mpsc::channel::<QueLayStreamPtr>(1);
         let _ = stream_tx.try_send(quic);
 
-        let handle = DownlinkHandle { stream_tx };
+        let bytes_written = Arc::new(AtomicU64::new(0));
+
+        let handle = DownlinkHandle {
+            stream_tx,
+            bytes_written: Arc::clone(&bytes_written),
+        };
 
         let actor = ActiveStream {
             uuid,
@@ -396,7 +406,7 @@ impl ActiveStream {
             cb_tx,
         };
 
-        tokio::spawn(async move { actor.run_downlink(listener, stream_rx).await });
+        tokio::spawn(async move { actor.run_downlink(listener, stream_rx, bytes_written).await });
 
         Ok(handle)
     }
@@ -416,11 +426,11 @@ impl ActiveStream {
         // ---
         handle: &DownlinkHandle,
         replay_from: u64,
-        bytes_written: u64,
         new_stream: QueLayStreamPtr,
         uuid: Uuid,
     ) {
         // ---
+        let bytes_written = handle.bytes_written.load(Ordering::Acquire);
         if replay_from > bytes_written {
             tracing::error!(
                 %uuid,
@@ -428,8 +438,6 @@ impl ActiveStream {
                 bytes_written,
                 "downlink: reconnect gap — sender freed spool data receiver never saw; failing stream",
             );
-            // Drop the new_stream without delivering it.  The pump will
-            // detect the closed sender on its next stream_rx.recv() and fail.
             drop(new_stream);
             return;
         }
@@ -448,6 +456,7 @@ impl ActiveStream {
         self,
         listener: TcpListener,
         mut stream_rx: mpsc::Receiver<QueLayStreamPtr>,
+        bytes_written_atomic: Arc<AtomicU64>,
     ) {
         // ---
         let uuid = self.uuid;
@@ -596,6 +605,7 @@ impl ActiveStream {
                             return;
                         }
                         bytes_written += to_write.len() as u64;
+                        bytes_written_atomic.store(bytes_written, Ordering::Release);
 
                         while bytes_written >= next_progress {
                             let percent =

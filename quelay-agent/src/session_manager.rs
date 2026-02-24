@@ -423,7 +423,10 @@ impl SessionManager {
                         Ok(handle) => {
                             let mut guard = self.remote.lock().await;
                             if let Some(r) = guard.as_mut() {
+                                tracing::debug!(%uuid, "downlink: inserting handle into active_downlinks");
                                 r.active_downlinks.insert(uuid, handle);
+                            } else {
+                                tracing::warn!(%uuid, "downlink: remote is None after spawn — handle dropped, stream will not reconnect");
                             }
                         }
                         Err(e) => {
@@ -444,14 +447,18 @@ impl SessionManager {
                             }
                             alive
                         });
+                        tracing::debug!(
+                            uuid = %h.uuid,
+                            n_downlinks = remote.active_downlinks.len(),
+                            known_uuids = ?remote.active_downlinks.keys().collect::<Vec<_>>(),
+                            "accept_loop: active_downlinks at reconnect"
+                        );
                         if let Some(handle) = remote.active_downlinks.get(&h.uuid) {
-                            // bytes_written is maintained inside the pump task —
-                            // we pass replay_from and trust the pump to validate.
-                            // deliver_reconnect_stream does the gap check.
+                            // bytes_written is read from the handle's shared
+                            // atomic — the pump keeps it live as it writes.
                             ActiveStream::deliver_reconnect_stream(
                                 handle,
                                 h.replay_from,
-                                h.replay_from, // conservative: assume pump has at least this
                                 stream,
                                 h.uuid,
                             );

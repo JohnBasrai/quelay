@@ -86,7 +86,7 @@ const BW_TOLERANCE_HIGH: f64 = 1.10;
 /// Minimum transfer size for a meaningful BW check.  Transfers smaller than
 /// this complete too quickly for the token bucket to shape them, so we skip
 /// the ±10% assertion rather than raise a spurious error.
-const MIN_BW_TEST_BYTES: usize = 1024 * 1024; // 1 MiB
+const MIN_BW_TEST_BYTES: usize = 1024 * 1024; // 512 KiB
 
 /// Bytes written before disabling the link in the spool reconnect path.
 /// Matches the agent's default spool capacity (1 MiB).
@@ -382,6 +382,38 @@ impl TestCallbackServer {
         self.rx
             .recv_timeout(timeout)
             .map_err(|e| anyhow::anyhow!("test callback recv timeout: {e}"))
+    }
+
+    /// Like `recv_event`, but discards events whose UUID does not match
+    /// `uuid`.  Use when multiple streams are active on a single callback
+    /// endpoint and you need events for one specific stream.
+    fn recv_event_for(&self, uuid: &str, timeout: Duration) -> anyhow::Result<TestCallbackEvent> {
+        let deadline = std::time::Instant::now() + timeout;
+        loop {
+            let remaining = deadline
+                .checked_duration_since(std::time::Instant::now())
+                .ok_or_else(|| {
+                    anyhow::anyhow!("test callback recv timeout waiting for uuid={uuid}")
+                })?;
+            let event = self.rx.recv_timeout(remaining).map_err(|e| {
+                anyhow::anyhow!("test callback recv timeout waiting for uuid={uuid}: {e}")
+            })?;
+            let event_uuid = match &event {
+                TestCallbackEvent::Started { uuid, .. } => Some(uuid.as_str()),
+                TestCallbackEvent::Done { uuid, .. } => Some(uuid.as_str()),
+                TestCallbackEvent::Failed { uuid, .. } => Some(uuid.as_str()),
+                TestCallbackEvent::LinkState(_) => None,
+            };
+            if event_uuid.map_or(false, |u| u == uuid) {
+                return Ok(event);
+            }
+            // Not our stream — discard and keep waiting.
+            tracing::debug!(
+                event_uuid = ?event_uuid,
+                wanted = uuid,
+                "recv_event_for: discarding event for other stream"
+            );
+        }
     }
 }
 
@@ -1048,7 +1080,7 @@ async fn cmd_drr(
         }
     }
 
-    let anchor_port = match anchor_cb.recv_event(timeout)? {
+    let anchor_port = match anchor_cb.recv_event_for(&anchor_uuid, timeout)? {
         TestCallbackEvent::Started { port, .. } => port,
         other => anyhow::bail!("drr anchor: expected Started, got {other:?}"),
     };
@@ -1060,7 +1092,7 @@ async fn cmd_drr(
         Ok(())
     });
 
-    let receiver_port = match receiver_cb.recv_event(timeout)? {
+    let receiver_port = match receiver_cb.recv_event_for(&anchor_uuid, timeout)? {
         TestCallbackEvent::Started { port, .. } => port,
         other => anyhow::bail!("drr anchor receiver: expected Started, got {other:?}"),
     };
@@ -1072,14 +1104,14 @@ async fn cmd_drr(
         tcp.read_to_end(&mut received)?;
     }
 
-    match receiver_cb.recv_event(timeout)? {
+    match receiver_cb.recv_event_for(&anchor_uuid, timeout)? {
         TestCallbackEvent::Done { .. } => {}
         TestCallbackEvent::Failed { reason, .. } => {
             anyhow::bail!("drr anchor receiver stream_failed: {reason}")
         }
         other => anyhow::bail!("drr anchor receiver: expected Done, got {other:?}"),
     }
-    match anchor_cb.recv_event(timeout)? {
+    match anchor_cb.recv_event_for(&anchor_uuid, timeout)? {
         TestCallbackEvent::Done { .. } => {}
         TestCallbackEvent::Failed { reason, .. } => {
             anyhow::bail!("drr anchor sender stream_failed: {reason}")
