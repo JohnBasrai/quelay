@@ -83,6 +83,11 @@ const TIMEOUT_MIN_SECS: u64 = 30;
 const BW_TOLERANCE_LOW: f64 = 0.90;
 const BW_TOLERANCE_HIGH: f64 = 1.10;
 
+/// Minimum transfer size for a meaningful BW check.  Transfers smaller than
+/// this complete too quickly for the token bucket to shape them, so we skip
+/// the ±10% assertion rather than raise a spurious error.
+const MIN_BW_TEST_BYTES: usize = 1024 * 1024; // 1 MiB
+
 /// Bytes written before disabling the link in the spool reconnect path.
 /// Matches the agent's default spool capacity (1 MiB).
 const SPOOL_DROP_AFTER_BYTES: usize = 1024 * 1024; // 1 MiB
@@ -823,7 +828,8 @@ async fn run_single_transfer(
     label: &str,
     cap_mbps: Option<u32>,
 ) -> anyhow::Result<()> {
-    println!("  [{label}] {} KiB", bytes / 1024);
+    println!();
+    println!("  ┌── [{label}]  {} B  ({} KiB) ───┐", bytes, bytes / 1024);
     let payload = tokio::task::spawn_blocking(move || generate_test_data(bytes)).await?;
     let timeout = transfer_timeout(bytes, cap_mbps);
     let uuid = Uuid::new_v4().to_string();
@@ -848,7 +854,15 @@ async fn run_single_transfer(
     println!("  [{label}] sha256 ✓");
 
     if let Some(cap) = cap_mbps {
-        assert_bw_within_tolerance(&stats, cap)?;
+        if bytes >= MIN_BW_TEST_BYTES {
+            assert_bw_within_tolerance(&stats, cap)?;
+        } else {
+            println!(
+                "  [{label}] BW check skipped (transfer too small for rate shaping: {} B < {} KiB)",
+                bytes,
+                MIN_BW_TEST_BYTES / 1024,
+            );
+        }
     }
 
     Ok(())

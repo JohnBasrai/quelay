@@ -239,10 +239,10 @@ impl TimerTask {
                         }
                         Some(RateCmd::LinkUp(_)) => {
                             // Unexpected LinkUp outside of wait_for_link_up.
-                            tracing::warn!("timer task: unexpected LinkUp in running state — ignoring");
+                            tracing::debug!("timer task: unexpected LinkUp in running state — ignoring");
                         }
                         Some(RateCmd::Finish) => {
-                            tracing::warn!("timer task: got RateCmd::Finish !!");
+                            tracing::debug!("timer task: got RateCmd::Finish !!");
                             self.finishing = true;
                             continue;
                         }

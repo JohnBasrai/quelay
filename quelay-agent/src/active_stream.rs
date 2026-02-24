@@ -96,6 +96,11 @@ use super::{
 /// TODO: wire to per-stream or global config.
 const SPOOL_CAPACITY: usize = 1024 * 1024; // 1 MiB
 
+/// How often to fire [`CallbackCmd::StreamProgress`] on both uplink and
+/// downlink, measured in bytes transferred.  Fires once per interval boundary
+/// crossed, so a 10 MiB transfer at this default produces ~10 callbacks.
+const PROGRESS_INTERVAL_BYTES: u64 = 1024 * 1024; // 1 MiB
+
 // ---------------------------------------------------------------------------
 // SpoolBuffer
 // ---------------------------------------------------------------------------
@@ -338,6 +343,7 @@ impl ActiveStream {
             cb_tx,
             initial_rx,
             rate_limiter,
+            info.size_bytes,
         ));
 
         Ok(handle)
@@ -483,6 +489,8 @@ impl ActiveStream {
 
         let mut bytes_written = 0u64;
         let mut last_acked = 0u64;
+        let mut next_progress: u64 = PROGRESS_INTERVAL_BYTES;
+        let size_bytes = self._info.size_bytes;
 
         // Split the initial QUIC stream.  We need separate halves so that
         // on clean EOF we can shutdown the write half (sending Done + FIN)
@@ -588,6 +596,19 @@ impl ActiveStream {
                             return;
                         }
                         bytes_written += to_write.len() as u64;
+
+                        while bytes_written >= next_progress {
+                            let percent =
+                                size_bytes.map(|total| bytes_written as f64 / total as f64 * 100.0);
+                            self.cb_tx
+                                .send(CallbackCmd::StreamProgress {
+                                    uuid,
+                                    bytes: bytes_written,
+                                    percent,
+                                })
+                                .await;
+                            next_progress += PROGRESS_INTERVAL_BYTES;
+                        }
                     }
 
                     // Periodic ack so the sender can advance its spool `A`.
@@ -766,6 +787,7 @@ async fn run_quic_pump(
     cb_tx: CallbackTx,
     initial_rx: tokio::io::ReadHalf<QueLayStreamPtr>,
     mut rate_limiter: super::rate_limiter::RateLimiter,
+    size_bytes: Option<u64>,
 ) {
     // ---
     // Internal message type forwarded from the ack-reader task to the pump.
@@ -834,6 +856,7 @@ async fn run_quic_pump(
     // Q: absolute offset of the next byte to write to QUIC.
     let mut q: u64 = 0;
     let mut bytes_sent: u64 = 0;
+    let mut next_progress: u64 = PROGRESS_INTERVAL_BYTES;
 
     loop {
         // --- Drain any pending acks before checking spool ---
@@ -1080,6 +1103,21 @@ async fn run_quic_pump(
 
         q += chunk.len() as u64;
         bytes_sent += chunk.len() as u64;
+
+        // Fire progress callback each time we cross a PROGRESS_INTERVAL_BYTES
+        // boundary.  We loop in case a single large chunk spans multiple
+        // intervals (unlikely at 16 KiB chunks, but correct regardless).
+        while bytes_sent >= next_progress {
+            let percent = size_bytes.map(|total| bytes_sent as f64 / total as f64 * 100.0);
+            cb_tx
+                .send(CallbackCmd::StreamProgress {
+                    uuid,
+                    bytes: bytes_sent,
+                    percent,
+                })
+                .await;
+            next_progress += PROGRESS_INTERVAL_BYTES;
+        }
 
         // Drain acks that arrived during the write.
         while let Ok(msg) = ack_rx.try_recv() {
