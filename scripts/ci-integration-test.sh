@@ -129,19 +129,9 @@ stop_agents() {
 
 # ===========================================================================
 # Phase A — 100 Mbit/s
-#   Large file throughput and token bucket accuracy at a high rate.
+#   Large file throughput and rate limiter accuracy at a high rate.
 # ===========================================================================
 start_agents 100
-
-############################################################
-##   Testing token bucket rate limiter accuracy
-##   In-process test: no payload crosses the QUIC link.
-##   Verifies realized rate is within ±10% of the 100 Mbit/s cap.
-############################################################
-"$E2E_BIN" \
-    --sender-c2i "$AGENT1_C2I" \
-    --receiver-c2i "$AGENT2_C2I" \
-    rate-limiter
 
 ############################################################
 ##   Testing 3 large files at 100 Mbit/s

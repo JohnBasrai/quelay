@@ -10,7 +10,6 @@
 //! e2e_test [OPTIONS] <SUBCOMMAND>
 //!
 //! SUBCOMMANDS:
-//!   rate-limiter          Token bucket accuracy (no agents required)
 //!   multi-file            Multi-file transfer — large, small, link-outage, link-fail
 //!   drr                   DRR scheduler priority ordering
 //!   small-file-edge-cases Framing boundary file sizes
@@ -84,7 +83,7 @@ const BW_TOLERANCE_LOW: f64 = 0.90;
 const BW_TOLERANCE_HIGH: f64 = 1.10;
 
 /// Minimum transfer size for a meaningful BW check.  Transfers smaller than
-/// this complete too quickly for the token bucket to shape them, so we skip
+/// this complete too quickly for the rate limiter to shape them, so we skip
 /// the ±10% assertion rather than raise a spurious error.
 const MIN_BW_TEST_BYTES: usize = 1024 * 1024; // 512 KiB
 
@@ -95,10 +94,6 @@ const SPOOL_DROP_AFTER_BYTES: usize = 1024 * 1024; // 1 MiB
 /// Fraction of spool capacity to fill during the link-down window.
 const SPOOL_FILL_FRACTION: f64 = 0.50;
 
-/// Chunk size used for the in-process rate-limiter accuracy test.
-/// Matches the agent's default CHUNK_SIZE (16 KiB).
-const RATE_TEST_CHUNK_SIZE: usize = 16 * 1024; // 16 KiB
-
 // ---------------------------------------------------------------------------
 // CLI
 // ---------------------------------------------------------------------------
@@ -106,7 +101,7 @@ const RATE_TEST_CHUNK_SIZE: usize = 16 * 1024; // 16 KiB
 /// Quelay integration test suite.
 ///
 /// Requires two running quelay-agents accessible at --sender-c2i and
-/// --receiver-c2i (except `rate-limiter`, which is in-process).
+/// --receiver-c2i
 ///
 /// See quelay-agent/src/bin/README.md for full design rationale, timing
 /// derivation, and mapping to the legacy C++ test suite.
@@ -136,9 +131,6 @@ struct Cli {
 #[derive(Debug, Subcommand)]
 enum Command {
     // ---
-    /// Test token bucket rate limiter accuracy (in-process, no agents required).
-    RateLimiter,
-
     /// Multi-file transfer: large files, small files, link outage, link failure.
     MultiFile(MultiFileArgs),
 
@@ -707,78 +699,6 @@ fn assert_bw_within_tolerance(stats: &TransferStats, cap_mbps: u32) -> anyhow::R
 }
 
 // ---------------------------------------------------------------------------
-// Subcommand: rate-limiter
-// ---------------------------------------------------------------------------
-
-/// In-process token bucket accuracy test.
-///
-/// Simulates the token bucket by sleeping proportionally between chunks and
-/// asserts the realized throughput falls within ±10% of the configured rate.
-async fn cmd_rate_limiter(sender_c2i: SocketAddr) -> anyhow::Result<()> {
-    // ---
-
-    println!("=== rate-limiter ===");
-
-    ensure_agent_running(sender_c2i)?;
-
-    let cap_mbps = match query_cap(sender_c2i)? {
-        Some(v) => v,
-        None => {
-            println!("  agent is uncapped — skipping rate-limiter accuracy test");
-            return Ok(());
-        }
-    };
-
-    let cap_bytes_per_sec = cap_mbps as f64 * 1_000_000.0 / 8.0;
-    let test_bytes = (cap_bytes_per_sec * 5.0) as usize;
-
-    println!(
-        "  cap: {cap_mbps} Mbit/s   payload: {} KiB   expected duration: ~5s",
-        test_bytes / 1024
-    );
-
-    let t_start = tokio::time::Instant::now();
-    let mut sent = 0usize;
-    let mut chunk_idx = 0u64;
-
-    while sent < test_bytes {
-        let chunk = RATE_TEST_CHUNK_SIZE.min(test_bytes - sent);
-        sent += chunk;
-        chunk_idx += 1;
-        let deadline = t_start
-            + Duration::from_secs_f64(
-                chunk_idx as f64 * RATE_TEST_CHUNK_SIZE as f64 / cap_bytes_per_sec,
-            );
-        tokio::time::sleep_until(deadline).await;
-    }
-
-    let elapsed = t_start.elapsed();
-    let realized_bps = test_bytes as f64 / elapsed.as_secs_f64() * 8.0;
-    let cap_bps = cap_mbps as f64 * 1_000_000.0;
-    let utilize = realized_bps / cap_bps * 100.0;
-
-    println!(
-        "  realized: {:.1} Mbit/s   utilization: {:.1}%   elapsed: {:.3}s",
-        realized_bps / 1_000_000.0,
-        utilize,
-        elapsed.as_secs_f64(),
-    );
-
-    let low = cap_bps * BW_TOLERANCE_LOW;
-    let high = cap_bps * BW_TOLERANCE_HIGH;
-    anyhow::ensure!(
-        realized_bps >= low && realized_bps <= high,
-        "rate-limiter out of ±10% tolerance: realized {:.2} Mbit/s, cap {:.2} Mbit/s",
-        realized_bps / 1_000_000.0,
-        cap_bps / 1_000_000.0,
-    );
-
-    println!("  rate-limiter PASSED ✓");
-    println!();
-    Ok(())
-}
-
-// ---------------------------------------------------------------------------
 // Subcommand: multi-file
 // ---------------------------------------------------------------------------
 
@@ -1222,7 +1142,6 @@ async fn real_main() -> anyhow::Result<()> {
         .init();
 
     match &cli.command {
-        Command::RateLimiter => cmd_rate_limiter(cli.sender_c2i).await?,
         Command::MultiFile(args) => cmd_multi_file(cli.sender_c2i, cli.receiver_c2i, args).await?,
         Command::Drr(args) => cmd_drr(cli.sender_c2i, cli.receiver_c2i, args).await?,
         Command::SmallFileEdgeCases(args) => {
@@ -1277,7 +1196,7 @@ mod tests {
 
     #[test]
     fn defaults_parse_cleanly() {
-        for sub in ["rate-limiter", "drr", "small-file-edge-cases"] {
+        for sub in ["drr", "small-file-edge-cases"] {
             Cli::try_parse_from(["e2e_test", sub])
                 .unwrap_or_else(|e| panic!("{sub} default parse failed: {e}"));
         }

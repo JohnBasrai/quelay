@@ -51,7 +51,7 @@ pub struct Config {
 
     /// Uplink bandwidth cap in Mbit/s.
     ///
-    /// Applied by the token bucket rate limiter on every QUIC write.
+    /// Applied by the rate limiter on every QUIC write.
     /// Set to 0 (default) to disable rate limiting entirely.
     ///
     /// Example: `--bw-cap-mbps 10` caps at 10 Mbit/s (1.25 MB/s).
@@ -95,8 +95,8 @@ impl Config {
 
     /// Convert `bw_cap_mbps` to **bits-per-second**, or `None` if uncapped.
     ///
-    /// The returned value is in bits/s and is passed directly to the token
-    /// bucket, which divides by 8 internally to derive its byte budget.
+    /// The returned value is in bits/s and is passed directly to the rate
+    /// limiter, which divides by 8 internally to derive its byte budget.
     pub fn bw_cap_bps(&self) -> Option<u64> {
         if self.bw_cap_mbps == 0 {
             None

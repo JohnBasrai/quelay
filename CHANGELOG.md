@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [0.1.1] - 2026-02-24
+
+### Removed
+- `e2e_test rate-limiter` subcommand — rate limiter accuracy is validated
+  end-to-end by the ±10% BW utilization assertion in `multi-file --large`
+
 ## [0.1.0] - 2026-02-24
 
 ### Added

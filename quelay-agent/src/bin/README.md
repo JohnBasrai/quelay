@@ -57,7 +57,6 @@ GLOBAL OPTIONS:
     --debug                 Run with RUST_LOG=debug
 
 SUBCOMMANDS:
-    rate-limiter            Token bucket accuracy test (no agents required)
     multi-file              Multi-file transfer test — the primary workhorse
     drr                     DRR scheduler priority ordering test
     small-file-edge-cases   Boundary-condition file size tests
@@ -77,23 +76,6 @@ within a single CI run.
 
 The `drr` subcommand always sets `-N 1` internally. Other subcommands leave the
 value unchanged unless `--concurrent N` is explicitly passed.
-
----
-
-## Subcommand: `rate-limiter`
-
-Tests the token bucket rate limiter (`quelay-agent/src/rate_limiter.rs`) in
-isolation. No agents or network required — purely in-process.
-
-The test sends a burst of bytes through the rate limiter at the configured cap,
-measures the realized throughput, and asserts it falls within ±10% of the
-configured rate.
-
-```
-rate-limiter
-    (no subcommand-specific options — derives cap from --sender-c2i agent query,
-     or runs uncapped if agents are not reachable)
-```
 
 ---
 
@@ -277,7 +259,6 @@ reasons `e2e_test` lives in `quelay-agent/src/bin/` rather than `quelay-example/
 # Phase A — high cap (100 Mbit/s): large file throughput + rate limiter
 start_agents 100
 e2e_test multi-file --large --bidirectional
-e2e_test rate-limiter
 stop_agents
 
 # Phase B — low cap (10 Mbit/s): reconnect, priority, edge cases
@@ -322,4 +303,4 @@ documentation only — no legacy references appear in `--help` output.
 | `run-no-callback-test`          | Not ported (disabled in C++ since SZIP2-1352)     | — |
 | Phase 1 BW validation           | `multi-file --large`                              | ±10% BW tolerance assertion |
 | Phase 2 spool reconnect         | `multi-file --count 2 --link-outage`              | SHA-256 across reconnect |
-| Token bucket accuracy           | `rate-limiter`                                    | New; C++ relied on link hardware |
+| Rate limiter accuracy test      | `multi-file --large`                              | BW utilization assertion (±10%) validates end-to-end |
