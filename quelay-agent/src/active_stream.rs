@@ -308,7 +308,7 @@ impl ActiveStream {
             })
             .await;
 
-        let (stream_tx, stream_rx) = mpsc::channel::<QueLayStreamPtr>(1);
+        let (stream_tx, stream_rx) = mpsc::channel::<QueLayStreamPtr>(4);
 
         let spool = Arc::new(Mutex::new(SpoolBuffer::new()));
 
@@ -390,7 +390,9 @@ impl ActiveStream {
             })
             .await;
 
-        let (stream_tx, stream_rx) = mpsc::channel::<QueLayStreamPtr>(1);
+        // Capacity 2: one slot for the initial stream, one for a reconnect
+        // stream that may arrive before the pump drains the first entry.
+        let (stream_tx, stream_rx) = mpsc::channel::<QueLayStreamPtr>(2);
         let _ = stream_tx.try_send(quic);
 
         let bytes_written = Arc::new(AtomicU64::new(0));
@@ -496,8 +498,11 @@ impl ActiveStream {
             }
         };
 
-        let mut bytes_written = 0u64;
-        let mut last_acked = 0u64;
+        // Initialise from the atomic so that if a reconnect stream arrives
+        // before the pump starts (channel capacity 2), the gap check uses
+        // the correct baseline rather than zero.
+        let mut bytes_written = bytes_written_atomic.load(Ordering::Acquire);
+        let mut last_acked = bytes_written;
         let mut next_progress: u64 = PROGRESS_INTERVAL_BYTES;
         let size_bytes = self._info.size_bytes;
 
