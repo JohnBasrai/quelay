@@ -39,7 +39,7 @@ Do not use `// ===`, `// ***`, or comment banners.
 ## Module Structure — EMBP
 
 This project follows the
-[Explicit Module Boundary Pattern (EMBP)](../../EMBP.md).
+[Explicit Module Boundary Pattern (EMBP)](https://github.com/JohnBasrai/architecture-patterns/blob/main/rust/embp.md).
 
 Key rules:
 - Module files use `mod submodule;` (never `pub mod`)

@@ -57,7 +57,6 @@ cargo doc --workspace --no-deps --open
 ```
 quelay/
 ├── quelay-domain/    # Domain model and core traits (start here)
-├── quelay-link-sim/  # In-process link simulator
 ├── quelay-quic/      # QUIC transport (quinn)
 ├── quelay-thrift/    # Thrift C2I — IDL, generated stubs, mapping
 ├── quelay-agent/     # Deployable relay daemon

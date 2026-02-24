@@ -4,7 +4,7 @@
 
 ```
 quelay-thrift ──┐
-quelay-quic   ──┼──► quelay-domain
+quelay-quic   ──┴──► quelay-domain
 
 quelay-agent   ──► quelay-domain, quelay-thrift, quelay-quic
 quelay-example ──► quelay-domain, quelay-thrift, quelay-quic
