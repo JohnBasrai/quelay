@@ -503,7 +503,7 @@ mod tests {
         let p = RateParams::from_rate_bps(100_000_000, CHUNK_SIZE);
         let ms = p.interval.as_millis() as u64;
         assert!(
-            ms >= MIN_INTERVAL_MS && ms <= MAX_INTERVAL_MS,
+            (MIN_INTERVAL_MS..=MAX_INTERVAL_MS).contains(&ms),
             "interval {ms}ms out of [{MIN_INTERVAL_MS},{MAX_INTERVAL_MS}]"
         );
         let rate_bytes = 100_000_000u64 / 8;
@@ -517,7 +517,7 @@ mod tests {
         let p = RateParams::from_rate_bps(10_000_000, CHUNK_SIZE);
         let ms = p.interval.as_millis() as u64;
         assert!(
-            ms >= MIN_INTERVAL_MS && ms <= MAX_INTERVAL_MS,
+            (MIN_INTERVAL_MS..=MAX_INTERVAL_MS).contains(&ms),
             "interval {ms}ms out of [{MIN_INTERVAL_MS},{MAX_INTERVAL_MS}]"
         );
     }

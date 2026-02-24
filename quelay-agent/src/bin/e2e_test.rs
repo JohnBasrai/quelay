@@ -63,7 +63,7 @@ use quelay_thrift::{
 fn ensure_agent_running(addr: SocketAddr) -> Result<()> {
     // ---
     let timeout = Duration::from_millis(300);
-    match std::net::TcpStream::connect_timeout(&addr.into(), timeout) {
+    match std::net::TcpStream::connect_timeout(&addr, timeout) {
         Ok(_) => Ok(()),
         Err(_) => bail!("Agent not reachable at {addr} (is it running?)"),
     }
@@ -404,7 +404,7 @@ impl TestCallbackServer {
                 TestCallbackEvent::Failed { uuid, .. } => Some(uuid.as_str()),
                 TestCallbackEvent::LinkState(_) => None,
             };
-            if event_uuid.map_or(false, |u| u == uuid) {
+            if event_uuid == Some(uuid) {
                 return Ok(event);
             }
             // Not our stream — discard and keep waiting.
@@ -805,19 +805,17 @@ async fn cmd_multi_file(
     } else if args.small {
         vec![9_000, 1_024, 512, 1]
     } else if let Some(mb) = args.size_mb {
-        std::iter::repeat(mb * 1024 * 1024)
-            .take(args.count)
-            .collect()
+        std::iter::repeat_n(mb * 1024 * 1024, args.count).collect()
     } else if let Some(secs) = args.duration_secs {
         let bytes = cap_mbps
             .map(|c| c as usize * 1_000_000 / 8 * secs as usize)
             .unwrap_or(32 * 1024 * 1024);
-        std::iter::repeat(bytes).take(args.count).collect()
+        std::iter::repeat_n(bytes, args.count).collect()
     } else {
         let bytes = cap_mbps
             .map(|c| c as usize * 1_000_000 / 8 * 10)
             .unwrap_or(32 * 1024 * 1024);
-        std::iter::repeat(bytes).take(args.count).collect()
+        std::iter::repeat_n(bytes, args.count).collect::<Vec<usize>>()
     };
 
     if args.link_outage {

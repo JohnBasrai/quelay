@@ -537,6 +537,7 @@ where
 // ---
 
 /// One decoded chunk read from the QUIC stream.
+#[derive(Debug)]
 pub struct Chunk {
     // ---
     /// Absolute byte offset of the first payload byte in the logical stream.
@@ -686,7 +687,7 @@ mod tests {
         let len = MAX_JSON_PAYLOAD as u32;
         let mut buf = vec![MAGIC, VERSION, OP_NEW_STREAM, 0x00];
         buf.extend_from_slice(&len.to_be_bytes());
-        buf.extend(std::iter::repeat(b' ').take(MAX_JSON_PAYLOAD));
+        buf.extend(std::iter::repeat_n(b' ', MAX_JSON_PAYLOAD));
 
         let mut reader = BufReader::new(Cursor::new(buf));
         let err = read_stream_open(&mut reader).await.unwrap_err();
