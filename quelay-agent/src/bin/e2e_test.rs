@@ -461,6 +461,7 @@ fn print_transfer_report(
 
     println!("\n    ============================================================");
     println!("    ---\t{label}");
+    println!("    ---\t   Payload Size  : {:.3} MB", bytes as f32 * 1e-6);
     println!("    ---\t   Elapsed time  : {elapsed_s:.3} seconds");
     println!("    ---\t   Actual BW     : {kbps:.1} kBps - {kbits_s:.1} kbps");
 

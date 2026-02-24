@@ -82,8 +82,8 @@ The logical session layer sits above QUIC. When the QUIC connection
 drops (link outage), Quelay:
 
 1. Transitions `LinkState` to `Failed`.
-2. Pauses active uplink pumps (the rate limiter timer task drains and
-   discards queued chunks, then blocks waiting for `LinkUp`).
+2. Pauses active uplink streams — the `RateLimiter` timer task rewinds
+   `Q = A` (retaining spool data for replay) and blocks waiting for `LinkUp`.
 3. Reconnects to the remote endpoint with exponential backoff (1 s → 30 s cap).
 4. Calls `restore_active` — opens a fresh QUIC stream per in-flight uplink,
    writes a `ReconnectHeader` with `replay_from = bytes_acked`, and delivers
@@ -107,21 +107,25 @@ requires non-blocking writers.
 ## SpoolBuffer — Uplink Spool Design
 
 Each uplink stream maintains a fixed-size in-memory ring buffer (`SpoolBuffer`)
-shared between two decoupled sub-tasks:
+shared between three decoupled actors:
 
 - **TCP reader** — reads bytes from the local client's ephemeral TCP socket and
   pushes them into the spool (`T` advances). Blocks when the spool is full
   (back-pressure to the sender).
-- **QUIC pump** — drains bytes from the spool into the metered QUIC stream
-  (`Q` advances). On link failure it rewinds `Q = A` and waits for a fresh stream.
+- **RateLimiter timer task** — drains bytes directly from the spool into the
+  metered QUIC stream (`Q` advances, task-local). On link failure it rewinds
+  `Q = A` and blocks waiting for a fresh write half via `RateCmd::LinkUp`.
   On reconnect it replays `A..T` on the new stream and resumes.
+- **Ack task** — owns the QUIC read half exclusively. Advances `A` on
+  `WormholeMsg::Ack`, fires progress callbacks, and drives reconnect signalling
+  to the timer task (`link_down` / `link_up`).
 
 ```text
 spool [capacity: SPOOL_CAPACITY = 1 MiB]
-[.......................................................]
- ^               ^                                     ^
- A               Q                                     T
- bytes_acked     next_quic_write      head (next TCP write)
+[..........................................................]
+ ^               ^                                        ^
+ A               Q                                        T
+ bytes_acked     next_quic_write (timer task-local)    head (next TCP write)
 ```
 
 `A` advances when `WormholeMsg::Ack { bytes_received }` arrives from the
