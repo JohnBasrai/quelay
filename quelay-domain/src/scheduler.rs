@@ -223,10 +223,10 @@ mod tests {
     /// | 4 | `deregister_removes_stream`                 | ✅ passing |
     /// | 5 | `schedule_never_exceeds_budget`             | ✅ passing |
     /// | 6 | `c2i_does_not_starve_when_bulk_present`     | ✅ passing |
-    /// | 7 | Token bucket unit test (LinkSimStream bw_cap)  | 🔒 blocked — cap not implemented |
-    /// | 8 | Concurrent files / pending queue int. test  | 🔒 blocked — data pump stub |
-    /// | 9 | Large bulk + C2I latency (DRR wired E2E)    | 🔒 blocked — data pump stub |
-    /// | 10| Throughput measurement vs. BW cap           | 🔒 blocked — both above |
+    /// | 7 | Rate limiter test (bw_cap)                  | ✅ integration |
+    /// | 8 | Concurrent files / pending queue int. test  | ✅ integration |
+    /// | 9 | Large bulk + C2I latency (DRR wired E2E)    | ✅ integration |
+    /// | 10| Throughput measurement vs. BW cap           | ✅ integration |
 
     #[test]
     fn c2i_drains_before_bulk() {

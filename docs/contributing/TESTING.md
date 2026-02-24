@@ -99,11 +99,10 @@ on a specific area):
 | 5  | `schedule_never_exceeds_budget`           | `quelay-domain` | ✅ passing |
 | 6  | `c2i_does_not_starve_when_bulk_present`   | `quelay-domain` | ✅ passing |
 | 7  | `rate_params_*` (5 unit tests)            | `quelay-agent`  | ✅ passing |
-| 8  | `e2e_test rate-limiter`                   | `quelay-agent/bin` | ✅ passing |
-| 9  | `e2e_test multi-file --large`             | `quelay-agent/bin` | ✅ passing |
-| 10 | `e2e_test multi-file --count 2 --link-outage` | `quelay-agent/bin` | ✅ passing |
-| 11 | `e2e_test drr`                            | `quelay-agent/bin` | ✅ passing |
-| 12 | `e2e_test small-file-edge-cases`          | `quelay-agent/bin` | ✅ passing |
+| 8  | `e2e_test multi-file --large`             | `quelay-agent/bin` | ✅ passing |
+| 9  | `e2e_test multi-file --count 2 --link-outage` | `quelay-agent/bin` | ✅ passing |
+| 10 | `e2e_test drr`                            | `quelay-agent/bin` | ✅ passing |
+| 11 | `e2e_test small-file-edge-cases`          | `quelay-agent/bin` | ✅ passing |
 
 `e2e_test` lives in `quelay-agent/src/bin/e2e_test.rs`. Run it via the CI
 script (which handles agent lifecycle) or point it at already-running agents.

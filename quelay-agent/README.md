@@ -64,7 +64,7 @@ Options:
       --bw-cap-mbps <BW_CAP_MBPS>
           Uplink bandwidth cap in Mbit/s.
           
-          Applied by the token bucket rate limiter on every QUIC write. Set to 0
+          Enforced by the rate limiter on every QUIC write. Set to 0
           (default) to disable rate limiting entirely.
           
           Example: `--bw-cap-mbps 10` caps at 10 Mbit/s (1.25 MB/s).
@@ -194,10 +194,8 @@ the current value synchronously without crossing the channel.
 
 ## Thrift C2I interface
 
-Defined in `quelay-thrift/idl/quelay.idl` (the file uses the `.idl` extension; the Thrift
-compiler accepts it via `thrift-compile.sh`; add `// -*- mode: thrift -*-` as the first line
-to get syntax highlighting in Emacs once the `thrift` package is installed from MELPA).
-The generated service trait is `QueLayAgentSyncHandler`. Methods currently handled:
+Defined in `quelay-thrift/idl/quelay.thrift`. The generated service trait is
+`QueLayAgentSyncHandler`. Methods currently handled:
 
 | Method | Behaviour |
 |:-------|:----------|
