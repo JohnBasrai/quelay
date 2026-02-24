@@ -19,9 +19,17 @@ use tracing::info;
 
 use quelay_domain::{LinkState, QueLayTransport};
 use quelay_quic::{CertBundle, QuicTransport};
+
+#[rustfmt::skip]
 use quelay_thrift::{
-    QueLayAgentSyncProcessor, TBinaryInputProtocolFactory, TBinaryOutputProtocolFactory,
-    TBufferedReadTransportFactory, TBufferedWriteTransportFactory, TServer, IDL_VERSION,
+    // ---
+    QueLayAgentSyncProcessor,
+    TBinaryInputProtocolFactory,
+    TBinaryOutputProtocolFactory,
+    TBufferedReadTransportFactory,
+    TBufferedWriteTransportFactory,
+    TServer,
+    IDL_VERSION,
 };
 
 // ---
@@ -31,6 +39,7 @@ mod agent;
 mod callback;
 mod config;
 mod framing;
+mod rate_limiter;
 mod session_manager;
 mod thrift_srv;
 
@@ -40,19 +49,30 @@ use agent::Agent;
 use callback::{spawn_ping_timer, CallbackAgent};
 use config::{Config, Mode};
 use session_manager::{SessionManager, TransportConfig};
-use thrift_srv::AgentHandler;
+use thrift_srv::{AgentHandler, RuntimeConfig};
 
 // Gateway re-exports — siblings import via super::Symbol per EMBP §2.3
-pub use active_stream::ActiveStream;
+pub(crate) use active_stream::ActiveStream;
+pub use active_stream::{DownlinkHandle, UplinkHandle};
+
 pub use callback::{CallbackCmd, CallbackTx};
 pub use framing::{
     // ---
-    read_header,
+    read_chunk,
+    read_stream_open,
     read_wormhole_msg,
-    write_header,
+    write_chunk,
+    write_connect_header,
+    write_reconnect_header,
     write_wormhole_msg,
+    Chunk,
+    ReconnectHeader,
     StreamHeader,
+    StreamOpen,
     WormholeMsg,
+    ACK_INTERVAL,
+    CHUNK_HEADER_LEN,
+    CHUNK_SIZE,
 };
 pub use session_manager::SessionManagerHandle;
 pub use thrift_srv::AgentCmd;
@@ -66,6 +86,7 @@ async fn main() -> anyhow::Result<()> {
     // ---
 
     let cfg = Config::parse();
+    cfg.validate()?;
 
     let no_color = std::env::var("EMACS").is_ok()
         || std::env::var("NO_COLOR").is_ok()
@@ -75,27 +96,36 @@ async fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt()
         .with_target(false)
         .with_ansi(!no_color)
+        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
         .init();
 
     info!(
         version = env!("CARGO_PKG_VERSION"),
         idl_version = IDL_VERSION,
+        bw_cap_mbps = cfg.bw_cap_mbps,
+        chunk_size_bytes = cfg.chunk_size_bytes,
+        spool_capacity_bytes = cfg.spool_capacity_bytes,
+        max_concurrent = cfg.max_concurrent,
         "quelay-agent starting",
     );
 
-    // Ensure spool directory exists.
     fs::create_dir_all(&cfg.spool_dir)?;
     info!(spool_dir = %cfg.spool_dir.display(), "spool directory ready");
+
+    // Build the shared runtime config from startup CLI values.
+    // AgentHandler writes to it; session manager reads it when starting streams.
+    let runtime_cfg = Arc::new(std::sync::Mutex::new(RuntimeConfig::new(
+        cfg.bw_cap_mbps,
+        cfg.chunk_size_bytes,
+        cfg.max_concurrent,
+    )));
 
     let link_state = Arc::new(Mutex::new(LinkState::Connecting));
     let (cmd_tx, cmd_rx) = mpsc::channel(64);
 
-    // Spawn the callback agent thread and the 60-second ping timer.
     let cb_tx = CallbackAgent::spawn();
     spawn_ping_timer(cb_tx.clone(), std::time::Duration::from_secs(60));
 
-    // Establish the initial QUIC session and build the transport config
-    // the session manager needs for reconnection.
     let (initial_session, transport_cfg) = match &cfg.mode {
         Mode::Server { bind } => {
             info!("server mode, binding QUIC on {bind}");
@@ -117,8 +147,6 @@ async fn main() -> anyhow::Result<()> {
                 .ok_or_else(|| anyhow::anyhow!("no incoming QUIC session"))?;
             info!("client connected");
 
-            // Pass sess_rx into TransportConfig so the session manager can
-            // call recv() again on reconnect — no second listen() needed.
             let tcfg = TransportConfig::Server { sess_rx };
             (Arc::new(session) as quelay_domain::QueLaySessionPtr, tcfg)
         }
@@ -146,26 +174,25 @@ async fn main() -> anyhow::Result<()> {
         }
     };
 
-    // Boot the session manager.
+    // SessionManager::new signature is unchanged — runtime_cfg wiring into
+    // session_manager.rs is a follow-on task (chunk_size_bytes, max_concurrent).
     let sm = Arc::new(SessionManager::new(
         initial_session,
         transport_cfg,
         link_state.clone(),
         cfg.spool_dir.clone(),
         cb_tx.clone(),
+        cfg.bw_cap_bps(),
     ));
     let sm_handle = SessionManagerHandle::new(sm.clone());
 
-    // Reconnection loop runs independently.
     tokio::spawn(sm.run());
 
-    // Agent dispatches Thrift commands to the session manager.
     let agent = Agent::new(cmd_rx, sm_handle);
     tokio::spawn(agent.run());
 
-    // Thrift C2I server on a blocking thread pool.
     let rt = tokio::runtime::Handle::current();
-    let handler = AgentHandler::new(rt, cmd_tx, link_state, cb_tx);
+    let handler = AgentHandler::new(rt, cmd_tx, link_state, cb_tx, runtime_cfg);
     let processor = QueLayAgentSyncProcessor::new(handler);
     let agent_endpoint = cfg.agent_endpoint.to_string();
 

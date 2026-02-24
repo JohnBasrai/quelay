@@ -1,15 +1,11 @@
 //! Quelay example — demonstrations and C2I smoke client.
 //!
-//! * When run without `--agent-endpoint` the three built-in demos
-//!   execute (LinkSimTransport, Thrift mapping, QUIC loopback).
+//! Shows how to write a minimal quelay client. Three built-in demos run
+//! automatically; with `--agent-endpoint` the example also performs a live
+//! smoke check against a running agent.
 //!
-//! * When `--agent-endpoint` is supplied the binary connects to a
-//!   live `quelay-agent`, asserts that the IDL wire version matches the
-//!   locally compiled version, and reports the link state — then runs
-//!   the demos as before.
-//!
-//! * When both `--agent-endpoint` and `--receiver-endpoint` are supplied
-//!   the full end-to-end transfer demo runs against two live agents.
+//! For integration testing (link outage, DRR priority, BW validation, etc.)
+//! see the `e2e_test` binary in `quelay-agent/src/bin/`.
 //!
 //! Run with:
 //!   cargo run -p quelay-example
@@ -35,7 +31,6 @@ use quelay_thrift::{
 };
 
 mod e2e_demo;
-mod link_sim_demo;
 mod quic_demo;
 mod thrift_demo;
 
@@ -50,15 +45,14 @@ mod thrift_demo;
 )]
 struct Config {
     // ---
-    /// TCP address of a running quelay-agent C2I interface (sender / agent-1).
-    /// When supplied, the example connects and runs a live smoke check
-    /// (version assertion + link state query) before the built-in demos.
+    /// TCP address of the agent's C2I interface.
+    /// When supplied, a live smoke check runs against the agent.
     #[arg(long)]
     agent_endpoint: Option<SocketAddr>,
 
-    /// TCP address of the receiver agent's C2I interface (agent-2).
-    /// When supplied together with `--agent-endpoint`, the full end-to-end
-    /// transfer demo runs.
+    /// TCP address of a second agent's C2I interface.
+    /// When both --agent-endpoint and --receiver-endpoint are supplied,
+    /// a single end-to-end transfer demo runs between the two agents.
     #[arg(long)]
     receiver_endpoint: Option<SocketAddr>,
 }
@@ -89,20 +83,25 @@ async fn main() -> anyhow::Result<()> {
         println!();
     }
 
-    println!("=== 1. LinkSim transport demo ===");
-    link_sim_demo::run().await;
-
-    println!();
-    println!("=== 2. Thrift mapping demo ===");
+    println!("=== 1. Thrift mapping demo ===");
     thrift_demo::run();
 
     println!();
-    println!("=== 3. QUIC transport demo ===");
+    println!("=== 2. QUIC transport demo ===");
     quic_demo::run().await;
 
     if let (Some(sender), Some(receiver)) = (cfg.agent_endpoint, cfg.receiver_endpoint) {
         println!();
-        e2e_demo::run(sender, receiver).await?;
+        println!("=== 3. End-to-end transfer demo ===");
+        // Generate a small fixed payload — this is a demo, not a benchmark.
+        let payload = {
+            use rand::{RngCore, SeedableRng};
+            let mut rng = rand::rngs::SmallRng::seed_from_u64(0xDEAD_BEEF);
+            let mut buf = vec![0u8; 64 * 1024]; // 64 KiB
+            rng.fill_bytes(&mut buf);
+            buf
+        };
+        e2e_demo::run(sender, receiver, payload).await?;
     }
 
     Ok(())
@@ -112,9 +111,6 @@ async fn main() -> anyhow::Result<()> {
 // smoke_check
 // ---------------------------------------------------------------------------
 
-/// Connects to a live `quelay-agent` C2I endpoint, asserts the remote IDL
-/// version matches the locally compiled `IDL_VERSION`, and logs the current
-/// link state.
 fn smoke_check(addr: SocketAddr) -> anyhow::Result<()> {
     // ---
     let mut channel = TTcpChannel::new();
@@ -126,14 +122,12 @@ fn smoke_check(addr: SocketAddr) -> anyhow::Result<()> {
         TBinaryOutputProtocol::new(TBufferedWriteTransport::new(tx), true),
     );
 
-    // --- version assertion
     let remote_version = client.get_version()?;
     if remote_version != IDL_VERSION {
         anyhow::bail!("IDL version mismatch: local={IDL_VERSION:?} remote={remote_version:?}");
     }
     println!("  IDL version: {remote_version} ✓");
 
-    // --- link state
     let state = client.get_link_state()?;
     println!("  Link state:  {state}");
 

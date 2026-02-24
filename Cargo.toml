@@ -2,7 +2,6 @@
 members = [
     "quelay-domain",
     "quelay-quic",
-    "quelay-link-sim",
     "quelay-thrift",
     "quelay-example",
     "quelay-agent",
@@ -25,6 +24,5 @@ bytes        = "1"
 tracing      = "0.1"
 rand         = "0.8"
 quelay-domain  = { path = "quelay-domain" }
-quelay-link-sim    = { path = "quelay-link-sim" }
 quelay-thrift  = { path = "quelay-thrift" }
 quelay-quic    = { path = "quelay-quic" }

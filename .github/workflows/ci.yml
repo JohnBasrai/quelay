@@ -52,4 +52,4 @@ jobs:
         run: ./scripts/ci-smoke-test.sh
 
       - name: End to end test
-        run: ./scripts/ci-e2e-test.sh
+        run: ./scripts/ci-integration-test.sh

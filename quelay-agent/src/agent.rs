@@ -44,6 +44,18 @@ impl Agent {
                     tracing::info!(%uuid, ?priority, "stream_start → session manager");
                     self.sm.stream_start(uuid, info, priority).await;
                 }
+
+                AgentCmd::LinkEnable(enabled) => {
+                    self.sm.link_enable(enabled).await;
+                }
+
+                // RuntimeConfig is updated in-place by AgentHandler before
+                // this command is sent.  The session manager reads the new
+                // value on the next stream_start; no further action needed
+                // here beyond the log line.
+                AgentCmd::SetMaxConcurrent(n) => {
+                    tracing::info!(n, "set_max_concurrent (test/debug)");
+                }
             }
         }
 

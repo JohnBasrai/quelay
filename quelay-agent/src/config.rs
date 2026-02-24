@@ -2,12 +2,36 @@
 //!
 //! Run modes:
 //!   quelay-agent [--agent-endpoint 127.0.0.1:9090] server [--bind 0.0.0.0:5000]
-//!   quelay-agent [--agent-endpoint 127.0.0.1:9090] client --peer 192.168.1.2:5000 --cert /tmp/quelay-server.der
+//!   quelay-agent [--agent-endpoint 127.0.0.1:9090] client --peer 192.168.1.10:5000 --cert /tmp/quelay-server.der
 
 use std::net::SocketAddr;
 use std::path::PathBuf;
 
 use clap::{Parser, Subcommand};
+
+// ---------------------------------------------------------------------------
+// Defaults — kept here so integration tests can import them directly.
+// ---------------------------------------------------------------------------
+
+/// Default chunk payload size in bytes.
+///
+/// Drives spool granularity and ack frequency.  Smaller values give finer
+/// acks at higher per-chunk framing overhead; larger values amortize overhead
+/// but coarsen reconnect replay granularity.
+///
+/// Override at runtime with `--chunk-size-bytes` or via the
+/// `set_chunk_size_bytes` C2I call (used by `e2e_test small-file-edge-cases`
+/// to reproduce the 1 KiB block size used by the legacy FTA system).
+pub const DEFAULT_CHUNK_SIZE_BYTES: usize = 16 * 1024; // 16 KiB
+
+/// Default in-memory spool capacity per uplink stream.
+///
+/// The spool absorbs bursts during link outages.  When full, the TCP reader
+/// pauses (back-pressure).  Override with `--spool-capacity-bytes`.
+pub const DEFAULT_SPOOL_CAPACITY_BYTES: usize = 1024 * 1024; // 1 MiB
+
+/// Default maximum concurrent active streams (0 = unlimited).
+pub const DEFAULT_MAX_CONCURRENT: usize = 0;
 
 // ---------------------------------------------------------------------------
 // Config
@@ -28,9 +52,78 @@ pub struct Config {
     /// Directory used to spool stream data when the link is down.
     ///
     /// Created automatically if it does not exist.
-    /// Future: each remote peer gets a subdirectory `<spool-dir>/<remote-id>/`.
     #[arg(long, default_value = "/tmp/quelay-spool")]
     pub spool_dir: PathBuf,
+
+    /// Uplink bandwidth cap in Mbit/s.
+    ///
+    /// Applied by the token bucket rate limiter on every QUIC write.
+    /// Set to 0 (default) to disable rate limiting entirely.
+    ///
+    /// Example: `--bw-cap-mbps 10` caps at 10 Mbit/s (1.25 MB/s).
+    #[arg(long, default_value_t = 0)]
+    pub bw_cap_mbps: u64,
+
+    /// Chunk payload size in bytes written to the QUIC stream.
+    ///
+    /// Controls spool granularity and ack frequency.  Must be ≤ 65535
+    /// (u16 max — the wire field width).  Defaults to 16 KiB.
+    ///
+    /// The integration test binary sets this to 1024 for `small-file-edge-cases`
+    /// to reproduce the legacy FTA block size and exercise multi-block
+    /// framing boundaries.
+    #[arg(long, default_value_t = DEFAULT_CHUNK_SIZE_BYTES)]
+    pub chunk_size_bytes: usize,
+
+    /// In-memory spool capacity per uplink stream in bytes.
+    ///
+    /// The spool absorbs bursts during link outages.  When full the TCP
+    /// reader pauses (back-pressure to the client).  The link-outage test
+    /// in `e2e_test` derives its link-down window from this value.
+    /// Defaults to 1 MiB.
+    #[arg(long, default_value_t = DEFAULT_SPOOL_CAPACITY_BYTES)]
+    pub spool_capacity_bytes: usize,
+
+    /// Maximum concurrent active streams (0 = unlimited).
+    ///
+    /// The DRR test sets this to 1 via the `set_max_concurrent` C2I call
+    /// so that queued streams are reordered by priority before activation.
+    /// This flag sets the startup default; the value can be changed live
+    /// via `set_max_concurrent`.
+    #[arg(short = 'N', long, default_value_t = DEFAULT_MAX_CONCURRENT)]
+    pub max_concurrent: usize,
+}
+
+// ---
+
+impl Config {
+    // ---
+
+    /// Convert `bw_cap_mbps` to **bits-per-second**, or `None` if uncapped.
+    ///
+    /// The returned value is in bits/s and is passed directly to the token
+    /// bucket, which divides by 8 internally to derive its byte budget.
+    pub fn bw_cap_bps(&self) -> Option<u64> {
+        if self.bw_cap_mbps == 0 {
+            None
+        } else {
+            Some(self.bw_cap_mbps * 1_000_000)
+        }
+    }
+
+    /// Validate config fields that clap cannot express as type constraints.
+    pub fn validate(&self) -> anyhow::Result<()> {
+        if self.chunk_size_bytes == 0 || self.chunk_size_bytes > 65_535 {
+            anyhow::bail!(
+                "--chunk-size-bytes must be 1..=65535, got {}",
+                self.chunk_size_bytes
+            );
+        }
+        if self.spool_capacity_bytes == 0 {
+            anyhow::bail!("--spool-capacity-bytes must be > 0");
+        }
+        Ok(())
+    }
 }
 
 // ---
@@ -38,7 +131,7 @@ pub struct Config {
 #[derive(Debug, Subcommand)]
 pub enum Mode {
     // ---
-    /// Listen for an incoming QUIC connection (satellite / ground station in
+    /// Listen for an incoming QUIC connection (satellite ground station or
     /// server role for this session).
     Server {
         /// UDP address to bind the QUIC endpoint on.

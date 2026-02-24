@@ -1,6 +1,6 @@
 //! Thrift C2I service stubs for the Quelay agent interface.
 //!
-//! These hand-written stubs mirror `quelay.idl` exactly and will be
+//! These hand-written stubs mirror `quelay.thrift` exactly and will be
 //! replaced by Thrift-generated code once the IDL is finalised.
 
 // Generated code lives here. Run scripts/thrift-compile.sh to regenerate.

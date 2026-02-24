@@ -15,8 +15,8 @@ your option.
 |:------------------|:------------|
 | `quelay-domain`   | Domain model: transport traits, DRR scheduler, priority types, session / handler interfaces |
 | `quelay-link-sim` | In-process mock transport with link simulation (drops, duplication, BW cap, outages) |
-| `quelay-quic`     | QUIC transport via `quinn` (**stub — not yet implemented**) |
-| `quelay-thrift`   | Apache Thrift C2I service stubs (**IDL revision pending**) |
+| `quelay-quic`     | QUIC transport via `quinn` |
+| `quelay-thrift`   | Apache Thrift C2I service stubs |
 
 ---
 
@@ -41,9 +41,8 @@ External clients (Rust / C++ / Python)
 ## Key Design Decisions
 
 **QUIC over UDP** — The shared satellite link environment prohibits TCP.
-TCP's congestion control competes for bandwidth unpredictably with other
-contractors on the link. QUIC gives per-stream multiplexing and ordered
-delivery over UDP.
+TCP's congestion control competes unpredictably with other tenants sharing
+the link.. QUIC gives per-stream multiplexing and ordered delivery over UDP.
 
 **AIMD within a rate cap** — Quelay adapts to instantaneous link degradation
 like TCP, but never exceeds the operator-configured bandwidth allocation
@@ -55,9 +54,14 @@ intervention.
 fairly across active bulk streams. C2I messages use a strict-priority
 queue and are always drained before any bulk stream is scheduled.
 
-**Logical session above QUIC** — If the QUIC connection drops (link
-outages up to ~60 s are expected), the session layer reconnects and
-resumes all in-flight streams from the last ACK'd byte via the spool.
+**Logical session above QUIC** — If the QUIC connection drops (intermittent link
+outages are expected), the session layer reconnects and resumes in-flight streams
+from the last ACK’d byte using a configurable, bounded spool.
+
+Buffering is explicitly capacity-limited; once the spool is full, backpressure
+is applied to stream writers to prevent unbounded memory growth. Recovery
+semantics are policy-driven: strict resume (lossless continuity) or
+fast-forward (real-time catch-up). **Note** spool is not implement yet
 
 **Unified file / stream namespace** — Files and open-ended streams share
 the same UUID namespace and priority queue. They are treated identically
@@ -81,14 +85,8 @@ cargo test --workspace
 
 ## Link Simulation (unit tests)
 
-`quelay-link-sim` provides an in-process link simulator. No real sockets needed.
-
-```rust
-use quelay_link_sim::{MockTransport, LinkSimConfig};
-
-let (client, server) = MockTransport::new(LinkSimConfig::outage_60s())
-    .connected_pair();
-```
+`quelay-link-sim` provides an in-process link simulator. No real sockets
+needed. When an outage is triggered, its duration is capped at 60s
 
 For system integration tests with real containers, use Linux `tc netem`
 on the network interface between containers. No code changes are needed
