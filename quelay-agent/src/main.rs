@@ -109,9 +109,6 @@ async fn main() -> anyhow::Result<()> {
         "quelay-agent starting",
     );
 
-    fs::create_dir_all(&cfg.spool_dir)?;
-    info!(spool_dir = %cfg.spool_dir.display(), "spool directory ready");
-
     // Build the shared runtime config from startup CLI values.
     // AgentHandler writes to it; session manager reads it when starting streams.
     let runtime_cfg = Arc::new(std::sync::Mutex::new(RuntimeConfig::new(
@@ -180,7 +177,6 @@ async fn main() -> anyhow::Result<()> {
         initial_session,
         transport_cfg,
         link_state.clone(),
-        cfg.spool_dir.clone(),
         cb_tx.clone(),
         cfg.bw_cap_bps(),
     ));

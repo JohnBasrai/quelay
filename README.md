@@ -11,12 +11,13 @@ your option.
 
 ## Crates
 
-| Crate             | Description |
-|:------------------|:------------|
-| `quelay-domain`   | Domain model: transport traits, DRR scheduler, priority types, session / handler interfaces |
-| `quelay-link-sim` | In-process mock transport with link simulation (drops, duplication, BW cap, outages) |
-| `quelay-quic`     | QUIC transport via `quinn` |
-| `quelay-thrift`   | Apache Thrift C2I service stubs |
+| Crate            | Description |
+|:-----------------|:------------|
+| `quelay-domain`  | Domain model: transport traits, DRR scheduler, priority types, session / handler interfaces |
+| `quelay-quic`    | QUIC transport via `quinn` |
+| `quelay-thrift`  | Apache Thrift C2I service stubs |
+| `quelay-agent`   | Deployable relay daemon — data pump, `SessionManager`, rate limiter, reconnect |
+| `quelay-example` | Demos and C2I smoke tests |
 
 ---
 
@@ -27,13 +28,12 @@ External clients (Rust / C++ / Python)
             │
             │← quelay-thrift / Apache Thrift C2I
             │
-    Quelay session manager (reconnection, spooling)
+    SessionManager (reconnection, in-memory spool, pending queue)
             │
-    DRR Scheduler  ←→  AIMD Pacer (rate cap enforcement)
+    DRR Scheduler  ←→  RateLimiter (timer-task BW cap)
             │
     QueLayTransport trait  (quelay-domain)
-     ├── quelay-quic       (production — QUIC over UDP)
-     └── quelay-link-sim   (testing — in-process channels)
+     └── quelay-quic       (production — QUIC over UDP)
 ```
 
 ---
@@ -44,11 +44,12 @@ External clients (Rust / C++ / Python)
 TCP's congestion control competes unpredictably with other tenants sharing
 the link.. QUIC gives per-stream multiplexing and ordered delivery over UDP.
 
-**AIMD within a rate cap** — Quelay adapts to instantaneous link degradation
-like TCP, but never exceeds the operator-configured bandwidth allocation
-(e.g. 20 % of 10 Mbit/s = 2 Mbit/s ceiling). If the link sags to 5
-Mbit/s, AIMD naturally backs off to ~1 Mbit/s without operator
-intervention.
+**Rate cap via `RateLimiter`** — Each uplink stream is metered by a dedicated
+timer task that wakes on a computed interval (clamped to 5–100 ms), drains up
+to a byte budget from an mpsc queue per tick, and discards unused budget. The
+operator configures a hard ceiling (e.g. 2 Mbit/s); QUIC's own congestion
+control operates below that ceiling and handles packet-loss backoff
+transparently.
 
 **DRR scheduler** — Deficit Round Robin distributes the available budget
 fairly across active bulk streams. C2I messages use a strict-priority
@@ -56,12 +57,17 @@ queue and are always drained before any bulk stream is scheduled.
 
 **Logical session above QUIC** — If the QUIC connection drops (intermittent link
 outages are expected), the session layer reconnects and resumes in-flight streams
-from the last ACK’d byte using a configurable, bounded spool.
+from the last ACK\'d byte.
 
-Buffering is explicitly capacity-limited; once the spool is full, backpressure
-is applied to stream writers to prevent unbounded memory growth. Recovery
-semantics are policy-driven: strict resume (lossless continuity) or
-fast-forward (real-time catch-up). **Note** spool is not implement yet
+Each uplink stream maintains a fixed-size in-memory `SpoolBuffer` (1 MiB, hardcoded
+— moving it to a startup config option is a planned trivial refactor). Three pointers
+track progress: `A` (bytes acked by the receiver), `Q` (next byte to write to QUIC),
+and `T` (head — next byte written by the TCP reader). On link failure the pump rewinds
+to `A` and waits; on reconnect it replays `A..T` on the fresh stream and resumes. Once
+the receiver writes data to its client socket and acks back, those bytes are released
+from the spool and need never be replayed. If the spool fills (outage longer than the
+spool depth), back-pressure is applied to the sender's TCP read socket — the writer
+blocks rather than losing data.
 
 **Unified file / stream namespace** — Files and open-ended streams share
 the same UUID namespace and priority queue. They are treated identically
@@ -70,7 +76,9 @@ internally wherever possible.
 **System-level constraint** — Quelay can absorb bursts (a link outage is
 equivalent to a burst of backlog), but the long-term average input rate
 must be ≤ the allotted bandwidth. This is a system design constraint,
-not something Quelay can correct.
+not something Quelay can correct. Client writers do not need to meter
+their own output — if the spool fills, back-pressure on the write socket
+will block the client automatically.
 
 ---
 
@@ -83,14 +91,11 @@ cargo test --workspace
 
 ---
 
-## Link Simulation (unit tests)
+## Network Impairment Testing
 
-`quelay-link-sim` provides an in-process link simulator. No real sockets
-needed. When an outage is triggered, its duration is capped at 60s
-
-For system integration tests with real containers, use Linux `tc netem`
-on the network interface between containers. No code changes are needed
-— `quelay-quic` and `quelay-link-sim` both implement `QueLayTransport`.
+Quelay relies on QUIC for packet-loss recovery, reordering, and deduplication —
+there is no in-process link simulator. To test under realistic satellite
+conditions, use Linux `tc netem` on the interface between two agent instances:
 
 ```bash
 # 5 % packet loss, 200 ms delay on the test interface
