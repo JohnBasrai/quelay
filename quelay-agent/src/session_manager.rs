@@ -31,7 +31,6 @@
 
 use super::ActiveStream;
 use std::collections::HashMap;
-use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -179,11 +178,6 @@ pub struct SessionManager {
     /// Shared link state observable by `Agent` and the Thrift handler.
     link_state: Arc<Mutex<LinkState>>,
 
-    /// Spool directory.  Data is written here when the link is `Failed`.
-    /// Stubbed: directory is created but no data is written yet.
-    #[allow(dead_code)]
-    spool_dir: PathBuf,
-
     /// Sender handle to the [`CallbackAgent`] thread.
     ///
     /// Cloned into each [`ActiveStream`] task so it can fire lifecycle
@@ -211,7 +205,6 @@ impl SessionManager {
         session: QueLaySessionPtr,
         transport_cfg: TransportConfig,
         link_state: Arc<Mutex<LinkState>>,
-        spool_dir: PathBuf,
         cb_tx: CallbackTx,
         bw_cap_bps: Option<u64>,
     ) -> Self {
@@ -221,7 +214,6 @@ impl SessionManager {
             remote: Arc::new(Mutex::new(Some(remote))),
             transport_cfg: Mutex::new(transport_cfg),
             link_state,
-            spool_dir,
             cb_tx,
             bw_cap_bps,
             session_restored: Arc::new(Notify::new()),

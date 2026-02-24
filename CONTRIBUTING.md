@@ -43,6 +43,7 @@ We follow [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) and
 | Lint         | `cargo clippy --workspace -- -D warnings` |
 | Unit tests   | `cargo test --workspace` |
 | Smoke test   | `./scripts/ci-smoke-test.sh` |
+| Integration  | `./scripts/ci-integration-test.sh` |
 | Build docs   | `cargo doc --workspace --no-deps --open` |
 | Regen Thrift | `./scripts/thrift-compile.sh` |
 

@@ -30,6 +30,16 @@ cargo test --workspace
 Starts two `quelay-agent` instances on loopback, validates QUIC handshake
 and C2I reachability end-to-end in ~1 second.
 
+## Run the Integration Test Suite
+
+```bash
+./scripts/ci-integration-test.sh
+```
+
+Runs the full `e2e_test` suite across two BW configurations (100 Mbit/s and
+10 Mbit/s). Covers file transfers, link outage + reconnect, DRR priority,
+and framing edge cases. Requires ~2 minutes on a developer workstation.
+
 ## Run a Specific Test
 
 ```bash

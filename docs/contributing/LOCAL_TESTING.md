@@ -21,7 +21,17 @@ cargo test --workspace
 ./scripts/local-test.sh
 ```
 
-This runs format, lint, and tests in order and stops on first failure.
+This runs format, lint, unit tests, smoke test, and integration tests in order
+and stops on first failure.
+
+## Integration Tests Only
+
+```bash
+./scripts/ci-integration-test.sh
+```
+
+Starts two agents, runs all `e2e_test` subcommands across two BW configurations,
+and stops the agents. Takes ~2 minutes.
 
 ## Checking a Single Crate
 

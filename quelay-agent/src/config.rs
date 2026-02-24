@@ -49,12 +49,6 @@ pub struct Config {
     #[arg(long, default_value = "127.0.0.1:9090")]
     pub agent_endpoint: SocketAddr,
 
-    /// Directory used to spool stream data when the link is down.
-    ///
-    /// Created automatically if it does not exist.
-    #[arg(long, default_value = "/tmp/quelay-spool")]
-    pub spool_dir: PathBuf,
-
     /// Uplink bandwidth cap in Mbit/s.
     ///
     /// Applied by the token bucket rate limiter on every QUIC write.
