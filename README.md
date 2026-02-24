@@ -1,8 +1,7 @@
 # Quelay
 
-A quelay in Rust, using QUIC as the transport layer,
-with support for both file transfers and open-ended streams of unknown
-length.
+A quelay in Rust, using QUIC as the transport layer, with support for both file
+transfers and open-ended streams of unknown length.
 
 Licensed under [MIT](LICENSE-MIT) or [Apache-2.0](LICENSE-APACHE), at
 your option.
@@ -42,7 +41,7 @@ External clients (Rust / C++ / Python)
 
 **QUIC over UDP** — The shared satellite link environment prohibits TCP.
 TCP's congestion control competes unpredictably with other tenants sharing
-the link.. QUIC gives per-stream multiplexing and ordered delivery over UDP.
+the link. QUIC gives per-stream multiplexing and ordered delivery over UDP.
 
 **Rate cap via `RateLimiter`** — Each uplink stream is metered by a dedicated
 timer task that wakes on a computed interval (clamped to 5–100 ms), drains up
@@ -79,6 +78,18 @@ must be ≤ the allotted bandwidth. This is a system design constraint,
 not something Quelay can correct. Client writers do not need to meter
 their own output — if the spool fills, back-pressure on the write socket
 will block the client automatically.
+
+## Documentation
+
+| Document | Description |
+|:---------|:------------|
+| [Architecture](docs/contributing/ARCHITECTURE.md)   | Crate structure, layering, spool design, bandwidth management |
+| [Quick Start](docs/contributing/QUICK_START.md)     | Build, test, and run in 5 minutes |
+| [Testing](docs/contributing/TESTING.md)             | Test strategy, how to run CI locally |
+| [Code Style](docs/contributing/CODE_STYLE.md)       | Formatting, EMBP, naming conventions |
+| [Local Testing](docs/contributing/LOCAL_TESTING.md) | Running the full CI suite before pushing |
+| [quelay-agent](quelay-agent/README.md)              | Daemon CLI reference, TLS, internal structure |
+| [e2e_test](quelay-agent/src/bin/README.md)          | Integration test design and subcommand reference |
 
 ---
 

@@ -1,33 +1,26 @@
-//! Rate limiter — metered write path for the uplink QUIC pump.
+//! Rate limiter — metered write path for the uplink QUIC stream.
 //!
 //! [`RateLimiter`] owns the write half of a QUIC stream and meters bytes into
 //! it at a configured bits-per-second ceiling.  A dedicated timer task wakes
-//! on a computed interval, drains a bounded mpsc queue up to a byte budget,
-//! and then discards any unused budget before sleeping again.  This mirrors
-//! the C++ `sendAsync` / `dataRateTimerHandler` design.
+//! on a computed interval, reads directly from the [`SpoolBuffer`] up to a
+//! byte budget per tick, encodes chunk headers inline, and writes to the QUIC
+//! stream.  Unused budget is discarded before the next tick.
 //!
 //! ## Architecture
 //!
 //! ```text
-//! run_quic_pump
-//!     │  enqueue(chunk)         mpsc             tokio::interval
-//!     ├──────────────────► chunk_tx ──────► TimerTask ──► quic WriteHalf
-//!     │                                         │
-//!     │  RateCmd (LinkDown/LinkUp/Finish)       │
-//!     ├──────────────────► cmd_tx ──────────────┤
-//!     │                                         │
-//!     │                                         ├─ drain pending writes
-//!     │                                         ├─ shutdown() (FIN) after drain
-//!     │                                         │
-//!     └──── poll_error() ◄── err_rx ◄───────────┘
+//! TCP reader task
+//!     │  push(data)
+//!     ▼
+//! SpoolBuffer
+//!     │
+//!     │  timer task reads slice_from(q) up to budget_bytes per tick
+//!     ▼
+//! QUIC WriteHalf
+//!     ▲
+//! cmd_tx mpsc
+//! (LinkDown / LinkUp / Finish)
 //! ```
-//!
-//! The pump enqueues pre-encoded chunks (header + payload) and calls
-//! `poll_error` at the top of each loop iteration to detect write failures
-//! reported asynchronously by the timer task.  On error the pump rewinds
-//! `Q = A`, splits the new stream, sends the new read half to the ack task
-//! via `stream_ack_tx`, then calls `rate_limiter.link_up(new_write_half)` —
-//! no `RateLimiter` reconstruction needed.
 //!
 //! ## Timer interval
 //!
@@ -45,27 +38,30 @@
 //!
 //! ## Link-down / link-up sequencing
 //!
-//! The pump calls `link_down()` to notify the timer task that the link is
-//! going down.  The timer task receives [`RateCmd::LinkDown`], drains and
-//! discards queued chunks, reports `ConnectionAborted` via `err_tx`, then
-//! **blocks** on `cmd_rx` waiting for [`RateCmd::LinkUp`].
+//! On [`RateCmd::LinkDown`] the timer task rewinds `q = spool.bytes_acked`
+//! (no data is discarded — the spool retains it for replay), reports an error
+//! via `err_tx`, then **blocks** on `cmd_rx` waiting for [`RateCmd::LinkUp`].
 //!
-//! The pump calls `link_up(new_tx)` after splitting the fresh reconnect stream,
-//! which unblocks the timer task with the correct write half already in hand.
-//! This eliminates the race where the timer task could start writing with
-//! link_enabled=true but using a stale write half.
+//! On [`RateCmd::LinkUp(new_tx)`] the timer task installs the fresh write half
+//! and resumes from the rewound `q`.  This eliminates the race where the timer
+//! task could start writing with a stale write half.
 
 use std::io;
+use std::sync::Arc;
 
 // ---
 
 use tokio::io::{AsyncWriteExt, WriteHalf};
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, Mutex};
 use tokio::time::{interval, Duration, MissedTickBehavior};
 
 // ---
 
 use quelay_domain::QueLayStreamPtr;
+
+// ---
+
+use super::SpoolBuffer;
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -77,31 +73,45 @@ const CHUNKS_PER_TICK: usize = 8;
 /// Minimum timer interval — below this the wakeup overhead dominates.
 const MIN_INTERVAL_MS: u64 = 5;
 
-/// Maximum timer interval — above this queue latency becomes noticeable and
-/// the pump's back-pressure channel fills up.
+/// Maximum timer interval — above this latency becomes noticeable.
 const MAX_INTERVAL_MS: u64 = 100;
+
+// ---------------------------------------------------------------------------
+// encode_chunk
+// ---------------------------------------------------------------------------
+
+/// Encode a chunk into a flat `Vec<u8>` (10-byte header + payload).
+///
+/// Header layout (big-endian):
+/// - bytes 0..8 : `stream_offset` as `u64`
+/// - bytes 8..10: `payload.len()` as `u16`
+pub(crate) fn encode_chunk(stream_offset: u64, payload: &[u8]) -> Vec<u8> {
+    // ---
+    use crate::CHUNK_HEADER_LEN;
+    let mut buf = Vec::with_capacity(CHUNK_HEADER_LEN + payload.len());
+    buf.extend_from_slice(&stream_offset.to_be_bytes());
+    buf.extend_from_slice(&(payload.len() as u16).to_be_bytes());
+    buf.extend_from_slice(payload);
+    buf
+}
 
 // ---------------------------------------------------------------------------
 // RateCmd
 // ---------------------------------------------------------------------------
 
-/// Control commands sent from the pump to the timer task.
+/// Control commands sent to the timer task.
 pub(crate) enum RateCmd {
     // ---
-    /// Link went down.  Timer task should drain+discard queued chunks,
-    /// report an error, then block waiting for [`RateCmd::LinkUp`].
+    /// Link went down.  Timer task rewinds `q = spool.bytes_acked`, reports
+    /// an error, then blocks waiting for [`RateCmd::LinkUp`].
     LinkDown,
 
     /// Link is back up with a fresh QUIC write half.
     LinkUp(WriteHalf<QueLayStreamPtr>),
 
-    /// Pump reached EOF — timer task should shut down the current QUIC write half
-    /// (send FIN) but remain alive to handle a reconnect replay if needed.
+    /// Uplink EOF — timer task should drain remaining spool data, send FIN,
+    /// then exit.
     Finish,
-
-    /// Pump is done — timer task should exit cleanly.
-    #[cfg(false)]
-    Shutdown,
 }
 
 // ---------------------------------------------------------------------------
@@ -118,10 +128,6 @@ pub(crate) struct RateParams {
 
     /// Maximum bytes forwarded per tick.  Unused budget is discarded.
     pub budget_bytes: usize,
-
-    /// mpsc channel capacity — a few ticks of headroom so the pump is rarely
-    /// back-pressured waiting for the timer to drain.
-    pub channel_capacity: usize,
 }
 
 impl RateParams {
@@ -138,23 +144,17 @@ impl RateParams {
         // Recalculate budget from clamped interval to keep long-term rate correct.
         let budget_bytes = (rate_bytes_per_sec * interval_ms / 1000) as usize;
 
-        // Channel: 4 ticks of chunks, minimum 16 slots.
-        let chunks_per_tick = budget_bytes.div_ceil(chunk_size);
-        let channel_capacity = (chunks_per_tick * 4).max(16);
-
         tracing::debug!(
             rate_bps,
             rate_bytes_per_sec,
             interval_ms,
             budget_bytes,
-            channel_capacity,
             "RateLimiter: params",
         );
 
         Self {
             interval: Duration::from_millis(interval_ms),
             budget_bytes,
-            channel_capacity,
         }
     }
 }
@@ -164,12 +164,13 @@ impl RateParams {
 // ---------------------------------------------------------------------------
 
 struct TimerTask {
-    rx: mpsc::Receiver<Vec<u8>>,
+    spool: Arc<Mutex<SpoolBuffer>>,
+    /// Q pointer — absolute byte offset of the next byte to send.
+    q: u64,
     quic_tx: WriteHalf<QueLayStreamPtr>,
     budget_bytes: usize,
     interval: Duration,
     cmd_rx: mpsc::Receiver<RateCmd>,
-    err_tx: mpsc::Sender<String>,
     done: bool,
     finishing: bool,
 }
@@ -178,109 +179,126 @@ impl TimerTask {
     // ---
     async fn run(mut self) {
         // ---
+        use super::CHUNK_SIZE;
+
         let mut ticker = interval(self.interval);
         // Skip missed ticks — "discard unused budget" semantics.
         ticker.set_missed_tick_behavior(MissedTickBehavior::Skip);
 
         while !self.done {
             // ---
-            // Wait for the next tick OR a cmd that should fire first.
-
             tokio::select! {
                 _ = ticker.tick() => {
-                    // Normal tick: drain up to budget_bytes.
-                    let mut remaining = self.budget_bytes;
-                    loop {
-                        if remaining == 0 {
-                            break; // budget exhausted — discard remainder
-                        }
-                        match self.rx.try_recv() {
-                            Ok(chunk) => {
-                                tracing::debug!("timer task: sending chunk !!");
-                                if let Err(e) = self.quic_tx.write_all(&chunk).await {
-                                    let _ = self.err_tx.try_send(format!("QUIC write: {e}"));
-                                    // Fatal write error — wait for LinkUp with fresh tx.
-                                    if !self.wait_for_link_up().await {
-                                        return; // Shutdown received
-                                    }
-                                    ticker.reset();
-                                    break;
-                                }
-                                remaining = remaining.saturating_sub(chunk.len());
-                            }
-                            Err(mpsc::error::TryRecvError::Empty) => {
-                                tracing::info!("timer task: empty finishing:{}", self.finishing);
-                                if self.finishing {
-                                    tracing::info!("timer task: empty AND finishing");
-                                    let _ = self.quic_tx.shutdown().await;
-                                    tracing::info!("timer task: set done true");
-                                    self.done = true;
-                                }
-                                break
-                            },
-                            Err(mpsc::error::TryRecvError::Disconnected) => return,
-                        }
-                    }
-                    // Any remaining budget is discarded — intentional.
+                    self.drain_tick(CHUNK_SIZE).await;
                 }
 
                 cmd = self.cmd_rx.recv() => {
                     match cmd {
                         Some(RateCmd::LinkDown) => {
-                            // Drain and discard queued chunks.
-                            while self.rx.try_recv().is_ok() {}
-                            // Report the link-down error once so the pump rewinds.
-                            let _ = self.err_tx.try_send("link disabled".into());
-                            // Block until the pump delivers a fresh write half.
+                            // Rewind Q; spool retains data for replay on reconnect.
+                            self.q = self.spool.lock().await.bytes_acked;
+                            tracing::info!("timer task: link down — rewound Q, waiting for LinkUp");
                             if !self.wait_for_link_up().await {
-                                return; // Shutdown received
+                                return;
                             }
                             ticker.reset();
                         }
                         Some(RateCmd::LinkUp(_)) => {
-                            // Unexpected LinkUp outside of wait_for_link_up.
-                            tracing::debug!("timer task: unexpected LinkUp in running state — ignoring");
+                            tracing::debug!(
+                                "timer task: unexpected LinkUp in running state — ignoring"
+                            );
                         }
                         Some(RateCmd::Finish) => {
-                            tracing::debug!("timer task: got RateCmd::Finish !!");
+                            tracing::debug!("timer task: got RateCmd::Finish");
                             self.finishing = true;
-                            continue;
                         }
                         None => return,
                     }
                 }
             }
         }
-        tracing::info!("timer task: exiting.........");
+        tracing::info!("timer task: exiting");
     }
 
     // ---
 
-    /// Block until `RateCmd::LinkUp(new_tx)` arrives; swap `quic_tx`.
-    /// Returns `true` if link came back up, `false` if `Shutdown` arrived.
+    /// Drain up to `budget_bytes` from the spool into the QUIC stream.
+    ///
+    /// Encodes each chunk inline (header + payload) and writes to `quic_tx`.
+    /// On write error, logs a warning and waits for a fresh write half via `wait_for_link_up`.
+    /// Sets `self.done = true` when the spool EOF sentinel is drained and
+    /// `self.finishing` is set.
+    async fn drain_tick(&mut self, chunk_size: usize) {
+        // ---
+        let mut remaining = self.budget_bytes;
+
+        loop {
+            if remaining == 0 {
+                break; // budget exhausted
+            }
+
+            let chunk = {
+                let s = self.spool.lock().await;
+                let head = s.head;
+                // EOF sentinel: spool fully drained.
+                if head == u64::MAX && s.head_offset() <= self.q {
+                    drop(s);
+                    if self.finishing {
+                        tracing::info!("timer task: spool drained, sending FIN");
+                        let _ = self.quic_tx.shutdown().await;
+                        self.done = true;
+                    }
+                    break;
+                }
+                if s.head_offset() <= self.q {
+                    break; // nothing new yet
+                }
+                let slice = s.slice_from(self.q);
+                let n = slice.len().min(chunk_size).min(remaining);
+                slice[..n].to_vec()
+            };
+
+            if chunk.is_empty() {
+                break;
+            }
+
+            let encoded = encode_chunk(self.q, &chunk);
+            if let Err(e) = self.quic_tx.write_all(&encoded).await {
+                tracing::warn!("timer task: QUIC write error: {e} — waiting for LinkUp");
+                if !self.wait_for_link_up().await {
+                    self.done = true;
+                }
+                return;
+            }
+            self.q += chunk.len() as u64;
+            remaining = remaining.saturating_sub(chunk.len());
+        }
+    }
+
+    // ---
+
+    /// Block until `RateCmd::LinkUp(new_tx)` arrives; swap `quic_tx` and
+    /// rewind `q = spool.bytes_acked`.
+    ///
+    /// Returns `true` if link came back up, `false` if the cmd channel closed.
     async fn wait_for_link_up(&mut self) -> bool {
         // ---
-        // Drain any chunks that arrived while we were processing the error.
-        while self.rx.try_recv().is_ok() {}
-
         loop {
             match self.cmd_rx.recv().await {
                 Some(RateCmd::LinkUp(new_tx)) => {
-                    // Discard any chunks that arrived during the outage.
-                    while self.rx.try_recv().is_ok() {}
+                    self.q = self.spool.lock().await.bytes_acked;
                     self.quic_tx = new_tx;
-                    tracing::debug!("timer task: link up — new write half installed");
+                    tracing::debug!(q = self.q, "timer task: link up — new write half installed");
                     return true;
                 }
                 Some(RateCmd::LinkDown) => {
-                    // Duplicate LinkDown — drain again (defensive).
-                    while self.rx.try_recv().is_ok() {}
+                    // Duplicate LinkDown — rewind again (defensive).
+                    self.q = self.spool.lock().await.bytes_acked;
                     tracing::warn!("timer task: duplicate LinkDown while waiting for LinkUp");
                 }
                 Some(RateCmd::Finish) => {
-                    tracing::warn!("timer task: got RateCmd::Finish !!");
+                    tracing::warn!("timer task: got RateCmd::Finish while waiting for LinkUp");
                     self.finishing = true;
-                    continue;
                 }
                 None => return false,
             }
@@ -296,17 +314,11 @@ impl TimerTask {
 /// survives link outages via [`link_down`] / [`link_up`].
 pub struct RateLimiter {
     // ---
-    /// `None` when uncapped — `enqueue` writes directly to `direct_tx`.
-    chunk_tx: Option<mpsc::Sender<Vec<u8>>>,
-
     /// Command channel to the timer task (capped mode only).
     cmd_tx: Option<mpsc::Sender<RateCmd>>,
 
     /// Direct write half for uncapped (no rate limit) mode.
     direct_tx: Option<WriteHalf<QueLayStreamPtr>>,
-
-    /// Error reports from the timer task.
-    err_rx: mpsc::Receiver<String>,
 }
 
 impl RateLimiter {
@@ -317,36 +329,33 @@ impl RateLimiter {
     /// - `rate_bps = None`: uncapped — writes go directly to `quic_tx`, no
     ///   timer task is spawned.
     /// - `rate_bps = Some(n)`: `n` is in **bits/s**.  Spawns a timer task
-    ///   that meters at `n` bps.
-    pub fn new(quic_tx: WriteHalf<QueLayStreamPtr>, rate_bps: Option<u64>) -> Self {
+    ///   that reads directly from `spool` at `n` bps on each tick.
+    pub fn new(
+        quic_tx: WriteHalf<QueLayStreamPtr>,
+        rate_bps: Option<u64>,
+        spool: Arc<Mutex<SpoolBuffer>>,
+    ) -> Self {
         // ---
         use super::CHUNK_SIZE;
 
-        // Dummy error channel for uncapped mode — never sent to.
-        let (_, err_rx_dummy) = mpsc::channel(1);
-
         match rate_bps {
             None => Self {
-                chunk_tx: None,
                 cmd_tx: None,
                 direct_tx: Some(quic_tx),
-                err_rx: err_rx_dummy,
             },
 
             Some(bps) => {
                 let params = RateParams::from_rate_bps(bps, CHUNK_SIZE);
-                let (chunk_tx, chunk_rx) = mpsc::channel(params.channel_capacity);
                 let (cmd_tx, cmd_rx) = mpsc::channel(8);
-                let (err_tx, err_rx) = mpsc::channel(4);
 
                 tokio::spawn(
                     TimerTask {
-                        rx: chunk_rx,
+                        spool,
+                        q: 0,
                         quic_tx,
                         budget_bytes: params.budget_bytes,
                         interval: params.interval,
                         cmd_rx,
-                        err_tx,
                         done: false,
                         finishing: false,
                     }
@@ -354,43 +363,11 @@ impl RateLimiter {
                 );
 
                 Self {
-                    chunk_tx: Some(chunk_tx),
                     cmd_tx: Some(cmd_tx),
                     direct_tx: None,
-                    err_rx,
                 }
             }
         }
-    }
-
-    // ---
-
-    /// Enqueue a pre-encoded chunk (chunk header + payload) for metered
-    /// delivery to the QUIC stream.
-    ///
-    /// In uncapped mode, writes directly and awaits completion.
-    /// In capped mode, sends to the mpsc channel; blocks if the channel is
-    /// full (back-pressure when the pump is outrunning the rate).
-    pub async fn enqueue(&mut self, chunk: Vec<u8>) -> io::Result<()> {
-        // ---
-        match (&self.chunk_tx, &mut self.direct_tx) {
-            (Some(tx), None) => tx
-                .send(chunk)
-                .await
-                .map_err(|_| io::Error::new(io::ErrorKind::BrokenPipe, "timer task exited")),
-            (None, Some(tx)) => tx.write_all(&chunk).await,
-            _ => unreachable!(),
-        }
-    }
-
-    // ---
-
-    /// Check for an error reported by the timer task.
-    ///
-    /// Call at the top of each pump loop iteration.  Returns `Some(err)`
-    /// if the timer task has reported a write failure or link-down event.
-    pub fn poll_error(&mut self) -> Option<String> {
-        self.err_rx.try_recv().ok()
     }
 
     // ---
@@ -407,10 +384,8 @@ impl RateLimiter {
 
     /// Signal the timer task that the link is down.
     ///
-    /// The timer task will drain+discard its queue, report an error via
-    /// `err_tx`, then block waiting for `link_up`.  Call this before
-    /// `stream_rx.recv()` so the timer task has already discarded stale
-    /// chunks by the time the pump rewinds `Q = A`.
+    /// The timer task rewinds `q = spool.bytes_acked`, logs the event,
+    /// then blocks waiting for `link_up`.
     ///
     /// No-op in uncapped mode (direct write path handles errors inline).
     pub fn link_down(&self) {
@@ -443,7 +418,8 @@ impl RateLimiter {
     }
 
     // ---
-    // Tell timer task that it should drain (finish) then exit.
+
+    /// Tell the timer task to drain remaining spool data, send FIN, then exit.
     pub async fn finish(&mut self) -> io::Result<()> {
         // ---
         if let Some(cmd_tx) = &self.cmd_tx {
@@ -453,25 +429,6 @@ impl RateLimiter {
                 .map_err(|_| io::Error::new(io::ErrorKind::BrokenPipe, "timer task exited"))?;
         }
         Ok(())
-    }
-
-    // ---
-
-    /// Shutdown the write half cleanly (called on EOF path).
-    #[cfg(false)]
-    pub async fn shutdown(&mut self) -> io::Result<()> {
-        match &mut self.direct_tx {
-            Some(tx) => tx.shutdown().await,
-            // Capped: signal the timer task to exit cleanly.
-            None => {
-                if let Some(cmd_tx) = &self.cmd_tx {
-                    let _ = cmd_tx.send(RateCmd::Shutdown).await;
-                }
-                self.chunk_tx = None;
-                tokio::time::sleep(Duration::from_millis(50)).await;
-                Ok(())
-            }
-        }
     }
 }
 
@@ -520,19 +477,5 @@ mod tests {
             (MIN_INTERVAL_MS..=MAX_INTERVAL_MS).contains(&ms),
             "interval {ms}ms out of [{MIN_INTERVAL_MS},{MAX_INTERVAL_MS}]"
         );
-    }
-
-    #[test]
-    fn rate_params_channel_capacity_reasonable() {
-        // Channel should be at least 16 and at most a few hundred slots.
-        for rate_bps in [1_000_000, 10_000_000, 100_000_000, 1_000_000_000] {
-            let p = RateParams::from_rate_bps(rate_bps, CHUNK_SIZE);
-            assert!(p.channel_capacity >= 16, "capacity too small at {rate_bps}");
-            assert!(
-                p.channel_capacity <= 512,
-                "capacity {cap} suspiciously large at {rate_bps}",
-                cap = p.channel_capacity
-            );
-        }
     }
 }

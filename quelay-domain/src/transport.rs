@@ -136,7 +136,7 @@ pub trait QueLaySession: Send + Sync {
 
 /// Factory trait for creating Quelay sessions.
 ///
-/// Implementations: `quelay_quic::QuicTransport`, `quelay_link_sim::LinkSimTransport`.
+/// Implementations: `quelay_quic::QuicTransport`.
 #[async_trait]
 pub trait QueLayTransport: Send + Sync {
     // ---

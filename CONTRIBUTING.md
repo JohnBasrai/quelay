@@ -51,12 +51,10 @@ We follow [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) and
 
 **Publishing a release:**
 1. Update version in workspace `Cargo.toml` and `CHANGELOG.md`
-2. Run `./scripts/pre-publish.sh` to verify packaging
-3. `cargo publish -p quelay-domain`
-4. `cargo publish -p quelay-link-sim`
-5. `cargo publish -p quelay-quic`
-6. `cargo publish -p quelay-thrift`
-7. Tag and push: `git tag vX.Y.Z && git push origin vX.Y.Z`
+2. `cargo publish -p quelay-domain`
+3. `cargo publish -p quelay-quic`
+4. `cargo publish -p quelay-thrift`
+5. Tag and push: `git tag vX.Y.Z && git push origin vX.Y.Z`
 
 ## Questions?
 

@@ -37,7 +37,6 @@ and stops the agents. Takes ~2 minutes.
 
 ```bash
 cargo test -p quelay-domain
-cargo test -p quelay-link-sim
 ```
 
 ## Docs

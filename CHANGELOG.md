@@ -5,6 +5,15 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/)
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Changed
+- Eliminated the QUIC pump task — `RateLimiter` timer task now reads directly
+  from `SpoolBuffer`, removing one task and one mpsc queue per active uplink
+  stream (issue #7)
+- `encode_chunk` moved from `active_stream` into `rate_limiter`
+- `run_ack_task` refactored into `AckTask` struct with per-responsibility methods
+
 ---
 
 ## [0.1.1] - 2026-02-24
@@ -12,6 +21,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ### Removed
 - `e2e_test rate-limiter` subcommand — rate limiter accuracy is validated
   end-to-end by the ±10% BW utilization assertion in `multi-file --large`
+
+---
 
 ## [0.1.0] - 2026-02-24
 
