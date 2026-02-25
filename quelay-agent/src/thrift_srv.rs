@@ -29,11 +29,11 @@ use quelay_domain::{
 };
 
 use quelay_thrift::{
+    // ---
     LinkState as WireLinkState,
     QueLayAgentSyncHandler,
     StartStreamReturn,
     StreamInfo as WireStreamInfo,
-    // ---
     IDL_VERSION,
 };
 
@@ -156,6 +156,46 @@ impl AgentHandler {
             runtime_cfg,
         }
     }
+
+    /// Locks `runtime_cfg` and runs `f`, mapping lock poisoning to a
+    /// Thrift `InternalError` instead of panicking.
+    ///
+    /// Use this in RPC handlers to keep poison handling consistent and
+    /// avoid unwrap/expect on the config mutex.
+    fn lock_runtime_cfg(&self) -> thrift::Result<std::sync::MutexGuard<'_, RuntimeConfig>> {
+        // ---
+        self.runtime_cfg.lock().map_err(|_| {
+            thrift::Error::Application(thrift::ApplicationError::new(
+                thrift::ApplicationErrorKind::InternalError,
+                "runtime_cfg lock poisoned",
+            ))
+        })
+    }
+    fn send_cmd(&self, cmd: AgentCmd) -> thrift::Result<()> {
+        // ---
+        self.rt.block_on(async {
+            self.cmd_tx.send(cmd).await.map_err(|_| {
+                thrift::Error::Application(thrift::ApplicationError::new(
+                    thrift::ApplicationErrorKind::InternalError,
+                    "agent loop has shut down",
+                ))
+            })
+        })
+    }
+
+    fn send_callback_cmd(&self, cmd: CallbackCmd) -> thrift::Result<()> {
+        // ---
+        let delivered = self.rt.block_on(async { self.cb_tx.send(cmd).await });
+
+        if delivered {
+            Ok(())
+        } else {
+            Err(thrift::Error::Application(thrift::ApplicationError::new(
+                thrift::ApplicationErrorKind::InternalError,
+                "callback channel closed",
+            )))
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -166,7 +206,6 @@ impl QueLayAgentSyncHandler for AgentHandler {
     // ---
 
     fn handle_get_version(&self) -> thrift::Result<String> {
-        // ---
         tracing::debug!("get_version");
         Ok(IDL_VERSION.to_string())
     }
@@ -180,6 +219,7 @@ impl QueLayAgentSyncHandler for AgentHandler {
         priority: i8,
     ) -> thrift::Result<StartStreamReturn> {
         // ---
+
         tracing::info!(uuid = %uuid_str, priority, "stream_start");
 
         let uuid = Uuid::parse_str(&uuid_str).map_err(|e| {
@@ -198,21 +238,11 @@ impl QueLayAgentSyncHandler for AgentHandler {
 
         let domain_priority = Priority::from_i8(priority);
 
-        let cmd = AgentCmd::StreamStart {
+        self.send_cmd(AgentCmd::StreamStart {
             uuid,
             info: domain_info,
             priority: domain_priority,
-        };
-
-        self.rt
-            .block_on(self.cmd_tx.send(cmd))
-            .ok()
-            .ok_or_else(|| {
-                thrift::Error::Application(thrift::ApplicationError::new(
-                    thrift::ApplicationErrorKind::InternalError,
-                    "agent loop has shut down".to_string(),
-                ))
-            })?;
+        })?;
 
         Ok(StartStreamReturn {
             err_msg: Some(String::new()),
@@ -225,9 +255,11 @@ impl QueLayAgentSyncHandler for AgentHandler {
 
     fn handle_set_callback(&self, endpoint: String) -> thrift::Result<String> {
         // ---
+
         tracing::info!(%endpoint, "callback endpoint registered");
-        self.rt
-            .block_on(self.cb_tx.send(CallbackCmd::Register(endpoint)));
+
+        self.send_callback_cmd(CallbackCmd::Register(endpoint))?;
+
         Ok(String::new())
     }
 
@@ -235,6 +267,7 @@ impl QueLayAgentSyncHandler for AgentHandler {
 
     fn handle_get_link_state(&self) -> thrift::Result<WireLinkState> {
         // ---
+
         let state = self.rt.block_on(async { *self.link_state.lock().await });
         tracing::debug!(?state, "get_link_state");
 
@@ -250,12 +283,12 @@ impl QueLayAgentSyncHandler for AgentHandler {
 
     fn handle_get_bandwidth_cap_mbps(&self) -> thrift::Result<i32> {
         // ---
-        let cap = self
-            .runtime_cfg
-            .lock()
-            .expect("runtime_cfg lock poisoned")
-            .bw_cap_mbps;
+
+        let guard = self.lock_runtime_cfg()?;
+        let cap = guard.bw_cap_mbps;
+
         tracing::debug!(cap, "get_bandwidth_cap_mbps");
+
         Ok(cap as i32)
     }
 
@@ -265,40 +298,32 @@ impl QueLayAgentSyncHandler for AgentHandler {
 
     fn handle_link_enable(&self, enabled: bool) -> thrift::Result<()> {
         // ---
+
         tracing::info!(enabled, "link_enable (test/debug)");
-        let cmd = AgentCmd::LinkEnable(enabled);
-        self.rt.block_on(async {
-            let _ = self.cmd_tx.send(cmd).await;
-        });
-        Ok(())
+        self.send_cmd(AgentCmd::LinkEnable(enabled))
     }
 
     // ---
 
     fn handle_set_max_concurrent(&self, n: i32) -> thrift::Result<()> {
         // ---
+
         let n = n as usize;
         tracing::info!(n, "set_max_concurrent (test/debug)");
 
-        // Update the runtime config so the scheduler sees it immediately.
         {
-            let mut cfg = self.runtime_cfg.lock().expect("runtime_cfg lock poisoned");
+            let mut cfg = self.lock_runtime_cfg()?;
             cfg.max_concurrent = if n == 0 { DEFAULT_MAX_CONCURRENT } else { n };
         }
 
-        // Notify the agent loop so the scheduler can re-evaluate the queue.
-        let cmd = AgentCmd::SetMaxConcurrent(n);
-        self.rt.block_on(async {
-            let _ = self.cmd_tx.send(cmd).await;
-        });
-
-        Ok(())
+        self.send_cmd(AgentCmd::SetMaxConcurrent(n))
     }
 
     // ---
 
     fn handle_set_chunk_size_bytes(&self, n: i32) -> thrift::Result<()> {
         // ---
+
         let requested = n as usize;
         tracing::info!(requested, "set_chunk_size_bytes (test/debug)");
 
@@ -315,13 +340,11 @@ impl QueLayAgentSyncHandler for AgentHandler {
             )));
         }
 
-        self.runtime_cfg
-            .lock()
-            .expect("runtime_cfg lock poisoned")
-            .chunk_size_bytes = effective;
+        {
+            let mut cfg = self.lock_runtime_cfg()?;
+            cfg.chunk_size_bytes = effective;
+        }
 
-        // No AgentCmd needed — active_stream reads chunk_size_bytes from
-        // RuntimeConfig when it starts a new stream, not per-chunk.
         Ok(())
     }
 }

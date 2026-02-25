@@ -2,7 +2,7 @@ use std::collections::{HashMap, VecDeque};
 
 use uuid::Uuid;
 
-use super::priority::Priority;
+use super::{Priority, QueLayError, Result};
 
 // ---------------------------------------------------------------------------
 // Internal types
@@ -124,7 +124,7 @@ impl DrrScheduler {
     ///
     /// C2I streams consume from the budget first. The remaining budget is
     /// distributed across BulkTransfer streams via DRR.
-    pub fn schedule(&mut self, mut budget: u64) -> Vec<(Uuid, u64)> {
+    pub fn schedule(&mut self, mut budget: u64) -> Result<Vec<(Uuid, u64)>> {
         // ---
         let mut result = Vec::new();
 
@@ -133,7 +133,10 @@ impl DrrScheduler {
             if budget == 0 {
                 break;
             }
-            let entry = self.streams.get_mut(&id).unwrap();
+            let entry = self
+                .streams
+                .get_mut(&id)
+                .ok_or(QueLayError::StreamNotFound(id))?;
             let send = budget.min(entry.backlog).min(entry.quantum as u64);
             if send > 0 {
                 result.push((id, send));
@@ -144,7 +147,7 @@ impl DrrScheduler {
         // --- DRR: bulk transfers ---
         let n = self.bulk_order.len();
         if n == 0 || budget == 0 {
-            return result;
+            return Ok(result);
         }
 
         // Accumulate per-stream allocations so each stream appears at most
@@ -159,7 +162,11 @@ impl DrrScheduler {
         while budget > 0 && consecutive_idle < n {
             // ---
             if let Some(id) = self.bulk_order.front().copied() {
-                let entry = self.streams.get_mut(&id).unwrap();
+                // ---
+                let entry = self
+                    .streams
+                    .get_mut(&id)
+                    .ok_or(QueLayError::StreamNotFound(id))?;
                 entry.deficit += entry.quantum;
 
                 let send = budget.min(entry.deficit as u64).min(entry.backlog);
@@ -180,8 +187,7 @@ impl DrrScheduler {
         }
 
         result.extend(bulk_allocs);
-
-        result
+        Ok(result)
     }
 
     // ---

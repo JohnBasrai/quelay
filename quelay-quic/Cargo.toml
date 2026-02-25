@@ -9,14 +9,22 @@ description = "QUIC transport implementation for Quelay over constrained links"
 publish     = false
 
 [dependencies]
-quelay-domain = { workspace = true }
-tokio         = { workspace = true }
+anyhow        = { workspace = true }
 async-trait   = { workspace = true }
-uuid          = { workspace = true }
-thiserror     = { workspace = true }
 bytes         = { workspace = true }
-tracing       = { workspace = true }
+quelay-domain = { workspace = true }
 quinn         = "0.11"
-rustls        = { version = "0.23", default-features = false, features = ["ring"] }
 rcgen         = "0.13"
+rustls        = { version = "0.23", default-features = false, features = ["ring"] }
 rustls-pki-types = "1"
+thiserror     = { workspace = true }
+tokio         = { workspace = true }
+tracing       = { workspace = true }
+uuid          = { workspace = true }
+
+[lints.clippy]
+panic_in_result_fn    = "deny"
+uninlined_format_args = "warn"
+unwrap_used           = "deny"
+expect_used           = "deny"
+panic                 = "deny"

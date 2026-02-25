@@ -27,7 +27,7 @@ use uuid::Uuid;
 
 // ---
 
-use quelay_domain::{LinkState, QueueStatus, StreamInfo};
+use quelay_domain::{LinkState, QueLayError, QueueStatus, Result, StreamInfo};
 
 // ---
 
@@ -145,8 +145,8 @@ impl CallbackAgent {
     /// Spawn the callback agent thread and return the sender handle.
     ///
     /// The agent runs on a dedicated `std::thread` so the sync Thrift client
-    /// never blocks the tokio runtime.
-    pub fn spawn() -> CallbackTx {
+    /// never blocks the tokio runtime.1
+    pub fn spawn() -> Result<CallbackTx> {
         // ---
         let (tx, rx) = mpsc::channel(64);
         let agent = CallbackAgent { rx };
@@ -154,9 +154,9 @@ impl CallbackAgent {
         std::thread::Builder::new()
             .name("quelay-callback".into())
             .spawn(move || agent.run())
-            .expect("failed to spawn callback agent thread");
+            .map_err(QueLayError::from)?; // or map_err(|e| QueLayError::Transport(e.to_string()))?
 
-        CallbackTx { tx }
+        Ok(CallbackTx { tx })
     }
 
     // ---

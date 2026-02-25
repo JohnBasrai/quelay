@@ -223,7 +223,14 @@ impl AggregateTimerTask {
                 sched.set_backlog(*uuid, backlog);
             }
 
-            let allocs = sched.schedule(self.budget_bytes as u64);
+            let allocs = match sched.schedule(self.budget_bytes as u64) {
+                Ok(allocs) => allocs,
+                Err(err) => {
+                    tracing::warn!("schedule failed:{err}");
+                    continue;
+                }
+            };
+
             drop(sched); // release scheduler lock before sending
 
             for (uuid, bytes) in allocs {
