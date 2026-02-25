@@ -84,6 +84,7 @@ impl QueLayCallbackSyncHandler for CallbackHandler {
         _info: StreamInfo,
         port: i32,
     ) -> thrift::Result<()> {
+        // ---
         let _ = self
             .tx
             .lock()

@@ -141,7 +141,7 @@ pub enum Mode {
         peer: SocketAddr,
 
         /// TLS server name — must match the name used when the server
-        /// generated its cert (default: "quelay").
+        /// generated its cert.
         #[arg(long, default_value = "quelay")]
         server_name: String,
 

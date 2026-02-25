@@ -18,6 +18,10 @@
 //! See `quelay-agent/src/bin/README.md` for the full design rationale and
 //! mapping to legacy tests.
 
+#![allow(clippy::unwrap_used)]
+#![allow(clippy::expect_used)]
+#![allow(clippy::panic)]
+
 use anyhow::{bail, Result};
 use std::collections::BTreeMap;
 use std::net::SocketAddr;
@@ -1120,7 +1124,7 @@ async fn cmd_small_file_edge_cases(
 #[tokio::main]
 async fn main() {
     if let Err(e) = real_main().await {
-        eprintln!("\nERROR: {:#}\n", e);
+        eprintln!("\nERROR: {e:#}\n");
         std::process::exit(1);
     }
 }

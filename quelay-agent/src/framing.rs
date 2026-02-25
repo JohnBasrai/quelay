@@ -309,37 +309,22 @@ where
         .await
         .map_err(|e| QueLayError::Transport(format!("framing read fixed header: {e}")))?;
 
-    if fixed[0] != MAGIC {
+    let header = FixedHeader::parse(&fixed)?;
+
+    if header.payload_len as usize > MAX_JSON_PAYLOAD {
         return Err(QueLayError::Transport(format!(
-            "framing bad magic: expected 0x{MAGIC:02X}, got 0x{:02X}",
-            fixed[0]
+            "framing payload_len {} exceeds max {MAX_JSON_PAYLOAD}",
+            header.payload_len
         )));
     }
 
-    if fixed[1] != VERSION {
-        return Err(QueLayError::Transport(format!(
-            "framing unsupported version: expected 0x{VERSION:02X}, got 0x{:02X}",
-            fixed[1]
-        )));
-    }
-
-    let opcode = fixed[2];
-    // fixed[3] is reserved/pad — ignored on read for forward compatibility.
-    let payload_len = u32::from_be_bytes(fixed[4..8].try_into().unwrap()) as usize;
-
-    if payload_len > MAX_JSON_PAYLOAD {
-        return Err(QueLayError::Transport(format!(
-            "framing payload_len {payload_len} exceeds max {MAX_JSON_PAYLOAD}"
-        )));
-    }
-
-    let mut payload = vec![0u8; payload_len];
+    let mut payload = vec![0u8; header.payload_len as usize];
     stream
         .read_exact(&mut payload)
         .await
         .map_err(|e| QueLayError::Transport(format!("framing read payload: {e}")))?;
 
-    match opcode {
+    match header.opcode {
         OP_NEW_STREAM => {
             let header: StreamHeader = serde_json::from_slice(&payload)
                 .map_err(|e| QueLayError::Transport(format!("framing deserialize error: {e}")))?;
@@ -351,7 +336,8 @@ where
             Ok(StreamOpen::Reconnect(header))
         }
         _ => Err(QueLayError::Transport(format!(
-            "framing unknown opcode: 0x{opcode:02X}"
+            "framing unknown opcode: 0x{:02X}",
+            header.opcode
         ))),
     }
 }
@@ -410,12 +396,11 @@ where
     let payload_len = u32::try_from(payload.len())
         .map_err(|_| QueLayError::Transport("wormhole payload exceeds 4 GiB".into()))?;
 
-    let mut fixed = [0u8; FIXED_HEADER_LEN];
-    fixed[0] = MAGIC;
-    fixed[1] = VERSION;
-    fixed[2] = OP_NEW_STREAM; // wormhole msgs ride on an established stream
-    fixed[3] = 0x00; // reserved / pad
-    fixed[4..8].copy_from_slice(&payload_len.to_be_bytes());
+    let header = FixedHeader {
+        opcode: OP_NEW_STREAM,
+        payload_len,
+    };
+    let fixed = header.bytes();
 
     stream
         .write_all(&fixed)
@@ -447,22 +432,8 @@ where
         .await
         .map_err(|e| QueLayError::Transport(format!("wormhole read fixed header: {e}")))?;
 
-    if fixed[0] != MAGIC {
-        return Err(QueLayError::Transport(format!(
-            "wormhole bad magic: expected 0x{MAGIC:02X}, got 0x{:02X}",
-            fixed[0]
-        )));
-    }
-
-    if fixed[1] != VERSION {
-        return Err(QueLayError::Transport(format!(
-            "wormhole unsupported version: expected 0x{VERSION:02X}, got 0x{:02X}",
-            fixed[1]
-        )));
-    }
-
-    // fixed[2] = opcode, fixed[3] = pad — not inspected for wormhole msgs.
-    let payload_len = u32::from_be_bytes(fixed[4..8].try_into().unwrap()) as usize;
+    let header = FixedHeader::parse(&fixed)?;
+    let payload_len = header.payload_len as usize;
 
     if payload_len > MAX_JSON_PAYLOAD {
         return Err(QueLayError::Transport(format!(
@@ -574,8 +545,11 @@ where
         .await
         .map_err(|e| QueLayError::Transport(format!("chunk read header[1..]: {e}")))?;
 
-    let stream_offset = u64::from_be_bytes(hdr[0..8].try_into().unwrap());
-    let payload_len = u16::from_be_bytes(hdr[8..10].try_into().unwrap()) as usize;
+    let stream_offset = u64::from_be_bytes([
+        hdr[0], hdr[1], hdr[2], hdr[3], hdr[4], hdr[5], hdr[6], hdr[7],
+    ]);
+
+    let payload_len = u16::from_be_bytes([hdr[8], hdr[9]]) as usize;
 
     if payload_len > CHUNK_SIZE {
         return Err(QueLayError::Transport(format!(
@@ -595,11 +569,76 @@ where
     }))
 }
 
+struct FixedHeader {
+    // ---
+    opcode: u8,
+    payload_len: u32,
+}
+
+impl FixedHeader {
+    // ---
+
+    fn parse(buf: &[u8; FIXED_HEADER_LEN]) -> Result<Self> {
+        // ---
+
+        if buf[0] != MAGIC {
+            return Err(QueLayError::Transport(format!(
+                "framing bad magic: expected 0x{MAGIC:02X}, got 0x{:02X}",
+                buf[0]
+            )));
+        }
+
+        if buf[1] != VERSION {
+            return Err(QueLayError::Transport(format!(
+                "framing unsupported version: expected 0x{VERSION:02X}, got 0x{:02X}",
+                buf[1]
+            )));
+        }
+
+        let opcode = buf[2];
+
+        // buf[3] is reserved/pad — ignored on read for forward compatibility.
+
+        let payload_len = u32::from_be_bytes([buf[4], buf[5], buf[6], buf[7]]) as usize;
+
+        if payload_len > MAX_JSON_PAYLOAD {
+            return Err(QueLayError::Transport(format!(
+                "framing payload_len {payload_len} exceeds max {MAX_JSON_PAYLOAD}"
+            )));
+        }
+
+        Ok(Self {
+            opcode,
+            payload_len: payload_len as u32,
+        })
+    }
+
+    fn bytes(&self) -> [u8; FIXED_HEADER_LEN] {
+        // ---
+        let mut buf = [0u8; FIXED_HEADER_LEN];
+
+        buf[0] = MAGIC;
+        buf[1] = VERSION;
+        buf[2] = self.opcode;
+        buf[3] = 0; // reserved
+
+        buf[4..8].copy_from_slice(&self.payload_len.to_be_bytes());
+
+        buf
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
+#[allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::panic_in_result_fn
+)]
 mod tests {
     // ---
     use std::io::Cursor;

@@ -10,16 +10,17 @@ authors.workspace    = true
 repository.workspace = true
 
 [dependencies]
+anyhow             = { workspace = true }
+clap               = { version = "4", features = ["derive"] }
+rand               = { version = "0.8", features = ["small_rng"] }
+rustls-pki-types   = "1"
+sha2               = "0.10"
+thrift             = "0.17"
+tokio              = { workspace = true }
+tracing            = { workspace = true }
+tracing-subscriber = "0.3"
+uuid               = { workspace = true }
+
 quelay-domain      = { workspace = true }
 quelay-thrift      = { workspace = true }
 quelay-quic        = { workspace = true }
-tokio              = { workspace = true }
-uuid               = { workspace = true }
-tracing            = { workspace = true }
-tracing-subscriber = "0.3"
-rustls-pki-types   = "1"
-clap               = { version = "4", features = ["derive"] }
-thrift             = "0.17"
-anyhow             = "1"
-sha2               = "0.10"
-rand               = { version = "0.8", features = ["small_rng"] }

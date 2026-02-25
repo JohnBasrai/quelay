@@ -687,6 +687,7 @@ dependencies = [
 name = "quelay-domain"
 version = "0.1.1"
 dependencies = [
+ "anyhow",
  "async-trait",
  "bytes",
  "thiserror 1.0.69",
@@ -718,6 +719,7 @@ dependencies = [
 name = "quelay-quic"
 version = "0.1.1"
 dependencies = [
+ "anyhow",
  "async-trait",
  "bytes",
  "quelay-domain",

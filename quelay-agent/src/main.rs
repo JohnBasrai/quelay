@@ -122,7 +122,7 @@ async fn main() -> anyhow::Result<()> {
     let link_state = Arc::new(Mutex::new(LinkState::Connecting));
     let (cmd_tx, cmd_rx) = mpsc::channel(64);
 
-    let cb_tx = CallbackAgent::spawn();
+    let cb_tx = CallbackAgent::spawn()?;
     spawn_ping_timer(cb_tx.clone(), std::time::Duration::from_secs(60));
 
     let (initial_session, transport_cfg) = match &cfg.mode {

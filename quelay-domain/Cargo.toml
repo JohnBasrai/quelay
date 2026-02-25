@@ -9,9 +9,18 @@ description = "Core traits, types, and DRR scheduler for the Quelay data relay"
 publish      = false
 
 [dependencies]
-tokio       = { workspace = true }
+anyhow      = { workspace = true }
 async-trait = { workspace = true }
-uuid        = { workspace = true }
-thiserror   = { workspace = true }
 bytes       = { workspace = true }
+thiserror   = { workspace = true }
+tokio       = { workspace = true }
 tracing     = { workspace = true }
+uuid        = { workspace = true }
+
+
+[lints.clippy]
+panic_in_result_fn    = "deny"
+uninlined_format_args = "warn"
+unwrap_used           = "deny"
+expect_used           = "deny"
+panic                 = "deny"

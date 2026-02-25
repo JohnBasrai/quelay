@@ -2,7 +2,7 @@ use std::collections::{HashMap, VecDeque};
 
 use uuid::Uuid;
 
-use super::priority::Priority;
+use super::{Priority, QueLayError, Result};
 
 // ---------------------------------------------------------------------------
 // Internal types
@@ -124,7 +124,7 @@ impl DrrScheduler {
     ///
     /// C2I streams consume from the budget first. The remaining budget is
     /// distributed across BulkTransfer streams via DRR.
-    pub fn schedule(&mut self, mut budget: u64) -> Vec<(Uuid, u64)> {
+    pub fn schedule(&mut self, mut budget: u64) -> Result<Vec<(Uuid, u64)>> {
         // ---
         let mut result = Vec::new();
 
@@ -133,7 +133,10 @@ impl DrrScheduler {
             if budget == 0 {
                 break;
             }
-            let entry = self.streams.get_mut(&id).unwrap();
+            let entry = self
+                .streams
+                .get_mut(&id)
+                .ok_or(QueLayError::StreamNotFound(id))?;
             let send = budget.min(entry.backlog).min(entry.quantum as u64);
             if send > 0 {
                 result.push((id, send));
@@ -144,7 +147,7 @@ impl DrrScheduler {
         // --- DRR: bulk transfers ---
         let n = self.bulk_order.len();
         if n == 0 || budget == 0 {
-            return result;
+            return Ok(result);
         }
 
         // Accumulate per-stream allocations so each stream appears at most
@@ -159,7 +162,11 @@ impl DrrScheduler {
         while budget > 0 && consecutive_idle < n {
             // ---
             if let Some(id) = self.bulk_order.front().copied() {
-                let entry = self.streams.get_mut(&id).unwrap();
+                // ---
+                let entry = self
+                    .streams
+                    .get_mut(&id)
+                    .ok_or(QueLayError::StreamNotFound(id))?;
                 entry.deficit += entry.quantum;
 
                 let send = budget.min(entry.deficit as u64).min(entry.backlog);
@@ -180,8 +187,7 @@ impl DrrScheduler {
         }
 
         result.extend(bulk_allocs);
-
-        result
+        Ok(result)
     }
 
     // ---
@@ -208,9 +214,12 @@ impl DrrScheduler {
 // Tests
 // ---------------------------------------------------------------------------
 
+#[allow(clippy::unwrap_used)]
+#[allow(clippy::panic_in_result_fn)]
 #[cfg(test)]
 mod tests {
     // ---
+
     use super::*;
 
     // ---
@@ -240,7 +249,7 @@ mod tests {
     /// | 10| Throughput measurement vs. BW cap           | ✅ integration |
 
     #[test]
-    fn c2i_drains_before_bulk() {
+    fn c2i_drains_before_bulk() -> Result<()> {
         // ---
         let mut sched = DrrScheduler::new();
         let c2i = Uuid::new_v4();
@@ -251,17 +260,18 @@ mod tests {
         sched.set_backlog(c2i, 1_024);
         sched.set_backlog(bulk, 4_096);
 
-        let allocs = sched.schedule(8_192);
+        let allocs = sched.schedule(8_192)?;
         let c2i_pos = allocs.iter().position(|(id, _)| *id == c2i).unwrap();
         let bulk_pos = allocs.iter().position(|(id, _)| *id == bulk).unwrap();
 
         assert!(c2i_pos < bulk_pos, "C2I must appear before BulkTransfer");
+        Ok(())
     }
 
     // ---
 
     #[test]
-    fn bulk_streams_share_budget() {
+    fn bulk_streams_share_budget() -> Result<()> {
         // ---
         let mut sched = DrrScheduler::new();
         let a = Uuid::new_v4();
@@ -272,7 +282,7 @@ mod tests {
         sched.set_backlog(a, 16_384);
         sched.set_backlog(b, 16_384);
 
-        let allocs = sched.schedule(16_384);
+        let allocs = sched.schedule(16_384)?;
         let total: u64 = allocs.iter().map(|(_, n)| n).sum();
 
         assert_eq!(total, 16_384, "full budget should be consumed");
@@ -284,12 +294,13 @@ mod tests {
             allocs.iter().any(|(id, _)| *id == b),
             "stream b must be scheduled"
         );
+        Ok(())
     }
 
     // ---
 
     #[test]
-    fn idle_stream_does_not_accumulate_deficit() {
+    fn idle_stream_does_not_accumulate_deficit() -> Result<()> {
         // ---
         let mut sched = DrrScheduler::new();
         let a = Uuid::new_v4();
@@ -297,19 +308,20 @@ mod tests {
         sched.register(a, Priority::BulkTransfer);
         sched.set_backlog(a, 0); // idle
 
-        sched.schedule(8_192);
+        sched.schedule(8_192)?;
 
         let entry = &sched.streams[&a];
         assert_eq!(
             entry.deficit, 0,
             "idle stream deficit must be reset to zero"
         );
+        Ok(())
     }
 
     // ---
 
     #[test]
-    fn deregister_removes_stream() {
+    fn deregister_removes_stream() -> Result<()> {
         // ---
         let mut sched = DrrScheduler::new();
         let a = Uuid::new_v4();
@@ -318,15 +330,16 @@ mod tests {
         sched.set_backlog(a, 4_096);
         sched.deregister(a);
 
-        let allocs = sched.schedule(8_192);
+        let allocs = sched.schedule(8_192)?;
         assert!(
             allocs.is_empty(),
             "deregistered stream must not be scheduled"
         );
+        Ok(())
     }
 
     #[test]
-    fn schedule_never_exceeds_budget() {
+    fn schedule_never_exceeds_budget() -> Result<()> {
         // ---
         let mut sched = DrrScheduler::new();
         let a = Uuid::new_v4();
@@ -338,19 +351,20 @@ mod tests {
         sched.set_backlog(b, 1_000_000);
 
         let budget = 3_000;
-        let allocs = sched.schedule(budget);
+        let allocs = sched.schedule(budget)?;
         let total: u64 = allocs.iter().map(|(_, n)| n).sum();
 
         assert!(
             total <= budget,
             "allocated {total} bytes but budget was only {budget}"
         );
+        Ok(())
     }
 
     // ---
 
     #[test]
-    fn c2i_does_not_starve_when_bulk_present() {
+    fn c2i_does_not_starve_when_bulk_present() -> Result<()> {
         // ---
         // C2I backlog is smaller than the quantum, so it should be fully
         // drained in a single schedule call even when bulk streams compete.
@@ -365,7 +379,7 @@ mod tests {
 
         // Budget large enough for both, but we only care that C2I gets its
         // full 512 bytes before bulk touches anything.
-        let allocs = sched.schedule(1_048_576);
+        let allocs = sched.schedule(1_048_576)?;
 
         let c2i_bytes: u64 = allocs
             .iter()
@@ -386,5 +400,6 @@ mod tests {
             bulk_bytes > 0,
             "bulk must not be starved when budget allows"
         );
+        Ok(())
     }
 }

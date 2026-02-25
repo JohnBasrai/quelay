@@ -67,8 +67,12 @@ impl QuicTransport {
 
         let ccfg = quinn::ClientConfig::new(Arc::new(quinn_tls));
 
-        let mut endpoint = quinn::Endpoint::client("0.0.0.0:0".parse().unwrap())
-            .map_err(|e: std::io::Error| QueLayError::Transport(e.to_string()))?;
+        let bind_addr: SocketAddr = "0.0.0.0:0"
+            .parse::<std::net::SocketAddr>()
+            .map_err(|e| QueLayError::Transport(e.to_string()))?;
+
+        let mut endpoint = quinn::Endpoint::client(bind_addr)
+            .map_err(|e| QueLayError::Transport(e.to_string()))?;
 
         endpoint.set_default_client_config(ccfg);
 
