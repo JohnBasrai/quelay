@@ -55,9 +55,11 @@ use super::{
     // ---
     write_connect_header,
     write_reconnect_header,
+    AggregateRateLimiter,
     CallbackTx,
     ReconnectHeader,
     StreamHeader,
+    UplinkContext,
 };
 
 // ---------------------------------------------------------------------------
@@ -184,11 +186,12 @@ pub struct SessionManager {
     /// events (stream_started, stream_done, stream_failed) directly.
     cb_tx: CallbackTx,
 
-    /// Uplink bandwidth cap in bits/second.  `None` = uncapped.
+    /// Shared aggregate rate limiter — distributes the configured `bw_cap_bps`
+    /// across all concurrent uplink streams via DRR scheduling.
     ///
-    /// Passed to each [`RateLimiter`] on stream open.  Configured via
-    /// `--bw-cap-mbps` CLI flag (0 = uncapped).
-    bw_cap_bps: Option<u64>,
+    /// In uncapped mode (`bw_cap_bps = None`) the ARL is still present but
+    /// its timer task is not spawned; each stream gets a direct write half.
+    arl: Arc<AggregateRateLimiter>,
 
     /// Notified by [`run`] after a successful reconnect so the accept loop
     /// can resume calling `accept_stream` on the new session.
@@ -215,7 +218,7 @@ impl SessionManager {
             transport_cfg: Mutex::new(transport_cfg),
             link_state,
             cb_tx,
-            bw_cap_bps,
+            arl: Arc::new(AggregateRateLimiter::new(bw_cap_bps)),
             session_restored: Arc::new(Notify::new()),
         }
     }
@@ -250,7 +253,7 @@ impl SessionManager {
                     session,
                     &pending,
                     self.cb_tx.clone(),
-                    self.bw_cap_bps,
+                    Arc::clone(&self.arl),
                 )
                 .await
                 {
@@ -324,7 +327,7 @@ impl SessionManager {
                         "session restored — restoring active streams and draining pending queue"
                     );
                     Self::restore_active(remote).await;
-                    Self::drain_pending(remote, self.cb_tx.clone(), self.bw_cap_bps).await;
+                    Self::drain_pending(remote, self.cb_tx.clone(), Arc::clone(&self.arl)).await;
                     // Re-arm the accept loop on the new session.
                     self.session_restored.notify_one();
                 }
@@ -587,7 +590,11 @@ impl SessionManager {
     // ---
 
     /// Re-issue all pending streams onto a freshly reconnected session.
-    async fn drain_pending(remote: &mut RemoteState, cb_tx: CallbackTx, bw_cap_bps: Option<u64>) {
+    async fn drain_pending(
+        remote: &mut RemoteState,
+        cb_tx: CallbackTx,
+        arl: Arc<AggregateRateLimiter>,
+    ) {
         // ---
         let session = match remote.session.as_ref() {
             Some(s) => s,
@@ -597,8 +604,13 @@ impl SessionManager {
         let uuids: Vec<Uuid> = remote.pending.keys().copied().collect();
         for uuid in uuids {
             if let Some(pending) = remote.pending.get(&uuid) {
-                match Self::open_stream_on_session(session, pending, cb_tx.clone(), bw_cap_bps)
-                    .await
+                match Self::open_stream_on_session(
+                    session,
+                    pending,
+                    cb_tx.clone(),
+                    Arc::clone(&arl),
+                )
+                .await
                 {
                     Ok(handle) => {
                         tracing::info!(%uuid, "pending stream re-issued after reconnect");
@@ -619,6 +631,10 @@ impl SessionManager {
     /// uplink [`ActiveStream`] task to pipe bytes from the client TCP socket
     /// into the QUIC stream.
     ///
+    /// Registers the stream with the [`AggregateRateLimiter`] to obtain an
+    /// `alloc_rx` channel (capped mode) or `None` (uncapped), then passes
+    /// both to [`ActiveStream::spawn_uplink`].
+    ///
     /// # Why an associated function rather than `&self`?
     ///
     /// Both call sites hold a `MutexGuard<Option<RemoteState>>` when invoking
@@ -630,7 +646,7 @@ impl SessionManager {
         session: &QueLaySessionPtr,
         pending: &PendingStream,
         cb_tx: CallbackTx,
-        bw_cap_bps: Option<u64>,
+        arl: Arc<AggregateRateLimiter>,
     ) -> anyhow::Result<super::UplinkHandle> {
         // ---
         let mut stream = session.open_stream(pending.priority).await?;
@@ -647,13 +663,21 @@ impl SessionManager {
 
         write_connect_header(&mut stream, &header).await?;
 
+        // Register with ARL — get alloc_rx (capped) or None (uncapped),
+        // plus the backlog atomic the StreamPump will update after each drain.
+        let (alloc_rx, backlog) = arl.register(pending.uuid, pending.priority).await;
+
         let handle = ActiveStream::spawn_uplink(
             pending.uuid,
             pending.info.clone(),
             pending.priority,
             stream,
             cb_tx,
-            bw_cap_bps,
+            UplinkContext {
+                alloc_rx,
+                backlog,
+                arl: Arc::clone(&arl),
+            },
         )
         .await?;
 

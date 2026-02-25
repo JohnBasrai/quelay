@@ -147,8 +147,16 @@ impl DrrScheduler {
             return result;
         }
 
-        let mut visited = 0;
-        while budget > 0 && visited < n {
+        // Accumulate per-stream allocations so each stream appears at most
+        // once in the result.
+        let mut bulk_allocs: HashMap<Uuid, u64> = HashMap::new();
+
+        // Keep rotating through streams until the budget is exhausted or all
+        // streams are idle.  A single pass of `n` streams is not enough when
+        // budget >> quantum — the loop must continue until no stream can make
+        // progress.
+        let mut consecutive_idle = 0;
+        while budget > 0 && consecutive_idle < n {
             // ---
             if let Some(id) = self.bulk_order.front().copied() {
                 let entry = self.streams.get_mut(&id).unwrap();
@@ -157,18 +165,21 @@ impl DrrScheduler {
                 let send = budget.min(entry.deficit as u64).min(entry.backlog);
                 if send > 0 {
                     entry.deficit -= send as u32;
-                    result.push((id, send));
+                    *bulk_allocs.entry(id).or_insert(0) += send;
                     budget = budget.saturating_sub(send);
+                    consecutive_idle = 0;
                 } else {
                     // Idle stream — reset deficit to prevent burst credit
                     // accumulation while the stream has no data.
                     entry.deficit = 0;
+                    consecutive_idle += 1;
                 }
 
                 self.bulk_order.rotate_left(1);
             }
-            visited += 1;
         }
+
+        result.extend(bulk_allocs);
 
         result
     }
