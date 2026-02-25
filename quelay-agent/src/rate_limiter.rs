@@ -1,63 +1,74 @@
-//! Rate limiter — metered write path for the uplink QUIC stream.
-//!
-//! [`RateLimiter`] owns the write half of a QUIC stream and meters bytes into
-//! it at a configured bits-per-second ceiling.  A dedicated timer task wakes
-//! on a computed interval, reads directly from the [`SpoolBuffer`] up to a
-//! byte budget per tick, encodes chunk headers inline, and writes to the QUIC
-//! stream.  Unused budget is discarded before the next tick.
+//! Rate limiter — metered write path for uplink QUIC streams.
 //!
 //! ## Architecture
 //!
+//! A single [`AggregateRateLimiter`] (ARL) is shared across all active uplink
+//! streams.  One aggregate timer task wakes at a computed interval, reads each
+//! stream's backlog from its [`Arc<AtomicU64>`], calls
+//! [`DrrScheduler::schedule`] with the total tick budget, and sends an
+//! [`AllocTicket`] to each stream's [`StreamPump`] task.
+//!
+//! Each [`StreamPump`] does a `select!` on two channels:
+//!
 //! ```text
-//! TCP reader task
-//!     │  push(data)
-//!     ▼
-//! SpoolBuffer
-//!     │
-//!     │  timer task reads slice_from(q) up to budget_bytes per tick
-//!     ▼
-//! QUIC WriteHalf
-//!     ▲
-//! cmd_tx mpsc
-//! (LinkDown / LinkUp / Finish)
+//! alloc_rx  ← AllocTicket(n)  sent by ARL aggregate timer
+//! cmd_rx    ← RateCmd         sent by AckTask (LinkDown / LinkUp / Finish)
 //! ```
 //!
-//! ## Timer interval
+//! On receiving an `AllocTicket` the pump drains up to `n` bytes from its
+//! [`SpoolBuffer`] into the QUIC write half, then updates its backlog atomic
+//! so the ARL scheduler sees current data for the next tick.
 //!
-//! We target [`CHUNKS_PER_TICK`] chunks per wake-up so each tick does
-//! meaningful work without waking too frequently:
+//! ## Backlog tracking (Option A)
+//!
+//! Each registered stream's backlog is tracked via an [`Arc<AtomicU64>`]
+//! written by the [`StreamPump`] after each drain and read by the ARL timer
+//! before calling `schedule()`.  No extra channel needed.
+//!
+//! ## Uncapped mode
+//!
+//! When `rate_bps = None` the ARL is constructed in uncapped mode.
+//! [`AggregateRateLimiter::register`] returns `None` for `alloc_rx`.
+//! The [`StreamPump`] is not spawned; `RateLimiter` holds a direct write half
+//! and the existing uncapped write path is preserved unchanged.
+//!
+//! ## Timer interval
 //!
 //! ```text
 //! bytes_per_tick = CHUNKS_PER_TICK * CHUNK_SIZE
 //! interval_ms    = bytes_per_tick * 1000 / rate_bytes_per_sec
 //! ```
 //!
-//! Clamped to [`[MIN_INTERVAL_MS, MAX_INTERVAL_MS]`].  When clamped,
-//! `bytes_per_tick` is recalculated from the clamped interval so long-term
-//! throughput always equals the configured rate.
+//! Clamped to `[MIN_INTERVAL_MS, MAX_INTERVAL_MS]`.  When clamped,
+//! `budget_bytes` is recalculated so long-term throughput equals the
+//! configured rate.
 //!
 //! ## Link-down / link-up sequencing
 //!
-//! On [`RateCmd::LinkDown`] the timer task rewinds `q = spool.bytes_acked`
-//! (no data is discarded — the spool retains it for replay), reports an error
-//! via `err_tx`, then **blocks** on `cmd_rx` waiting for [`RateCmd::LinkUp`].
+//! On [`RateCmd::LinkDown`] the [`StreamPump`] rewinds `q = spool.bytes_acked`,
+//! then **blocks** on `cmd_rx` waiting for [`RateCmd::LinkUp`].  Incoming
+//! [`AllocTicket`]s are silently discarded while the pump is paused.
 //!
-//! On [`RateCmd::LinkUp(new_tx)`] the timer task installs the fresh write half
-//! and resumes from the rewound `q`.  This eliminates the race where the timer
-//! task could start writing with a stale write half.
+//! On [`RateCmd::LinkUp(new_tx)`] the pump installs the fresh write half and
+//! resumes draining from the rewound `q`.
 
+use std::collections::HashMap;
 use std::io;
-use std::sync::Arc;
+use std::sync::{
+    atomic::{AtomicU64, Ordering},
+    Arc,
+};
 
 // ---
 
 use tokio::io::{AsyncWriteExt, WriteHalf};
 use tokio::sync::{mpsc, Mutex};
 use tokio::time::{interval, Duration, MissedTickBehavior};
+use uuid::Uuid;
 
 // ---
 
-use quelay_domain::QueLayStreamPtr;
+use quelay_domain::{DrrScheduler, Priority, QueLayStreamPtr};
 
 // ---
 
@@ -70,7 +81,7 @@ use super::SpoolBuffer;
 /// Chunks to send per timer tick in the unclamped case.
 const CHUNKS_PER_TICK: usize = 8;
 
-/// Minimum timer interval — below this the wakeup overhead dominates.
+/// Minimum timer interval — below this wakeup overhead dominates.
 const MIN_INTERVAL_MS: u64 = 5;
 
 /// Maximum timer interval — above this latency becomes noticeable.
@@ -96,20 +107,33 @@ pub(crate) fn encode_chunk(stream_offset: u64, payload: &[u8]) -> Vec<u8> {
 }
 
 // ---------------------------------------------------------------------------
+// AllocTicket
+// ---------------------------------------------------------------------------
+
+/// Byte budget for one pump for one tick, sent by the ARL aggregate timer.
+///
+/// The [`StreamPump`] drains up to `bytes` from its spool into the QUIC
+/// write half, then discards any unused budget before the next ticket arrives.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct AllocTicket {
+    pub bytes: u64,
+}
+
+// ---------------------------------------------------------------------------
 // RateCmd
 // ---------------------------------------------------------------------------
 
-/// Control commands sent to the timer task.
+/// Control commands sent to the [`StreamPump`] via [`RateLimiter::cmd_tx`].
 pub(crate) enum RateCmd {
     // ---
-    /// Link went down.  Timer task rewinds `q = spool.bytes_acked`, reports
-    /// an error, then blocks waiting for [`RateCmd::LinkUp`].
+    /// Link went down.  Pump rewinds `q = spool.bytes_acked`, then blocks
+    /// waiting for [`RateCmd::LinkUp`].
     LinkDown,
 
     /// Link is back up with a fresh QUIC write half.
     LinkUp(WriteHalf<QueLayStreamPtr>),
 
-    /// Uplink EOF — timer task should drain remaining spool data, send FIN,
+    /// Uplink EOF — pump should drain remaining spool data, send FIN,
     /// then exit.
     Finish,
 }
@@ -118,15 +142,14 @@ pub(crate) enum RateCmd {
 // RateParams
 // ---------------------------------------------------------------------------
 
-/// Pre-computed parameters derived from the configured `rate_bps`.
-/// Computed once at construction; logged for diagnostics.
+/// Pre-computed timer parameters derived from `rate_bps`.
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct RateParams {
     // ---
-    /// Timer wake-up period.
+    /// Aggregate timer wake-up period.
     pub interval: Duration,
 
-    /// Maximum bytes forwarded per tick.  Unused budget is discarded.
+    /// Total bytes the ARL may distribute across all streams per tick.
     pub budget_bytes: usize,
 }
 
@@ -134,14 +157,12 @@ impl RateParams {
     /// `rate_bps` is in **bits per second** (e.g. 100_000_000 for 100 Mbit/s).
     pub(crate) fn from_rate_bps(rate_bps: u64, chunk_size: usize) -> Self {
         // ---
-        let rate_bytes_per_sec = rate_bps / 8; // bits/s → bytes/s
+        let rate_bytes_per_sec = rate_bps / 8;
 
-        // Ideal: send CHUNKS_PER_TICK chunks per tick.
         let ideal_bytes_per_tick = (CHUNKS_PER_TICK * chunk_size) as u64;
         let ideal_ms = ideal_bytes_per_tick * 1000 / rate_bytes_per_sec;
         let interval_ms = ideal_ms.clamp(MIN_INTERVAL_MS, MAX_INTERVAL_MS);
 
-        // Recalculate budget from clamped interval to keep long-term rate correct.
         let budget_bytes = (rate_bytes_per_sec * interval_ms / 1000) as usize;
 
         tracing::debug!(
@@ -149,7 +170,7 @@ impl RateParams {
             rate_bytes_per_sec,
             interval_ms,
             budget_bytes,
-            "RateLimiter: params",
+            "AggregateRateLimiter: params",
         );
 
         Self {
@@ -160,91 +181,283 @@ impl RateParams {
 }
 
 // ---------------------------------------------------------------------------
-// TimerTask
+// StreamEntry  (ARL-internal per-stream state)
 // ---------------------------------------------------------------------------
 
-struct TimerTask {
+struct StreamEntry {
+    // ---
+    /// Allocation ticket channel to the pump task.
+    alloc_tx: mpsc::Sender<AllocTicket>,
+
+    /// Backlog written by the pump after each drain.  Read by the ARL timer
+    /// before calling `scheduler.set_backlog()` + `schedule()`.
+    backlog: Arc<AtomicU64>,
+}
+
+// ---------------------------------------------------------------------------
+// AggregateTimerTask
+// ---------------------------------------------------------------------------
+
+struct AggregateTimerTask {
+    scheduler: Arc<Mutex<DrrScheduler>>,
+    streams: Arc<Mutex<HashMap<Uuid, StreamEntry>>>,
+    budget_bytes: usize,
+    interval: Duration,
+}
+
+impl AggregateTimerTask {
+    async fn run(self) {
+        // ---
+        let mut ticker = interval(self.interval);
+        ticker.set_missed_tick_behavior(MissedTickBehavior::Skip);
+
+        loop {
+            ticker.tick().await;
+
+            let mut sched = self.scheduler.lock().await;
+            let streams = self.streams.lock().await;
+
+            // Update backlogs from atomics so the scheduler sees current data.
+            for (uuid, entry) in streams.iter() {
+                let backlog = entry.backlog.load(Ordering::Acquire);
+                sched.set_backlog(*uuid, backlog);
+            }
+
+            let allocs = sched.schedule(self.budget_bytes as u64);
+            drop(sched); // release scheduler lock before sending
+
+            for (uuid, bytes) in allocs {
+                if let Some(entry) = streams.get(&uuid) {
+                    // Non-blocking: if the pump's alloc channel is full it
+                    // already has a ticket queued; discard this one so we
+                    // don't pile up stale budget grants.
+                    let _ = entry.alloc_tx.try_send(AllocTicket { bytes });
+                }
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// AggregateRateLimiter
+// ---------------------------------------------------------------------------
+
+/// Shared rate limiter — one instance per [`SessionManager`], covering all
+/// active uplink streams.
+///
+/// The ARL owns:
+/// - A single [`DrrScheduler`] that distributes the aggregate tick budget.
+/// - One [`AggregateTimerTask`] running as a background tokio task.
+/// - A map of per-stream [`StreamEntry`]s holding the alloc channel and
+///   backlog atomic for each active pump.
+///
+/// Streams register on open (`register`) and deregister on close
+/// (`deregister`).  The timer task reads the map each tick; entries added
+/// or removed between ticks are picked up on the next wake.
+pub struct AggregateRateLimiter {
+    // ---
+    scheduler: Arc<Mutex<DrrScheduler>>,
+    streams: Arc<Mutex<HashMap<Uuid, StreamEntry>>>,
+    /// Stored for uncapped detection by callers; `None` = uncapped.
+    params: Option<RateParams>,
+}
+
+impl AggregateRateLimiter {
+    // ---
+
+    /// Construct and start the aggregate rate limiter.
+    ///
+    /// - `rate_bps = None`: uncapped.  No timer task is spawned.
+    ///   [`register`] returns `(None, backlog)` so callers can detect
+    ///   uncapped mode and skip pump construction.
+    /// - `rate_bps = Some(n)`: spawns the aggregate timer task.
+    pub fn new(rate_bps: Option<u64>) -> Self {
+        // ---
+        use super::CHUNK_SIZE;
+
+        let scheduler = Arc::new(Mutex::new(DrrScheduler::new()));
+        let streams: Arc<Mutex<HashMap<Uuid, StreamEntry>>> = Arc::new(Mutex::new(HashMap::new()));
+
+        let params = rate_bps.map(|bps| RateParams::from_rate_bps(bps, CHUNK_SIZE));
+
+        if let Some(p) = params {
+            tokio::spawn(
+                AggregateTimerTask {
+                    scheduler: Arc::clone(&scheduler),
+                    streams: Arc::clone(&streams),
+                    budget_bytes: p.budget_bytes,
+                    interval: p.interval,
+                }
+                .run(),
+            );
+        }
+
+        Self {
+            scheduler,
+            streams,
+            params,
+        }
+    }
+
+    // ---
+
+    /// Register a new stream.
+    ///
+    /// Returns:
+    /// - `alloc_rx`: `Some` in capped mode — the [`StreamPump`] selects on
+    ///   this for budget grants from the ARL timer.  `None` in uncapped mode.
+    /// - `backlog`: shared atomic the pump writes after each drain.
+    pub(crate) async fn register(
+        &self,
+        uuid: Uuid,
+        priority: Priority,
+    ) -> (Option<mpsc::Receiver<AllocTicket>>, Arc<AtomicU64>) {
+        // ---
+        let backlog = Arc::new(AtomicU64::new(0));
+
+        self.scheduler.lock().await.register(uuid, priority);
+
+        if self.params.is_some() {
+            // Channel depth 1: the pump always drains before the next tick
+            // in the steady state.  Depth 1 lets one ticket queue up if the
+            // pump is slow, preventing timer-task stalls on a full channel.
+            let (alloc_tx, alloc_rx) = mpsc::channel::<AllocTicket>(1);
+            self.streams.lock().await.insert(
+                uuid,
+                StreamEntry {
+                    alloc_tx,
+                    backlog: Arc::clone(&backlog),
+                },
+            );
+            (Some(alloc_rx), backlog)
+        } else {
+            (None, backlog)
+        }
+    }
+
+    // ---
+
+    /// Deregister a stream — called when the pump exits (done or failed).
+    pub async fn deregister(&self, uuid: Uuid) {
+        // ---
+        self.streams.lock().await.remove(&uuid);
+        self.scheduler.lock().await.deregister(uuid);
+        tracing::debug!(%uuid, "ARL: stream deregistered");
+    }
+}
+
+// ---------------------------------------------------------------------------
+// StreamPump
+// ---------------------------------------------------------------------------
+
+/// Per-stream write task in capped mode.
+///
+/// Replaces the old `TimerTask`.  Instead of owning its own timer, the pump
+/// waits for [`AllocTicket`]s from the [`AggregateRateLimiter`] and drains
+/// up to `ticket.bytes` from the spool per grant.
+///
+/// Concurrently selects on `cmd_rx` for link lifecycle events.
+struct StreamPump {
     spool: Arc<Mutex<SpoolBuffer>>,
     /// Q pointer — absolute byte offset of the next byte to send.
     q: u64,
     quic_tx: WriteHalf<QueLayStreamPtr>,
-    budget_bytes: usize,
-    interval: Duration,
+    alloc_rx: mpsc::Receiver<AllocTicket>,
     cmd_rx: mpsc::Receiver<RateCmd>,
+    /// Written after each drain so the ARL timer sees current backlog.
+    backlog: Arc<AtomicU64>,
     done: bool,
     finishing: bool,
 }
 
-impl TimerTask {
+impl StreamPump {
     // ---
     async fn run(mut self) {
         // ---
         use super::CHUNK_SIZE;
 
-        let mut ticker = interval(self.interval);
-        // Skip missed ticks — "discard unused budget" semantics.
-        ticker.set_missed_tick_behavior(MissedTickBehavior::Skip);
-
         while !self.done {
-            // ---
             tokio::select! {
-                _ = ticker.tick() => {
-                    self.drain_tick(CHUNK_SIZE).await;
+                ticket = self.alloc_rx.recv() => {
+                    match ticket {
+                        Some(t) => self.drain_alloc(t.bytes, CHUNK_SIZE).await,
+                        None => {
+                            // ARL dropped the sender (shutdown) — exit cleanly.
+                            tracing::debug!("stream pump: alloc channel closed, exiting");
+                            return;
+                        }
+                    }
                 }
 
                 cmd = self.cmd_rx.recv() => {
                     match cmd {
                         Some(RateCmd::LinkDown) => {
-                            // Rewind Q; spool retains data for replay on reconnect.
                             self.q = self.spool.lock().await.bytes_acked;
-                            tracing::info!("timer task: link down — rewound Q, waiting for LinkUp");
+                            tracing::info!("stream pump: link down — rewound Q, waiting for LinkUp");
                             if !self.wait_for_link_up().await {
                                 return;
                             }
-                            ticker.reset();
                         }
                         Some(RateCmd::LinkUp(_)) => {
                             tracing::debug!(
-                                "timer task: unexpected LinkUp in running state — ignoring"
+                                "stream pump: unexpected LinkUp in running state — ignoring"
                             );
                         }
                         Some(RateCmd::Finish) => {
-                            tracing::debug!("timer task: got RateCmd::Finish");
+                            tracing::debug!("stream pump: got RateCmd::Finish");
                             self.finishing = true;
+                            let remaining = {
+                                let s = self.spool.lock().await;
+                                s.head_offset().saturating_sub(self.q)
+                            };
+                            if remaining == 0 {
+                                // Pump is fully caught up: no more data to
+                                // rate-limit, just need one drain_alloc call
+                                // to hit the EOF sentinel and send FIN.
+                                // The ARL won't send a ticket (backlog == 0)
+                                // so we trigger it directly here.
+                                self.drain_alloc(1, CHUNK_SIZE).await;
+                            } else {
+                                // There is still backlog — the ARL will keep
+                                // sending tickets as drain_alloc updates the
+                                // atomic.  Refresh it now using self.q so a
+                                // stale bytes_acked value from run_tcp_reader
+                                // doesn't cause the ARL to under-schedule.
+                                self.backlog.store(remaining, Ordering::Release);
+                            }
                         }
                         None => return,
                     }
                 }
             }
         }
-        tracing::info!("timer task: exiting");
+        tracing::info!("stream pump: exiting");
     }
 
     // ---
 
-    /// Drain up to `budget_bytes` from the spool into the QUIC stream.
+    /// Drain up to `budget` bytes from the spool, sending chunks to QUIC.
     ///
-    /// Encodes each chunk inline (header + payload) and writes to `quic_tx`.
-    /// On write error, logs a warning and waits for a fresh write half via `wait_for_link_up`.
-    /// Sets `self.done = true` when the spool EOF sentinel is drained and
-    /// `self.finishing` is set.
-    async fn drain_tick(&mut self, chunk_size: usize) {
+    /// Updates the backlog atomic after draining so the ARL scheduler has
+    /// current data for the next tick.
+    async fn drain_alloc(&mut self, budget: u64, chunk_size: usize) {
         // ---
-        let mut remaining = self.budget_bytes;
+        let mut remaining = budget;
 
         loop {
             if remaining == 0 {
-                break; // budget exhausted
+                break;
             }
 
             let chunk = {
                 let s = self.spool.lock().await;
                 let head = s.head;
+
                 // EOF sentinel: spool fully drained.
                 if head == u64::MAX && s.head_offset() <= self.q {
                     drop(s);
                     if self.finishing {
-                        tracing::info!("timer task: spool drained, sending FIN");
+                        tracing::info!("stream pump: spool drained, sending FIN");
                         let _ = self.quic_tx.shutdown().await;
                         self.done = true;
                     }
@@ -253,8 +466,9 @@ impl TimerTask {
                 if s.head_offset() <= self.q {
                     break; // nothing new yet
                 }
+
                 let slice = s.slice_from(self.q);
-                let n = slice.len().min(chunk_size).min(remaining);
+                let n = slice.len().min(chunk_size).min(remaining as usize);
                 slice[..n].to_vec()
             };
 
@@ -264,43 +478,72 @@ impl TimerTask {
 
             let encoded = encode_chunk(self.q, &chunk);
             if let Err(e) = self.quic_tx.write_all(&encoded).await {
-                tracing::warn!("timer task: QUIC write error: {e} — waiting for LinkUp");
+                tracing::warn!("stream pump: QUIC write error: {e} — waiting for LinkUp");
                 if !self.wait_for_link_up().await {
                     self.done = true;
                 }
                 return;
             }
             self.q += chunk.len() as u64;
-            remaining = remaining.saturating_sub(chunk.len());
+            remaining = remaining.saturating_sub(chunk.len() as u64);
+        }
+
+        // Update backlog: bytes in spool ahead of Q.
+        let (backlog, head_at_end) = {
+            let s = self.spool.lock().await;
+            (s.head_offset().saturating_sub(self.q), s.head)
+        };
+        self.backlog.store(backlog, Ordering::Release);
+
+        // Post-drain sentinel: the budget may have been exhausted on the last
+        // chunk (remaining == 0 at top of loop), causing the loop to exit
+        // before the in-loop sentinel could fire.  Check here so we don't
+        // leave the pump stuck in select! with backlog == 0 and Finish already
+        // processed — the 30-second idle-timeout stall in issue #6.
+        if self.finishing && head_at_end == u64::MAX && backlog == 0 {
+            tracing::info!("stream pump: spool drained, sending FIN");
+            let _ = self.quic_tx.shutdown().await;
+            self.done = true;
         }
     }
 
     // ---
 
-    /// Block until `RateCmd::LinkUp(new_tx)` arrives; swap `quic_tx` and
-    /// rewind `q = spool.bytes_acked`.
+    /// Block on `cmd_rx` until `LinkUp(new_tx)` arrives.
     ///
-    /// Returns `true` if link came back up, `false` if the cmd channel closed.
+    /// Discards any `AllocTicket`s that arrive on `alloc_rx` while paused
+    /// (link is down; no data should be sent).
+    ///
+    /// Returns `true` if link came back up, `false` if cmd channel closed.
     async fn wait_for_link_up(&mut self) -> bool {
         // ---
         loop {
-            match self.cmd_rx.recv().await {
-                Some(RateCmd::LinkUp(new_tx)) => {
-                    self.q = self.spool.lock().await.bytes_acked;
-                    self.quic_tx = new_tx;
-                    tracing::debug!(q = self.q, "timer task: link up — new write half installed");
-                    return true;
+            tokio::select! {
+                cmd = self.cmd_rx.recv() => {
+                    match cmd {
+                        Some(RateCmd::LinkUp(new_tx)) => {
+                            self.q = self.spool.lock().await.bytes_acked;
+                            self.quic_tx = new_tx;
+                            tracing::debug!(q = self.q, "stream pump: link up — new write half installed");
+                            return true;
+                        }
+                        Some(RateCmd::LinkDown) => {
+                            // Duplicate LinkDown — rewind again (defensive).
+                            self.q = self.spool.lock().await.bytes_acked;
+                            tracing::warn!("stream pump: duplicate LinkDown while waiting for LinkUp");
+                        }
+                        Some(RateCmd::Finish) => {
+                            tracing::warn!("stream pump: got RateCmd::Finish while waiting for LinkUp");
+                            self.finishing = true;
+                        }
+                        None => return false,
+                    }
                 }
-                Some(RateCmd::LinkDown) => {
-                    // Duplicate LinkDown — rewind again (defensive).
-                    self.q = self.spool.lock().await.bytes_acked;
-                    tracing::warn!("timer task: duplicate LinkDown while waiting for LinkUp");
+
+                // Drain stale tickets while link is down.
+                _ = self.alloc_rx.recv() => {
+                    tracing::trace!("stream pump: discarding AllocTicket while link is down");
                 }
-                Some(RateCmd::Finish) => {
-                    tracing::warn!("timer task: got RateCmd::Finish while waiting for LinkUp");
-                    self.finishing = true;
-                }
-                None => return false,
             }
         }
     }
@@ -310,52 +553,58 @@ impl TimerTask {
 // RateLimiter
 // ---------------------------------------------------------------------------
 
-/// Metered write path.  One `RateLimiter` per uplink stream lifetime;
-/// survives link outages via [`link_down`] / [`link_up`].
+/// Per-stream handle to the rate-limiting infrastructure.
+///
+/// In **capped** mode a [`StreamPump`] task was spawned at construction;
+/// `cmd_tx` drives its lifecycle (LinkDown / LinkUp / Finish).
+///
+/// In **uncapped** mode no pump is spawned; `direct_tx` is a plain write half
+/// used by the caller directly (unchanged from before).
 pub struct RateLimiter {
     // ---
-    /// Command channel to the timer task (capped mode only).
+    /// Command channel to the [`StreamPump`] (capped mode only).
     cmd_tx: Option<mpsc::Sender<RateCmd>>,
 
-    /// Direct write half for uncapped (no rate limit) mode.
+    /// Direct write half for uncapped mode.
     direct_tx: Option<WriteHalf<QueLayStreamPtr>>,
 }
 
 impl RateLimiter {
     // ---
 
-    /// Construct a rate limiter wrapping `quic_tx`.
+    /// Construct a `RateLimiter` for one uplink stream.
     ///
-    /// - `rate_bps = None`: uncapped — writes go directly to `quic_tx`, no
-    ///   timer task is spawned.
-    /// - `rate_bps = Some(n)`: `n` is in **bits/s**.  Spawns a timer task
-    ///   that reads directly from `spool` at `n` bps on each tick.
+    /// - `alloc_rx = Some(rx)`: capped mode.  Spawns a [`StreamPump`] that
+    ///   selects on `rx` (budget grants) and `cmd_rx` (lifecycle events).
+    /// - `alloc_rx = None`: uncapped mode.  No pump spawned; caller writes
+    ///   directly via the returned `direct_tx` path.
+    ///
+    /// `backlog` must be the [`Arc<AtomicU64>`] returned by
+    /// [`AggregateRateLimiter::register`] for this stream.
     pub fn new(
         quic_tx: WriteHalf<QueLayStreamPtr>,
-        rate_bps: Option<u64>,
+        alloc_rx: Option<mpsc::Receiver<AllocTicket>>,
         spool: Arc<Mutex<SpoolBuffer>>,
+        backlog: Arc<AtomicU64>,
     ) -> Self {
         // ---
-        use super::CHUNK_SIZE;
-
-        match rate_bps {
+        match alloc_rx {
             None => Self {
                 cmd_tx: None,
                 direct_tx: Some(quic_tx),
             },
 
-            Some(bps) => {
-                let params = RateParams::from_rate_bps(bps, CHUNK_SIZE);
+            Some(alloc_rx) => {
                 let (cmd_tx, cmd_rx) = mpsc::channel(8);
 
                 tokio::spawn(
-                    TimerTask {
+                    StreamPump {
                         spool,
                         q: 0,
                         quic_tx,
-                        budget_bytes: params.budget_bytes,
-                        interval: params.interval,
+                        alloc_rx,
                         cmd_rx,
+                        backlog,
                         done: false,
                         finishing: false,
                     }
@@ -372,22 +621,16 @@ impl RateLimiter {
 
     // ---
 
-    /// Return a clone of the cmd_tx for storage in [`UplinkHandle`].
-    ///
-    /// The session manager uses this to call `link_down()` on all active
-    /// uplinks when `link_enable(false)` fires.  Returns `None` when uncapped.
+    /// Return a clone of `cmd_tx` so `UplinkHandle` can send `LinkDown`.
+    /// Returns `None` in uncapped mode.
     pub fn link_down_tx_clone(&self) -> Option<mpsc::Sender<RateCmd>> {
         self.cmd_tx.clone()
     }
 
     // ---
 
-    /// Signal the timer task that the link is down.
-    ///
-    /// The timer task rewinds `q = spool.bytes_acked`, logs the event,
-    /// then blocks waiting for `link_up`.
-    ///
-    /// No-op in uncapped mode (direct write path handles errors inline).
+    /// Signal the pump that the link is down (non-blocking).
+    /// No-op in uncapped mode.
     pub fn link_down(&self) {
         if let Some(tx) = &self.cmd_tx {
             let _ = tx.try_send(RateCmd::LinkDown);
@@ -396,11 +639,7 @@ impl RateLimiter {
 
     // ---
 
-    /// Hand the timer task a fresh QUIC write half after reconnect.
-    ///
-    /// The timer task was blocked in `wait_for_link_up`; this unblocks it
-    /// so it can resume metered writes on the new stream immediately.
-    ///
+    /// Hand the pump a fresh QUIC write half after reconnect.
     /// In uncapped mode, replaces `direct_tx` in-place.
     pub async fn link_up(&mut self, new_tx: WriteHalf<QueLayStreamPtr>) -> io::Result<()> {
         // ---
@@ -408,7 +647,7 @@ impl RateLimiter {
             (Some(cmd_tx), None) => cmd_tx
                 .send(RateCmd::LinkUp(new_tx))
                 .await
-                .map_err(|_| io::Error::new(io::ErrorKind::BrokenPipe, "timer task exited")),
+                .map_err(|_| io::Error::new(io::ErrorKind::BrokenPipe, "stream pump exited")),
             (None, Some(direct)) => {
                 *direct = new_tx;
                 Ok(())
@@ -419,14 +658,14 @@ impl RateLimiter {
 
     // ---
 
-    /// Tell the timer task to drain remaining spool data, send FIN, then exit.
+    /// Tell the pump to drain remaining spool data, send FIN, then exit.
     pub async fn finish(&mut self) -> io::Result<()> {
         // ---
         if let Some(cmd_tx) = &self.cmd_tx {
             cmd_tx
                 .send(RateCmd::Finish)
                 .await
-                .map_err(|_| io::Error::new(io::ErrorKind::BrokenPipe, "timer task exited"))?;
+                .map_err(|_| io::Error::new(io::ErrorKind::BrokenPipe, "stream pump exited"))?;
         }
         Ok(())
     }
@@ -440,7 +679,6 @@ impl RateLimiter {
 mod tests {
     use super::{RateParams, MAX_INTERVAL_MS, MIN_INTERVAL_MS};
 
-    // Mirror CHUNK_SIZE from framing.rs — avoid a cross-crate dep in tests.
     const CHUNK_SIZE: usize = 16 * 1024;
 
     #[test]

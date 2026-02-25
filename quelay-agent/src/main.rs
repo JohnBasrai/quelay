@@ -52,8 +52,10 @@ use session_manager::{SessionManager, TransportConfig};
 use thrift_srv::{AgentHandler, RuntimeConfig};
 
 // Gateway re-exports — siblings import via super::Symbol per EMBP §2.3
-pub(crate) use active_stream::{ActiveStream, SpoolBuffer};
+pub(crate) use active_stream::{ActiveStream, SpoolBuffer, UplinkContext};
 pub use active_stream::{DownlinkHandle, UplinkHandle};
+
+pub(crate) use rate_limiter::{AggregateRateLimiter, AllocTicket, RateCmd, RateLimiter};
 
 pub use callback::{CallbackCmd, CallbackTx};
 pub use framing::{

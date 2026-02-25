@@ -36,7 +36,7 @@
 //! ```
 //!
 //! - `T` advances as the TCP reader pushes bytes in.
-//! - `Q` advances as the timer task drains bytes out.  Owned by `TimerTask`.
+//! - `Q` advances as the [`StreamPump`] drains bytes out.  Owned by `StreamPump`.
 //! - `A` advances on `WormholeMsg::Ack { bytes_received }`.  Owned by ack task.
 //! - On link down: timer task rewinds `Q = A`, TCP reader keeps filling.
 //! - On reconnect: timer task replays `A..T` on the new stream, then resumes.
@@ -79,9 +79,13 @@ use super::{
     read_chunk,
     read_wormhole_msg,
     write_wormhole_msg,
+    AggregateRateLimiter,
+    AllocTicket,
     CallbackCmd,
     CallbackTx,
     Chunk,
+    RateCmd,
+    RateLimiter,
     WormholeMsg,
     ACK_INTERVAL,
     CHUNK_SIZE,
@@ -209,6 +213,26 @@ impl SpoolBuffer {
 }
 
 // ---------------------------------------------------------------------------
+// UplinkContext
+// ---------------------------------------------------------------------------
+
+/// Arguments derived from [`AggregateRateLimiter::register`] for one uplink
+/// stream.  Bundled so [`ActiveStream::spawn_uplink`] stays within the
+/// clippy argument-count limit and the three fields always travel together.
+pub(crate) struct UplinkContext {
+    // ---
+    /// Allocation ticket receiver — `Some` in capped mode, `None` uncapped.
+    pub alloc_rx: Option<mpsc::Receiver<AllocTicket>>,
+
+    /// Backlog atomic written by [`StreamPump`] after each drain; read by
+    /// the ARL timer before calling `DrrScheduler::schedule`.
+    pub backlog: Arc<AtomicU64>,
+
+    /// Shared ARL — deregistered by the [`AckTask`] when the stream exits.
+    pub arl: Arc<AggregateRateLimiter>,
+}
+
+// ---------------------------------------------------------------------------
 // UplinkHandle
 // ---------------------------------------------------------------------------
 
@@ -217,9 +241,13 @@ impl SpoolBuffer {
 /// On reconnect, `SessionManager` opens a new QUIC stream, writes a
 /// [`ReconnectHeader`] with `replay_from = spool.bytes_acked`, then sends
 /// the stream via `stream_tx` so the ack task can split it and deliver the
-/// write half to the timer task via `RateCmd::LinkUp`.
+/// write half to the pump via `RateCmd::LinkUp`.
 pub struct UplinkHandle {
     // ---
+    /// Stable stream identity.  Used by `SessionManager` to deregister the
+    /// stream from the [`AggregateRateLimiter`] when the pump exits.
+    pub uuid: Uuid,
+
     /// Deliver a fresh `QueLayStreamPtr` here after reconnect.
     /// Drop the sender to permanently fail the stream.
     pub stream_tx: mpsc::Sender<QueLayStreamPtr>,
@@ -233,11 +261,11 @@ pub struct UplinkHandle {
     /// Priority for re-opening.
     pub priority: Priority,
 
-    /// Rate limiter link-down notifier.  `None` when uncapped (rate_bps = None).
+    /// Rate limiter link-down notifier.  `None` when uncapped.
     ///
-    /// Call `notify_link_down()` when `link_enable(false)` fires so the timer
-    /// task rewinds `Q = A` and waits for a fresh write half.
-    link_down_tx: Option<mpsc::Sender<super::rate_limiter::RateCmd>>,
+    /// Call `notify_link_down()` when `link_enable(false)` fires so the
+    /// [`StreamPump`] rewinds `Q = A` and waits for a fresh write half.
+    link_down_tx: Option<mpsc::Sender<RateCmd>>,
 }
 
 impl UplinkHandle {
@@ -256,7 +284,7 @@ impl UplinkHandle {
     /// No-op when uncapped.
     pub fn notify_link_down(&self) {
         if let Some(tx) = &self.link_down_tx {
-            let _ = tx.try_send(super::rate_limiter::RateCmd::LinkDown);
+            let _ = tx.try_send(RateCmd::LinkDown);
         }
     }
 }
@@ -304,11 +332,12 @@ impl ActiveStream {
     /// then spawns:
     /// - a TCP-reader task that fills the [`SpoolBuffer`], and
     /// - an ack task that owns the QUIC read half, processes `WormholeMsg`
-    ///   feedback, and drives reconnect signalling to the `RateLimiter` timer
-    ///   task.
+    ///   feedback, and drives reconnect signalling to the [`StreamPump`] task.
     ///
-    /// The `RateLimiter` timer task (spawned inside [`RateLimiter::new`]) reads
-    /// directly from the spool and meters bytes onto the QUIC stream.
+    /// In capped mode a [`StreamPump`] (spawned inside [`RateLimiter::new`])
+    /// reads directly from the spool, driven by [`AllocTicket`]s from the
+    /// [`AggregateRateLimiter`].  In uncapped mode the write half is held
+    /// directly with no metering.
     ///
     /// Returns an [`UplinkHandle`] for `SessionManager` to use on reconnect.
     pub async fn spawn_uplink(
@@ -318,9 +347,15 @@ impl ActiveStream {
         priority: Priority,
         quic: QueLayStreamPtr,
         cb_tx: CallbackTx,
-        rate_bps: Option<u64>,
+        ctx: UplinkContext,
     ) -> anyhow::Result<UplinkHandle> {
         // ---
+        let UplinkContext {
+            alloc_rx,
+            backlog,
+            arl,
+        } = ctx;
+
         let listener = TcpListener::bind("127.0.0.1:0").await?;
         let port = listener.local_addr()?.port();
 
@@ -343,12 +378,18 @@ impl ActiveStream {
         // Split the initial QUIC stream.
         let (initial_rx, initial_tx) = tokio::io::split(quic);
 
-        // Construct the rate limiter; the timer task is spawned inside new().
-        let rate_limiter =
-            super::rate_limiter::RateLimiter::new(initial_tx, rate_bps, Arc::clone(&spool));
+        // Construct the rate limiter; in capped mode the StreamPump is
+        // spawned inside new() and driven by alloc_rx tickets from the ARL.
+        let rate_limiter = RateLimiter::new(
+            initial_tx,
+            alloc_rx,
+            Arc::clone(&spool),
+            Arc::clone(&backlog),
+        );
         let link_down_tx = rate_limiter.link_down_tx_clone();
 
         let handle = UplinkHandle {
+            uuid,
             stream_tx,
             spool: Arc::clone(&spool),
             info: info.clone(),
@@ -363,6 +404,7 @@ impl ActiveStream {
             Arc::clone(&data_ready),
             Arc::clone(&space_ready),
             cb_tx.clone(),
+            Arc::clone(&backlog),
         ));
 
         tokio::spawn(run_ack_task(
@@ -375,6 +417,7 @@ impl ActiveStream {
             initial_rx,
             rate_limiter,
             info.size_bytes,
+            arl,
         ));
 
         Ok(handle)
@@ -724,6 +767,7 @@ async fn run_tcp_reader(
     data_ready: Arc<Notify>,
     space_ready: Arc<Notify>,
     cb_tx: CallbackTx,
+    backlog: Arc<AtomicU64>,
 ) {
     // ---
     let mut tcp = match listener.accept().await {
@@ -774,12 +818,21 @@ async fn run_tcp_reader(
         match tcp.read(&mut tcp_buf).await {
             Ok(0) => {
                 tracing::info!(%uuid, "uplink: TCP EOF from client");
-                spool.lock().await.head = u64::MAX; // EOF sentinel
+                let mut s = spool.lock().await;
+                s.head = u64::MAX; // EOF sentinel
+                                   // Backlog: remaining unacked bytes still to be pumped.
+                let b = s.head_offset().saturating_sub(s.bytes_acked);
+                drop(s);
+                backlog.store(b, Ordering::Release);
                 data_ready.notify_one();
                 return;
             }
             Ok(n) => {
-                spool.lock().await.push(&tcp_buf[..n]);
+                let mut s = spool.lock().await;
+                s.push(&tcp_buf[..n]);
+                let b = s.head_offset().saturating_sub(s.bytes_acked);
+                drop(s);
+                backlog.store(b, Ordering::Release);
                 data_ready.notify_one();
             }
             Err(e) => {
@@ -825,7 +878,7 @@ struct AckTask {
     data_ready: Arc<Notify>,
     stream_rx: mpsc::Receiver<QueLayStreamPtr>,
     cb_tx: CallbackTx,
-    rate_limiter: super::rate_limiter::RateLimiter,
+    rate_limiter: RateLimiter,
     size_bytes: Option<u64>,
     // ---
     /// Forwards new QUIC read halves to the ack-reader sub-task on reconnect.
@@ -835,8 +888,10 @@ struct AckTask {
     // ---
     bytes_sent: u64,
     next_progress: u64,
-    /// True once `RateCmd::Finish` has been sent to the timer task.
+    /// True once `RateCmd::Finish` has been sent to the pump task.
     finish_sent: bool,
+    /// Shared ARL — deregistered when this task exits (done or failed).
+    arl: Arc<AggregateRateLimiter>,
 }
 
 impl AckTask {
@@ -846,7 +901,7 @@ impl AckTask {
     /// the initial QUIC read half to it.
     ///
     /// Returns `None` if the channel send fails (ack reader already gone).
-    #[allow(clippy::too_many_arguments)] // TODO: collapse into UplinkContext when DRR lands (issue #2)
+    #[allow(clippy::too_many_arguments)] // TODO: fold into UplinkContext (issue #2 — DRR wiring)
     async fn new(
         uuid: Uuid,
         spool: Arc<Mutex<SpoolBuffer>>,
@@ -854,9 +909,10 @@ impl AckTask {
         data_ready: Arc<Notify>,
         stream_rx: mpsc::Receiver<QueLayStreamPtr>,
         cb_tx: CallbackTx,
-        rate_limiter: super::rate_limiter::RateLimiter,
+        rate_limiter: RateLimiter,
         size_bytes: Option<u64>,
         initial_rx: tokio::io::ReadHalf<QueLayStreamPtr>,
+        arl: Arc<AggregateRateLimiter>,
     ) -> Option<Self> {
         // ---
         let (stream_ack_tx, ack_rx) = Self::spawn_reader(uuid);
@@ -875,6 +931,7 @@ impl AckTask {
             bytes_sent: 0,
             next_progress: PROGRESS_INTERVAL_BYTES,
             finish_sent: false,
+            arl,
         };
 
         if task.stream_ack_tx.send(initial_rx).await.is_err() {
@@ -943,8 +1000,17 @@ impl AckTask {
 
     // ---
 
-    /// Main event loop.  Runs until the transfer completes or fails.
+    /// Main event loop.  Runs until the transfer completes or fails,
+    /// then deregisters the stream from the [`AggregateRateLimiter`].
     async fn run(mut self) {
+        // ---
+        self.run_inner().await;
+        self.arl.deregister(self.uuid).await;
+    }
+
+    // ---
+
+    async fn run_inner(&mut self) {
         // ---
         loop {
             // Select on ack messages OR data_ready (fires on TCP push + EOF).
@@ -1121,8 +1187,9 @@ async fn run_ack_task(
     stream_rx: mpsc::Receiver<QueLayStreamPtr>,
     cb_tx: CallbackTx,
     initial_rx: tokio::io::ReadHalf<QueLayStreamPtr>,
-    rate_limiter: super::rate_limiter::RateLimiter,
+    rate_limiter: RateLimiter,
     size_bytes: Option<u64>,
+    arl: Arc<AggregateRateLimiter>,
 ) {
     // ---
     match AckTask::new(
@@ -1135,6 +1202,7 @@ async fn run_ack_task(
         rate_limiter,
         size_bytes,
         initial_rx,
+        arl,
     )
     .await
     {
