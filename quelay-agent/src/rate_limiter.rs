@@ -206,44 +206,83 @@ struct AggregateTimerTask {
 }
 
 impl AggregateTimerTask {
+    // ---
+
     async fn run(self) {
         // ---
         let mut ticker = interval(self.interval);
         ticker.set_missed_tick_behavior(MissedTickBehavior::Skip);
 
+        let per_tick = self.budget_bytes as u64;
+        let max_carry = per_tick * 2; // max carry over to next tick
+        let mut available_budget: u64 = 0;
+
         loop {
             ticker.tick().await;
 
-            let mut sched = self.scheduler.lock().await;
-            let streams = self.streams.lock().await;
-
-            // Update backlogs from atomics so the scheduler sees current data.
-            for (uuid, entry) in streams.iter() {
-                let backlog = entry.backlog.load(Ordering::Acquire);
-                sched.set_backlog(*uuid, backlog);
+            // Accumulate budget with clamp (2 intervals)
+            available_budget = available_budget.saturating_add(per_tick);
+            if available_budget > max_carry {
+                available_budget = max_carry;
             }
 
-            let allocs = match sched.schedule(self.budget_bytes as u64) {
-                Ok(allocs) => allocs,
-                Err(err) => {
-                    tracing::warn!("schedule failed:{err}");
-                    continue;
+            // 1) Snapshot backlog + alloc channels without holding scheduler lock
+            //
+            // We only need:
+            // - uuid
+            // - backlog (atomic)
+            // - alloc_tx clone (to send tickets later without holding streams lock)
+            let snapshot: Vec<(Uuid, u64, tokio::sync::mpsc::Sender<AllocTicket>)> = {
+                let streams = self.streams.lock().await;
+                streams
+                    .iter()
+                    .map(|(uuid, entry)| {
+                        let backlog = entry.backlog.load(Ordering::Acquire);
+                        (*uuid, backlog, entry.alloc_tx.clone())
+                    })
+                    .collect()
+            };
+
+            // 2) Schedule with scheduler lock only
+            let allocs: Vec<(Uuid, u64)> = {
+                let mut sched = self.scheduler.lock().await;
+
+                // Update backlogs from snapshot
+                for (uuid, backlog, _) in &snapshot {
+                    sched.set_backlog(*uuid, *backlog);
+                }
+
+                match sched.schedule(available_budget) {
+                    Ok(allocs) => allocs,
+                    Err(err) => {
+                        tracing::warn!("schedule failed:{err}");
+                        continue;
+                    }
                 }
             };
 
-            drop(sched); // release scheduler lock before sending
+            // 3) Compute consumed bytes and reduce carryover
+            let consumed: u64 = allocs.iter().map(|(_, bytes)| *bytes).sum();
+            available_budget = available_budget.saturating_sub(consumed);
 
+            // 4) Deliver tickets without holding any locks
+            //
+            // Snapshot lookup: linear scan is fine at small N; if you want,
+            // replace with HashMap<Uuid, AllocTx>.
             for (uuid, bytes) in allocs {
-                if let Some(entry) = streams.get(&uuid) {
+                if bytes == 0 {
+                    continue;
+                }
+                if let Some((_, _, tx)) = snapshot.iter().find(|(id, _, _)| *id == uuid) {
                     // Non-blocking: if the pump's alloc channel is full it
                     // already has a ticket queued; discard this one so we
                     // don't pile up stale budget grants.
-                    let _ = entry.alloc_tx.try_send(AllocTicket { bytes });
+                    let _ = tx.try_send(AllocTicket { bytes });
                 }
             }
         }
-    }
-}
+    } // run
+} // impl AggregateTimerTask {
 
 // ---------------------------------------------------------------------------
 // AggregateRateLimiter
@@ -329,6 +368,7 @@ impl AggregateRateLimiter {
             // in the steady state.  Depth 1 lets one ticket queue up if the
             // pump is slow, preventing timer-task stalls on a full channel.
             let (alloc_tx, alloc_rx) = mpsc::channel::<AllocTicket>(1);
+            tracing::debug!("ATT:register, locking streams...");
             self.streams.lock().await.insert(
                 uuid,
                 StreamEntry {
@@ -347,9 +387,9 @@ impl AggregateRateLimiter {
     /// Deregister a stream — called when the pump exits (done or failed).
     pub async fn deregister(&self, uuid: Uuid) {
         // ---
-        self.streams.lock().await.remove(&uuid);
+        tracing::debug!(%uuid, "ATT:deregister, ...");
         self.scheduler.lock().await.deregister(uuid);
-        tracing::debug!(%uuid, "ARL: stream deregistered");
+        self.streams.lock().await.remove(&uuid);
     }
 }
 
@@ -365,14 +405,18 @@ impl AggregateRateLimiter {
 ///
 /// Concurrently selects on `cmd_rx` for link lifecycle events.
 struct StreamPump {
+    // ---
     spool: Arc<Mutex<SpoolBuffer>>,
+
     /// Q pointer — absolute byte offset of the next byte to send.
     q: u64,
     quic_tx: WriteHalf<QueLayStreamPtr>,
     alloc_rx: mpsc::Receiver<AllocTicket>,
     cmd_rx: mpsc::Receiver<RateCmd>,
+
     /// Written after each drain so the ARL timer sees current backlog.
     backlog: Arc<AtomicU64>,
+    q_atomic: Arc<AtomicU64>,
     done: bool,
     finishing: bool,
 }
@@ -492,6 +536,7 @@ impl StreamPump {
                 return;
             }
             self.q += chunk.len() as u64;
+            self.q_atomic.store(self.q, Ordering::Release);
             remaining = remaining.saturating_sub(chunk.len() as u64);
         }
 
@@ -593,6 +638,7 @@ impl RateLimiter {
         alloc_rx: Option<mpsc::Receiver<AllocTicket>>,
         spool: Arc<Mutex<SpoolBuffer>>,
         backlog: Arc<AtomicU64>,
+        q_atomic: Arc<AtomicU64>,
     ) -> Self {
         // ---
         match alloc_rx {
@@ -612,6 +658,7 @@ impl RateLimiter {
                         alloc_rx,
                         cmd_rx,
                         backlog,
+                        q_atomic,
                         done: false,
                         finishing: false,
                     }

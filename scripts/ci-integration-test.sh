@@ -52,7 +52,7 @@ echo "==> Building workspace..."
 cd "$WORKSPACE"
 rm -f "$CERT_SRC" "$CERT_FILE"
 
-cargo build --bin quelay-agent --bin e2e_test
+cargo build --bin quelay-agent --bin e2e-test
 
 TARGET_DIR="$(cargo metadata --no-deps --format-version 1 \
     | python3 -c 'import sys,json; print(json.load(sys.stdin)["target_directory"])')"

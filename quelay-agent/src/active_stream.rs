@@ -380,11 +380,17 @@ impl ActiveStream {
 
         // Construct the rate limiter; in capped mode the StreamPump is
         // spawned inside new() and driven by alloc_rx tickets from the ARL.
+        let capped = alloc_rx.is_some();
+        tracing::info!(%uuid, capped, "uplink: rate limiter mode");
+
+        let q_atomic = Arc::<AtomicU64>::new(AtomicU64::new(0));
+
         let rate_limiter = RateLimiter::new(
             initial_tx,
             alloc_rx,
             Arc::clone(&spool),
             Arc::clone(&backlog),
+            Arc::clone(&q_atomic),
         );
         let link_down_tx = rate_limiter.link_down_tx_clone();
 
@@ -397,28 +403,41 @@ impl ActiveStream {
             link_down_tx,
         };
 
-        tokio::spawn(run_tcp_reader(
-            uuid,
+        let tcp_ctx = TcpReaderCtx {
+            // ---
             listener,
-            Arc::clone(&spool),
-            Arc::clone(&data_ready),
-            Arc::clone(&space_ready),
-            cb_tx.clone(),
-            Arc::clone(&backlog),
-        ));
+            spool: Arc::clone(&spool),
+            data_ready: Arc::clone(&data_ready),
+            space_ready: Arc::clone(&space_ready),
+            cb_tx: cb_tx.clone(),
+            backlog: Arc::clone(&backlog),
+            q_atomic: Arc::clone(&q_atomic),
+        };
 
-        tokio::spawn(run_ack_task(
-            uuid,
-            spool,
-            space_ready,
-            Arc::clone(&data_ready),
-            stream_rx,
-            cb_tx,
-            initial_rx,
-            rate_limiter,
-            info.size_bytes,
-            arl,
-        ));
+        tokio::spawn(run_tcp_reader(uuid, tcp_ctx));
+
+        tokio::spawn(async move {
+            // ---
+            let ack_ctx = AckTaskCtx {
+                spool,
+                space_ready,
+                data_ready,
+                stream_rx,
+                cb_tx,
+                rate_limiter,
+                size_bytes: info.size_bytes,
+                initial_rx,
+                arl,
+            };
+
+            match AckTask::new(uuid, ack_ctx).await {
+                Some(task) => task.run().await,
+                None => tracing::warn!(
+                    %uuid,
+                    "uplink: ack reader gone before initial stream delivered"
+                ),
+            }
+        });
 
         Ok(handle)
     }
@@ -759,16 +778,36 @@ impl ActiveStream {
 /// Pauses when the spool is full (back-pressure to client).
 /// Wakes when the ack task signals `space_ready` after an incoming Ack.
 /// Signals EOF by setting `spool.head = u64::MAX`.
-async fn run_tcp_reader(
+/// Constructor context for the uplink TCP reader task.
+///
+/// Bundles parameters so call sites stay readable.
+struct TcpReaderCtx {
     // ---
-    uuid: Uuid,
     listener: TcpListener,
     spool: Arc<Mutex<SpoolBuffer>>,
     data_ready: Arc<Notify>,
     space_ready: Arc<Notify>,
     cb_tx: CallbackTx,
     backlog: Arc<AtomicU64>,
+    q_atomic: Arc<AtomicU64>,
+}
+
+async fn run_tcp_reader(
+    // ---
+    uuid: Uuid,
+    ctx: TcpReaderCtx,
 ) {
+    // ---
+    let TcpReaderCtx {
+        listener,
+        spool,
+        data_ready,
+        space_ready,
+        cb_tx,
+        backlog,
+        q_atomic,
+    } = ctx;
+
     // ---
     let mut tcp = match listener.accept().await {
         Ok((tcp, addr)) => {
@@ -791,6 +830,8 @@ async fn run_tcp_reader(
     // Read at most CHUNK_SIZE bytes at a time so spool entries align to
     // chunk boundaries — makes offset arithmetic in the timer task exact.
     let mut tcp_buf = vec![0u8; CHUNK_SIZE];
+
+    let mut first_read_logged = false;
 
     loop {
         // Block until the spool has room for one full chunk.
@@ -817,12 +858,15 @@ async fn run_tcp_reader(
 
         match tcp.read(&mut tcp_buf).await {
             Ok(0) => {
-                tracing::info!(%uuid, "uplink: TCP EOF from client");
                 let mut s = spool.lock().await;
                 s.head = u64::MAX; // EOF sentinel
                                    // Backlog: remaining unacked bytes still to be pumped.
-                let b = s.head_offset().saturating_sub(s.bytes_acked);
+                let q = q_atomic.load(Ordering::Acquire);
+                let b = s.head_offset().saturating_sub(q);
                 drop(s);
+
+                tracing::info!(%uuid, %b, %q, "uplink: TCP EOF from client");
+
                 backlog.store(b, Ordering::Release);
                 data_ready.notify_one();
                 return;
@@ -830,8 +874,17 @@ async fn run_tcp_reader(
             Ok(n) => {
                 let mut s = spool.lock().await;
                 s.push(&tcp_buf[..n]);
-                let b = s.head_offset().saturating_sub(s.bytes_acked);
+                let q = q_atomic.load(Ordering::Acquire);
+                let b = s.head_offset().saturating_sub(q);
                 drop(s);
+
+                if !first_read_logged {
+                    tracing::info!(%uuid, bytes = n, "uplink: first TCP bytes received");
+                    first_read_logged = true;
+                } else {
+                    tracing::debug!(%uuid, backlog = %b, %q, bytes = n, "uplink: TCP bytes received");
+                }
+
                 backlog.store(b, Ordering::Release);
                 data_ready.notify_one();
             }
@@ -894,6 +947,24 @@ struct AckTask {
     arl: Arc<AggregateRateLimiter>,
 }
 
+// ---
+
+/// Constructor context for [`AckTask`].
+///
+/// This keeps the public call site readable and avoids long argument lists.
+struct AckTaskCtx {
+    // ---
+    spool: Arc<Mutex<SpoolBuffer>>,
+    space_ready: Arc<Notify>,
+    data_ready: Arc<Notify>,
+    stream_rx: mpsc::Receiver<QueLayStreamPtr>,
+    cb_tx: CallbackTx,
+    rate_limiter: RateLimiter,
+    size_bytes: Option<u64>,
+    initial_rx: tokio::io::ReadHalf<QueLayStreamPtr>,
+    arl: Arc<AggregateRateLimiter>,
+}
+
 impl AckTask {
     // ---
 
@@ -901,20 +972,20 @@ impl AckTask {
     /// the initial QUIC read half to it.
     ///
     /// Returns `None` if the channel send fails (ack reader already gone).
-    #[allow(clippy::too_many_arguments)] // TODO: fold into UplinkContext (issue #2 — DRR wiring)
-    async fn new(
-        uuid: Uuid,
-        spool: Arc<Mutex<SpoolBuffer>>,
-        space_ready: Arc<Notify>,
-        data_ready: Arc<Notify>,
-        stream_rx: mpsc::Receiver<QueLayStreamPtr>,
-        cb_tx: CallbackTx,
-        rate_limiter: RateLimiter,
-        size_bytes: Option<u64>,
-        initial_rx: tokio::io::ReadHalf<QueLayStreamPtr>,
-        arl: Arc<AggregateRateLimiter>,
-    ) -> Option<Self> {
+    async fn new(uuid: Uuid, ctx: AckTaskCtx) -> Option<Self> {
         // ---
+        let AckTaskCtx {
+            spool,
+            space_ready,
+            data_ready,
+            stream_rx,
+            cb_tx,
+            rate_limiter,
+            size_bytes,
+            initial_rx,
+            arl,
+        } = ctx;
+
         let (stream_ack_tx, ack_rx) = Self::spawn_reader(uuid);
 
         let task = Self {
@@ -1004,8 +1075,13 @@ impl AckTask {
     /// then deregisters the stream from the [`AggregateRateLimiter`].
     async fn run(mut self) {
         // ---
+        tracing::debug!(%self.uuid, "uplink: ack task starting");
+
         self.run_inner().await;
+
+        tracing::debug!(%self.uuid, bytes_sent = self.bytes_sent, "uplink: deregistering from ARL");
         self.arl.deregister(self.uuid).await;
+        tracing::debug!(%self.uuid, "uplink: ack task exit");
     }
 
     // ---
@@ -1190,41 +1266,5 @@ impl AckTask {
                 tracing::warn!(uuid = %self.uuid, "uplink: finish() failed: {e}");
             }
         }
-    }
-}
-
-// ---
-
-/// Entry point: construct and run the [`AckTask`] for one uplink stream.
-#[allow(clippy::too_many_arguments)]
-async fn run_ack_task(
-    uuid: Uuid,
-    spool: Arc<Mutex<SpoolBuffer>>,
-    space_ready: Arc<Notify>,
-    data_ready: Arc<Notify>,
-    stream_rx: mpsc::Receiver<QueLayStreamPtr>,
-    cb_tx: CallbackTx,
-    initial_rx: tokio::io::ReadHalf<QueLayStreamPtr>,
-    rate_limiter: RateLimiter,
-    size_bytes: Option<u64>,
-    arl: Arc<AggregateRateLimiter>,
-) {
-    // ---
-    match AckTask::new(
-        uuid,
-        spool,
-        space_ready,
-        data_ready,
-        stream_rx,
-        cb_tx,
-        rate_limiter,
-        size_bytes,
-        initial_rx,
-        arl,
-    )
-    .await
-    {
-        Some(task) => task.run().await,
-        None => tracing::warn!(%uuid, "uplink: ack reader gone before initial stream delivered"),
     }
 }
