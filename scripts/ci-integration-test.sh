@@ -58,12 +58,15 @@ TARGET_DIR="$(cargo metadata --no-deps --format-version 1 \
     | python3 -c 'import sys,json; print(json.load(sys.stdin)["target_directory"])')"
 
 AGENT_BIN="$TARGET_DIR/debug/quelay-agent"
-E2E_BIN="$TARGET_DIR/debug/e2e_test"
+E2E_BIN="$TARGET_DIR/debug/e2e-test"
+AGENT_EXTRA_ARGS=
+
 
 # ---------------------------------------------------------------------------
 # Helper: start both agents at a given BW cap
 # ---------------------------------------------------------------------------
 start_agents() {
+    # ---
     local cap_mbps="$1"
 
     echo ""
@@ -71,7 +74,7 @@ start_agents() {
 
     rm -f "$CERT_SRC" "$CERT_FILE"
 
-    "$AGENT_BIN" \
+    "$AGENT_BIN" $AGENT_EXTRA_ARGS \
         --bw-cap-mbps "$cap_mbps" \
         --agent-endpoint "$AGENT1_C2I" \
         server \
@@ -92,7 +95,7 @@ start_agents() {
         fi
     done
 
-    "$AGENT_BIN" \
+    "$AGENT_BIN" $AGENT_EXTRA_ARGS \
         --bw-cap-mbps "$cap_mbps" \
         --agent-endpoint "$AGENT2_C2I" \
         client \
@@ -180,6 +183,7 @@ start_agents 10
     --count 2 \
     --link-outage
 
+
 ############################################################
 ##   Testing DRR scheduler priority ordering
 ##   Configures agents to 1 concurrent stream, enqueues an
@@ -193,6 +197,21 @@ start_agents 10
     drr
 
 stop_agents
+
+AGENT_EXTRA_ARGS="--max-concurrent 2"
+start_agents 10
+
+############################################################
+##   Testing bandwidth caps enfoced with multiple files
+############################################################
+"$E2E_BIN" \
+    --sender-c2i   "$AGENT1_C2I" \
+    --receiver-c2i "$AGENT2_C2I" \
+    multi-file \
+    --count 2 \
+    --large
+
+AGENT_EXTRA_ARGS=
 
 echo ""
 echo "==> ci-integration-test.sh: all tests PASSED."

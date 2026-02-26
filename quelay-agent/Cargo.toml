@@ -13,8 +13,12 @@ name = "quelay-agent"
 path = "src/main.rs"
 
 [[bin]]
-name = "e2e_test"
+name = "e2e-test"
 path = "src/bin/e2e_test.rs"
+
+[[bin]]
+name = "bw-cap-test"
+path = "src/bin/bw_cap_test/mod.rs"
 
 [dependencies]
 quelay-domain  = { workspace = true }

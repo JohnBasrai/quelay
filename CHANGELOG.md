@@ -14,6 +14,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - `encode_chunk` moved from `active_stream` into `rate_limiter`
 - `run_ack_task` refactored into `AckTask` struct with per-responsibility methods
 - Rate limit now applys to total bw across all streams instead of per stream (issue #6)
+- Hardened production code, remove unwraps in produciton code
 
 ---
 

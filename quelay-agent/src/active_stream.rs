@@ -983,7 +983,7 @@ impl AckTask {
                             return;
                         }
                         Err(e) => {
-                            tracing::debug!(%uuid, "uplink: ack reader stream error: {e}");
+                            tracing::debug!(%uuid, "uplink: ACK READER stream error: {e}");
                             let _ = ack_tx.send(AckMsg::StreamError(e.to_string())).await;
                             break; // wait for a new read half
                         }
@@ -1013,6 +1013,9 @@ impl AckTask {
     async fn run_inner(&mut self) {
         // ---
         loop {
+            // Always check for TCP EOF regardless of how we wake up.
+            self.try_send_finish().await;
+
             // Select on ack messages OR data_ready (fires on TCP push + EOF).
             // The data_ready arm handles small files (< ACK_INTERVAL = 64 KiB)
             // that receive no acks, preventing an infinite wait for Finish.
@@ -1096,18 +1099,34 @@ impl AckTask {
 
     // ---
 
-    /// Handle a QUIC read-half error: signal link-down, wait for a fresh
-    /// stream, deliver the new halves to the timer task and ack reader.
+    /// Handle a QUIC read-half error: signal link-down, poll `data_ready`
+    /// while waiting for a fresh stream so TCP EOF is not missed during
+    /// the reconnect window, then deliver the new halves to the timer task
+    /// and ack reader.
     ///
     /// Returns `true` to continue the loop, `false` on permanent failure.
     async fn on_stream_error(&mut self, e: String) -> bool {
         // ---
         tracing::warn!(uuid = %self.uuid,
-            "uplink: ack reader stream error: {e} — waiting for reconnect");
+                       "uplink: ACK READER stream error: {e} — waiting for reconnect");
 
         self.rate_limiter.link_down();
 
-        match self.stream_rx.recv().await {
+        // Check immediately in case TCP EOF arrived before the link went down.
+        self.try_send_finish().await;
+
+        let new_stream = loop {
+            tokio::select! {
+                _ = self.data_ready.notified() => {
+                    self.try_send_finish().await;
+                }
+                result = self.stream_rx.recv() => {
+                    break result;
+                }
+            }
+        };
+
+        match new_stream {
             Some(new_stream) => {
                 let replay_from = self.spool.lock().await.bytes_acked;
                 tracing::info!(uuid = %self.uuid, replay_from, "uplink: new stream — resuming");
@@ -1121,13 +1140,12 @@ impl AckTask {
                     tracing::warn!(uuid = %self.uuid, "uplink: link_up failed: {e}");
                     return false;
                 }
-                // Timer task will re-drain spool on the new stream.
                 self.finish_sent = false;
                 true
             }
             None => {
                 tracing::warn!(uuid = %self.uuid,
-                    "uplink: stream handle dropped — failing stream");
+                               "uplink: stream handle dropped — failing stream");
                 self.cb_tx
                     .send(CallbackCmd::StreamFailed {
                         uuid: self.uuid,
