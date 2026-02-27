@@ -18,7 +18,7 @@
 //! # Agent setup (ci-integration-test.sh)
 //!
 //! ```bash
-//! start_agents 10 4   # --bw-cap-mbps 10  --max-concurrent 4
+//! start_agents 10
 //!
 //! "$BW_CAP_TEST_BIN"          \
 //!   --sender-c2i   "$AGENT1_C2I" \
@@ -290,7 +290,7 @@ async fn real_main() -> anyhow::Result<()> {
                 0,
             )
             .context("Error in receiver_agent.stream_start")?;
-        tracing::info!("real_main: T5");
+
         anyhow::ensure!(
             res.err_msg.as_deref().unwrap_or("").is_empty(),
             "receiver stream_start[{i}] failed: {:?}",

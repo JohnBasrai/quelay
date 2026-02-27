@@ -241,7 +241,7 @@ impl AggregateTimerTask {
             // - alloc_tx clone (to send tickets later without holding streams lock)
             let snapshot: Vec<(Uuid, u64, tokio::sync::mpsc::Sender<AllocTicket>)> = {
                 let streams = self.streams.lock().await;
-                streams
+                let snap: Vec<_> = streams
                     .iter()
                     .map(|(uuid, entry)| {
                         let head = entry.head_offset.load(Ordering::Acquire);
@@ -249,7 +249,13 @@ impl AggregateTimerTask {
                         let backlog = head.saturating_sub(q);
                         (*uuid, backlog, entry.alloc_tx.clone())
                     })
-                    .collect()
+                    .collect();
+                tracing::debug!(
+                    n_streams = snap.len(),
+                    total_backlog = snap.iter().map(|(_, b, _)| b).sum::<u64>(),
+                    "ARL tick: snapshot"
+                );
+                snap
             };
 
             // 2) Schedule with scheduler lock only
@@ -280,6 +286,12 @@ impl AggregateTimerTask {
             let mut delivered: u64 = 0;
             let mut closed_streams: Vec<Uuid> = Vec::new();
 
+            tracing::debug!(
+                n_allocs = snapshot.len(),
+                available_budget,
+                "ARL tick: delivering tickets"
+            );
+
             // Snapshot lookup: linear scan is fine at small N; if you want,
             // replace with HashMap<Uuid, AllocTx>.
             for (uuid, bytes) in allocs {
@@ -292,13 +304,16 @@ impl AggregateTimerTask {
                     // don't pile up stale budget grants.
                     match tx.try_send(AllocTicket { bytes }) {
                         Ok(()) => {
+                            tracing::debug!(%uuid, bytes, "ARL tick: ticket delivered");
                             delivered = delivered.saturating_add(bytes);
                         }
                         Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {
                             // Keep carryover; we'll attempt to deliver again
                             // on a later tick.
+                            tracing::debug!(%uuid, bytes, "ARL tick: ticket FULL — pump not draining");
                         }
                         Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => {
+                            tracing::debug!(%uuid, "ARL tick: pump channel closed");
                             closed_streams.push(uuid);
                         }
                     }
@@ -475,11 +490,16 @@ impl StreamPump {
         // ---
         use super::CHUNK_SIZE;
 
+        tracing::debug!("stream pump: task started, entering select loop");
+
         while !self.done {
             tokio::select! {
                 ticket = self.alloc_rx.recv() => {
                     match ticket {
-                        Some(t) => self.drain_alloc(t.bytes, CHUNK_SIZE).await,
+                        Some(t) => {
+                            tracing::debug!(bytes = t.bytes, q = self.q, "stream pump: AllocTicket received");
+                            self.drain_alloc(t.bytes, CHUNK_SIZE).await;
+                        }
                         None => {
                             // ARL dropped the sender (shutdown) — exit cleanly.
                             tracing::debug!("stream pump: alloc channel closed, exiting");
@@ -546,6 +566,8 @@ impl StreamPump {
         // ---
         let mut remaining = budget;
 
+        tracing::debug!(budget, q = self.q, "drain_alloc: enter");
+
         loop {
             if remaining == 0 {
                 break;
@@ -566,6 +588,7 @@ impl StreamPump {
                     break;
                 }
                 if s.head_offset() <= self.q {
+                    tracing::trace!(head_offset = s.head_offset(), q = self.q, "drain_alloc: no new data");
                     break; // nothing new yet
                 }
 
@@ -579,6 +602,7 @@ impl StreamPump {
             }
 
             let encoded = encode_chunk(self.q, &chunk);
+            tracing::debug!(q = self.q, n = chunk.len(), "drain_alloc: writing chunk to QUIC");
             if let Err(e) = self.quic_tx.write_all(&encoded).await {
                 tracing::warn!("stream pump: QUIC write error: {e} — waiting for LinkUp");
                 if !self.wait_for_link_up().await {

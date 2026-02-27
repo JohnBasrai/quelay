@@ -39,8 +39,7 @@ cargo build --bin quelay-agent --bin bw-cap-test
 AGENT_BIN="$TARGET_DIR/debug/quelay-agent"
 BWC_BIN="$TARGET_DIR/debug/bw-cap-test"
 
-# --bw-cap-mbps 10  --max-concurrent 4
-start_agents 10 4
+start_agents 10
 
 ########################################################################
 ##   Testing bandwidth caps enforcement with multiple concurrent files

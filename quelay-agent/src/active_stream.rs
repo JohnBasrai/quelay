@@ -606,6 +606,7 @@ impl ActiveStream {
         let (mut quic_rx, mut quic_tx) = tokio::io::split(quic);
 
         loop {
+            tracing::debug!(%uuid, "downlink: calling read_chunk");
             match read_chunk(&mut quic_rx).await {
                 Ok(None) => {
                     // Sender closed its write half (QUIC FIN) — all chunks
@@ -633,6 +634,8 @@ impl ActiveStream {
                     stream_offset,
                     payload,
                 })) => {
+                    tracing::debug!(%uuid, stream_offset, len = payload.len(), "downlink: got chunk");
+
                     // Duplicate: sender replayed a chunk already delivered.
                     // Silently skip — bytes_written is ground truth.
                     if stream_offset + payload.len() as u64 <= bytes_written {

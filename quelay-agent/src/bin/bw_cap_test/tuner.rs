@@ -445,6 +445,7 @@ async fn async_tcp_writer(
             }
         }
     }
+    tracing::info!("async_tcp_writer: calling tcp.shutdown()");
     let _ = tcp.shutdown().await;
     Ok(())
 }
