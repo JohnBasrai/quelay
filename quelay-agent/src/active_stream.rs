@@ -879,7 +879,7 @@ async fn run_tcp_reader(
                     tracing::debug!(%uuid, head_offset = %head, bytes = n, "uplink: TCP bytes received");
                 }
 
-                head_offset.store(head as u64, Ordering::Release);
+                head_offset.store(head, Ordering::Release);
                 data_ready.notify_one();
             }
 
@@ -916,7 +916,7 @@ async fn handle_eof(
         s.head_offset()
     };
 
-    head_offset.store(head as u64, Ordering::Release);
+    head_offset.store(head, Ordering::Release);
     data_ready.notify_one();
 }
 
