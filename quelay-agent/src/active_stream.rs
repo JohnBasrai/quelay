@@ -59,12 +59,11 @@
 //! at the end.
 
 use std::collections::VecDeque;
-use std::io;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::net::{TcpListener, TcpStream};
+use tokio::net::TcpListener;
 use tokio::sync::{mpsc, Mutex, Notify};
 use uuid::Uuid;
 
@@ -843,7 +842,7 @@ async fn run_tcp_reader(
         // Block until the spool has room for one full chunk OR EOF.
         let mut logged_full = false;
 
-        while spool.lock().await.available() < CHUNK_SIZE {
+        if spool.lock().await.available() < CHUNK_SIZE {
             if !logged_full {
                 tracing::debug!(
                     %uuid,
@@ -851,23 +850,8 @@ async fn run_tcp_reader(
                     "uplink: spool full — pausing TCP reader",
                 );
                 logged_full = true;
-            } else {
-                tracing::trace!(%uuid, "uplink: spool still full — waiting");
             }
-
-            match wait_space_or_eof(&tcp, &spool, &space_ready).await {
-                Ok(true) => {
-                    handle_eof(&spool, &head_offset, &data_ready).await;
-                    return;
-                }
-                Ok(false) => {}
-                Err(e) => {
-                    tracing::warn!(%uuid, "uplink: TCP peek error: {e}");
-                    handle_eof(&spool, &head_offset, &data_ready).await;
-                    return;
-                }
-            }
-            // if Ok(false): space is available now; loop condition will re-check and exit
+            wait_for_spool_space(&spool, &space_ready).await;
         }
 
         if logged_full {
@@ -936,42 +920,25 @@ async fn handle_eof(
     data_ready.notify_one();
 }
 
-// EOF detection path even while backpressured.
-async fn wait_space_or_eof(
-    tcp: &TcpStream,
-    spool: &Arc<Mutex<SpoolBuffer>>,
-    space_ready: &Notify,
-) -> io::Result<bool> {
+/// Block until the spool has room for at least one chunk.
+///
+/// Previously this function also selected on `tcp.peek()` to detect EOF
+/// while backpressured.  That caused a busy-loop: when the spool was full
+/// and the TCP sender had data queued, `peek()` returned `Ok(1)` immediately
+/// on every iteration, spinning the task at 100 % CPU per stream.
+///
+/// EOF detection is not needed here: `tcp.read()` in the caller's outer loop
+/// will return `Ok(0)` the next time it is called after the client closes,
+/// so no bytes are lost.  We simply wait for `space_ready` (signalled by
+/// `on_ack` when the receiver advances `A`) and yield the executor between
+/// checks.
+async fn wait_for_spool_space(spool: &Arc<Mutex<SpoolBuffer>>, space_ready: &Notify) {
     // ---
-
-    let mut peek_buf = [0u8; 1];
-
     loop {
-        // Fast path: space available
         if spool.lock().await.available() >= CHUNK_SIZE {
-            return Ok(false);
+            return;
         }
-
-        tokio::select! {
-            _ = space_ready.notified() => {
-                // loop and re-check
-            }
-
-            res = tcp.peek(&mut peek_buf) => {
-                match res {
-                    Ok(0) => {
-                        // EOF
-                        tracing::info!("uplink: TCP peek EOF while backpressured");
-                        return Ok(true);
-                    }
-                    Ok(_) => {
-                        // Data pending but no space yet.
-                        // Just continue waiting.
-                    }
-                    Err(e) => return Err(e),
-                }
-            }
-        }
+        space_ready.notified().await;
     }
 }
 

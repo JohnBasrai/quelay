@@ -53,3 +53,6 @@ jobs:
 
       - name: End to end test
         run: ./scripts/ci-integration-test.sh
+
+      - name: Bandwidth cap test
+        run: ./scripts/ci-bw-cap-test.sh

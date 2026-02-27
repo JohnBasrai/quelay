@@ -33,16 +33,8 @@ CERT_FILE="/tmp/quelay-integ-server.der"
 AGENT1_PID=""
 AGENT2_PID=""
 
-# ---------------------------------------------------------------------------
-# Cleanup — always kill both agents on exit
-# ---------------------------------------------------------------------------
-cleanup() {
-    local exit_code=$?
-    [[ -n "$AGENT1_PID" ]] && kill "$AGENT1_PID" 2>/dev/null || true
-    [[ -n "$AGENT2_PID" ]] && kill "$AGENT2_PID" 2>/dev/null || true
-    rm -f "$CERT_FILE" "$CERT_SRC"
-    exit $exit_code
-}
+. "${SCRIPT_DIR}/.common"
+
 trap cleanup EXIT
 
 # ---------------------------------------------------------------------------
@@ -54,81 +46,8 @@ rm -f "$CERT_SRC" "$CERT_FILE"
 
 cargo build --bin quelay-agent --bin e2e-test
 
-TARGET_DIR="$(cargo metadata --no-deps --format-version 1 \
-    | python3 -c 'import sys,json; print(json.load(sys.stdin)["target_directory"])')"
-
 AGENT_BIN="$TARGET_DIR/debug/quelay-agent"
 E2E_BIN="$TARGET_DIR/debug/e2e-test"
-AGENT_EXTRA_ARGS=
-
-
-# ---------------------------------------------------------------------------
-# Helper: start both agents at a given BW cap
-# ---------------------------------------------------------------------------
-start_agents() {
-    # ---
-    local cap_mbps="$1"
-
-    echo ""
-    echo "==> Starting agents at ${cap_mbps} Mbit/s..."
-
-    rm -f "$CERT_SRC" "$CERT_FILE"
-
-    "$AGENT_BIN" $AGENT_EXTRA_ARGS \
-        --bw-cap-mbps "$cap_mbps" \
-        --agent-endpoint "$AGENT1_C2I" \
-        server \
-        --bind "$AGENT1_QUIC" \
-        &
-    AGENT1_PID=$!
-
-    # Wait for the TLS cert written by the server agent.
-    for i in $(seq 1 20); do
-        if [[ -f "$CERT_SRC" ]]; then
-            cp "$CERT_SRC" "$CERT_FILE"
-            break
-        fi
-        sleep 0.25
-        if [[ $i -eq 20 ]]; then
-            echo "ERROR: server cert not written after 5s." >&2
-            exit 1
-        fi
-    done
-
-    "$AGENT_BIN" $AGENT_EXTRA_ARGS \
-        --bw-cap-mbps "$cap_mbps" \
-        --agent-endpoint "$AGENT2_C2I" \
-        client \
-        --peer "$AGENT1_QUIC" \
-        --cert "$CERT_FILE" \
-        &
-    AGENT2_PID=$!
-
-    # Wait for both C2I ports to be reachable.
-    for i in $(seq 1 40); do
-        if nc -z 127.0.0.1 9090 2>/dev/null && nc -z 127.0.0.1 9091 2>/dev/null; then
-            echo "==> Agents ready after ~$((i * 250))ms"
-            break
-        fi
-        sleep 0.25
-        if [[ $i -eq 40 ]]; then
-            echo "ERROR: agents not reachable after 10s." >&2
-            exit 1
-        fi
-    done
-}
-
-# ---------------------------------------------------------------------------
-# Helper: stop both agents cleanly
-# ---------------------------------------------------------------------------
-stop_agents() {
-    echo "==> Stopping agents..."
-    [[ -n "$AGENT1_PID" ]] && kill "$AGENT1_PID" 2>/dev/null || true
-    [[ -n "$AGENT2_PID" ]] && kill "$AGENT2_PID" 2>/dev/null || true
-    AGENT1_PID=""
-    AGENT2_PID=""
-    sleep 0.5
-}
 
 # ===========================================================================
 # Phase A — 100 Mbit/s
@@ -160,7 +79,6 @@ start_agents 10
 ##   Testing small boundary-condition files
 ##   Files: 9000B (8 chunks+fragment), 1024B (exact chunk),
 ##          512B (half chunk), 1B (minimum stream).
-##   Agents reconfigured to 1 KiB chunk size for this test.
 ##   Each size exercises a specific framing boundary identified
 ##   from field bugs in the legacy C++ system.
 ############################################################
@@ -183,7 +101,6 @@ start_agents 10
     --count 2 \
     --link-outage
 
-
 ############################################################
 ##   Testing DRR scheduler priority ordering
 ##   Configures agents to 1 concurrent stream, enqueues an
@@ -197,21 +114,6 @@ start_agents 10
     drr
 
 stop_agents
-
-AGENT_EXTRA_ARGS="--max-concurrent 2"
-start_agents 10
-
-############################################################
-##   Testing bandwidth caps enfoced with multiple files
-############################################################
-"$E2E_BIN" \
-    --sender-c2i   "$AGENT1_C2I" \
-    --receiver-c2i "$AGENT2_C2I" \
-    multi-file \
-    --count 2 \
-    --large
-
-AGENT_EXTRA_ARGS=
 
 echo ""
 echo "==> ci-integration-test.sh: all tests PASSED."

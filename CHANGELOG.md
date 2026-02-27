@@ -7,14 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.1.2] - 2026-02-26
+
 ### Changed
 - Eliminated the QUIC pump task — `RateLimiter` timer task now reads directly
   from `SpoolBuffer`, removing one task and one mpsc queue per active uplink
   stream (issue #7)
 - `encode_chunk` moved from `active_stream` into `rate_limiter`
 - `run_ack_task` refactored into `AckTask` struct with per-responsibility methods
-- Rate limit now applys to total bw across all streams instead of per stream (issue #6)
-- Hardened production code, remove unwraps in produciton code
+- Rate limiting now applies to aggregate BW across all streams instead of
+  per-stream (issue #6)
+- `ci-integration-test.sh` refactored to source `.common`, eliminating ~60
+  lines of duplicated agent lifecycle code
+- `ci-bw-cap-test.sh` added to CI workflow
+
+### Fixed
+- `wait_space_or_eof` busy-loop eliminated — replaced `tcp.peek()`-based
+  backpressure spin with `space_ready.notified()` sleep; reduces agent CPU
+  from ~300% to ~12% during `bw-cap-test` (issue #8 or whatever you assign)
+- Hardened production code: removed `unwrap()` calls in non-test paths
 
 ---
 
