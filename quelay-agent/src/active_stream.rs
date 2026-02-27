@@ -224,9 +224,16 @@ pub(crate) struct UplinkContext {
     /// Allocation ticket receiver — `Some` in capped mode, `None` uncapped.
     pub alloc_rx: Option<mpsc::Receiver<AllocTicket>>,
 
-    /// Backlog atomic written by [`StreamPump`] after each drain; read by
-    /// the ARL timer before calling `DrrScheduler::schedule`.
-    pub backlog: Arc<AtomicU64>,
+    /// Absolute offset of the byte one past the last byte currently in the spool (`T`).
+    ///
+    /// Written by the TCP reader task after each `push()` and on EOF sentinel.
+    pub head_offset: Arc<AtomicU64>,
+
+    /// Pump drain cursor (`Q`) — absolute offset of the next byte to transmit.
+    ///
+    /// Written by the StreamPump after each successful QUIC write, and on rewind
+    /// during LinkDown/LinkUp.
+    pub q_atomic: Arc<AtomicU64>,
 
     /// Shared ARL — deregistered by the [`AckTask`] when the stream exits.
     pub arl: Arc<AggregateRateLimiter>,
@@ -352,7 +359,8 @@ impl ActiveStream {
         // ---
         let UplinkContext {
             alloc_rx,
-            backlog,
+            head_offset,
+            q_atomic,
             arl,
         } = ctx;
 
@@ -380,11 +388,14 @@ impl ActiveStream {
 
         // Construct the rate limiter; in capped mode the StreamPump is
         // spawned inside new() and driven by alloc_rx tickets from the ARL.
+        let capped = alloc_rx.is_some();
+        tracing::info!(%uuid, capped, "uplink: rate limiter mode");
+
         let rate_limiter = RateLimiter::new(
             initial_tx,
             alloc_rx,
             Arc::clone(&spool),
-            Arc::clone(&backlog),
+            Arc::clone(&q_atomic),
         );
         let link_down_tx = rate_limiter.link_down_tx_clone();
 
@@ -397,28 +408,40 @@ impl ActiveStream {
             link_down_tx,
         };
 
-        tokio::spawn(run_tcp_reader(
-            uuid,
+        let tcp_ctx = TcpReaderCtx {
+            // ---
             listener,
-            Arc::clone(&spool),
-            Arc::clone(&data_ready),
-            Arc::clone(&space_ready),
-            cb_tx.clone(),
-            Arc::clone(&backlog),
-        ));
+            spool: Arc::clone(&spool),
+            data_ready: Arc::clone(&data_ready),
+            space_ready: Arc::clone(&space_ready),
+            cb_tx: cb_tx.clone(),
+            head_offset: Arc::clone(&head_offset),
+        };
 
-        tokio::spawn(run_ack_task(
-            uuid,
-            spool,
-            space_ready,
-            Arc::clone(&data_ready),
-            stream_rx,
-            cb_tx,
-            initial_rx,
-            rate_limiter,
-            info.size_bytes,
-            arl,
-        ));
+        tokio::spawn(run_tcp_reader(uuid, tcp_ctx));
+
+        tokio::spawn(async move {
+            // ---
+            let ack_ctx = AckTaskCtx {
+                spool,
+                space_ready,
+                data_ready,
+                stream_rx,
+                cb_tx,
+                rate_limiter,
+                size_bytes: info.size_bytes,
+                initial_rx,
+                arl,
+            };
+
+            match AckTask::new(uuid, ack_ctx).await {
+                Some(task) => task.run().await,
+                None => tracing::warn!(
+                    %uuid,
+                    "uplink: ack reader gone before initial stream delivered"
+                ),
+            }
+        });
 
         Ok(handle)
     }
@@ -582,6 +605,7 @@ impl ActiveStream {
         let (mut quic_rx, mut quic_tx) = tokio::io::split(quic);
 
         loop {
+            tracing::debug!(%uuid, "downlink: calling read_chunk");
             match read_chunk(&mut quic_rx).await {
                 Ok(None) => {
                     // Sender closed its write half (QUIC FIN) — all chunks
@@ -609,6 +633,8 @@ impl ActiveStream {
                     stream_offset,
                     payload,
                 })) => {
+                    tracing::debug!(%uuid, stream_offset, len = payload.len(), "downlink: got chunk");
+
                     // Duplicate: sender replayed a chunk already delivered.
                     // Silently skip — bytes_written is ground truth.
                     if stream_offset + payload.len() as u64 <= bytes_written {
@@ -759,16 +785,34 @@ impl ActiveStream {
 /// Pauses when the spool is full (back-pressure to client).
 /// Wakes when the ack task signals `space_ready` after an incoming Ack.
 /// Signals EOF by setting `spool.head = u64::MAX`.
-async fn run_tcp_reader(
+/// Constructor context for the uplink TCP reader task.
+///
+/// Bundles parameters so call sites stay readable.
+struct TcpReaderCtx {
     // ---
-    uuid: Uuid,
     listener: TcpListener,
     spool: Arc<Mutex<SpoolBuffer>>,
     data_ready: Arc<Notify>,
     space_ready: Arc<Notify>,
     cb_tx: CallbackTx,
-    backlog: Arc<AtomicU64>,
+    head_offset: Arc<AtomicU64>,
+}
+
+async fn run_tcp_reader(
+    // ---
+    uuid: Uuid,
+    ctx: TcpReaderCtx,
 ) {
+    // ---
+    let TcpReaderCtx {
+        listener,
+        spool,
+        data_ready,
+        space_ready,
+        cb_tx,
+        head_offset,
+    } = ctx;
+
     // ---
     let mut tcp = match listener.accept().await {
         Ok((tcp, addr)) => {
@@ -792,13 +836,13 @@ async fn run_tcp_reader(
     // chunk boundaries — makes offset arithmetic in the timer task exact.
     let mut tcp_buf = vec![0u8; CHUNK_SIZE];
 
+    let mut first_read_logged = false;
+
     loop {
-        // Block until the spool has room for one full chunk.
+        // Block until the spool has room for one full chunk OR EOF.
         let mut logged_full = false;
-        loop {
-            if spool.lock().await.available() >= CHUNK_SIZE {
-                break;
-            }
+
+        if spool.lock().await.available() < CHUNK_SIZE {
             if !logged_full {
                 tracing::debug!(
                     %uuid,
@@ -806,35 +850,39 @@ async fn run_tcp_reader(
                     "uplink: spool full — pausing TCP reader",
                 );
                 logged_full = true;
-            } else {
-                tracing::trace!(%uuid, "uplink: spool still full — waiting");
             }
-            space_ready.notified().await;
+            wait_for_spool_space(&spool, &space_ready).await;
         }
+
         if logged_full {
-            tracing::info!(%uuid, "uplink: spool space available — resuming TCP reader");
+            tracing::debug!(%uuid, "uplink: spool space available — resuming TCP reader");
         }
 
         match tcp.read(&mut tcp_buf).await {
             Ok(0) => {
                 tracing::info!(%uuid, "uplink: TCP EOF from client");
-                let mut s = spool.lock().await;
-                s.head = u64::MAX; // EOF sentinel
-                                   // Backlog: remaining unacked bytes still to be pumped.
-                let b = s.head_offset().saturating_sub(s.bytes_acked);
-                drop(s);
-                backlog.store(b, Ordering::Release);
-                data_ready.notify_one();
+                handle_eof(&spool, &head_offset, &data_ready).await;
                 return;
             }
+
             Ok(n) => {
-                let mut s = spool.lock().await;
-                s.push(&tcp_buf[..n]);
-                let b = s.head_offset().saturating_sub(s.bytes_acked);
-                drop(s);
-                backlog.store(b, Ordering::Release);
+                let head = {
+                    let mut s = spool.lock().await;
+                    s.push(&tcp_buf[..n]);
+                    s.head_offset()
+                };
+
+                if !first_read_logged {
+                    tracing::info!(%uuid, bytes = n, "uplink: first TCP bytes received");
+                    first_read_logged = true;
+                } else {
+                    tracing::debug!(%uuid, head_offset = %head, bytes = n, "uplink: TCP bytes received");
+                }
+
+                head_offset.store(head, Ordering::Release);
                 data_ready.notify_one();
             }
+
             Err(e) => {
                 tracing::warn!(%uuid, "uplink: TCP read error: {e}");
                 cb_tx
@@ -844,9 +892,53 @@ async fn run_tcp_reader(
                         reason: format!("TCP read error: {e}"),
                     })
                     .await;
+
+                handle_eof(&spool, &head_offset, &data_ready).await;
                 return;
             }
+        } // match
+    } // loop
+} // run_tcp_reader
+
+async fn handle_eof(
+    spool: &Arc<Mutex<SpoolBuffer>>,
+    head_offset: &Arc<AtomicU64>,
+    data_ready: &Notify,
+) {
+    let head = {
+        let mut s = spool.lock().await;
+
+        if s.head == u64::MAX {
+            return; // already published
         }
+
+        s.head = u64::MAX;
+        s.head_offset()
+    };
+
+    head_offset.store(head, Ordering::Release);
+    data_ready.notify_one();
+}
+
+/// Block until the spool has room for at least one chunk.
+///
+/// Previously this function also selected on `tcp.peek()` to detect EOF
+/// while backpressured.  That caused a busy-loop: when the spool was full
+/// and the TCP sender had data queued, `peek()` returned `Ok(1)` immediately
+/// on every iteration, spinning the task at 100 % CPU per stream.
+///
+/// EOF detection is not needed here: `tcp.read()` in the caller's outer loop
+/// will return `Ok(0)` the next time it is called after the client closes,
+/// so no bytes are lost.  We simply wait for `space_ready` (signalled by
+/// `on_ack` when the receiver advances `A`) and yield the executor between
+/// checks.
+async fn wait_for_spool_space(spool: &Arc<Mutex<SpoolBuffer>>, space_ready: &Notify) {
+    // ---
+    loop {
+        if spool.lock().await.available() >= CHUNK_SIZE {
+            return;
+        }
+        space_ready.notified().await;
     }
 }
 
@@ -894,6 +986,24 @@ struct AckTask {
     arl: Arc<AggregateRateLimiter>,
 }
 
+// ---
+
+/// Constructor context for [`AckTask`].
+///
+/// This keeps the public call site readable and avoids long argument lists.
+struct AckTaskCtx {
+    // ---
+    spool: Arc<Mutex<SpoolBuffer>>,
+    space_ready: Arc<Notify>,
+    data_ready: Arc<Notify>,
+    stream_rx: mpsc::Receiver<QueLayStreamPtr>,
+    cb_tx: CallbackTx,
+    rate_limiter: RateLimiter,
+    size_bytes: Option<u64>,
+    initial_rx: tokio::io::ReadHalf<QueLayStreamPtr>,
+    arl: Arc<AggregateRateLimiter>,
+}
+
 impl AckTask {
     // ---
 
@@ -901,20 +1011,20 @@ impl AckTask {
     /// the initial QUIC read half to it.
     ///
     /// Returns `None` if the channel send fails (ack reader already gone).
-    #[allow(clippy::too_many_arguments)] // TODO: fold into UplinkContext (issue #2 — DRR wiring)
-    async fn new(
-        uuid: Uuid,
-        spool: Arc<Mutex<SpoolBuffer>>,
-        space_ready: Arc<Notify>,
-        data_ready: Arc<Notify>,
-        stream_rx: mpsc::Receiver<QueLayStreamPtr>,
-        cb_tx: CallbackTx,
-        rate_limiter: RateLimiter,
-        size_bytes: Option<u64>,
-        initial_rx: tokio::io::ReadHalf<QueLayStreamPtr>,
-        arl: Arc<AggregateRateLimiter>,
-    ) -> Option<Self> {
+    async fn new(uuid: Uuid, ctx: AckTaskCtx) -> Option<Self> {
         // ---
+        let AckTaskCtx {
+            spool,
+            space_ready,
+            data_ready,
+            stream_rx,
+            cb_tx,
+            rate_limiter,
+            size_bytes,
+            initial_rx,
+            arl,
+        } = ctx;
+
         let (stream_ack_tx, ack_rx) = Self::spawn_reader(uuid);
 
         let task = Self {
@@ -983,7 +1093,7 @@ impl AckTask {
                             return;
                         }
                         Err(e) => {
-                            tracing::debug!(%uuid, "uplink: ack reader stream error: {e}");
+                            tracing::debug!(%uuid, "uplink: ACK READER stream error: {e}");
                             let _ = ack_tx.send(AckMsg::StreamError(e.to_string())).await;
                             break; // wait for a new read half
                         }
@@ -1004,8 +1114,13 @@ impl AckTask {
     /// then deregisters the stream from the [`AggregateRateLimiter`].
     async fn run(mut self) {
         // ---
+        tracing::debug!(%self.uuid, "uplink: ack task starting");
+
         self.run_inner().await;
+
+        tracing::debug!(%self.uuid, bytes_sent = self.bytes_sent, "uplink: deregistering from ARL");
         self.arl.deregister(self.uuid).await;
+        tracing::debug!(%self.uuid, "uplink: ack task exit");
     }
 
     // ---
@@ -1013,6 +1128,9 @@ impl AckTask {
     async fn run_inner(&mut self) {
         // ---
         loop {
+            // Always check for TCP EOF regardless of how we wake up.
+            self.try_send_finish().await;
+
             // Select on ack messages OR data_ready (fires on TCP push + EOF).
             // The data_ready arm handles small files (< ACK_INTERVAL = 64 KiB)
             // that receive no acks, preventing an infinite wait for Finish.
@@ -1096,18 +1214,34 @@ impl AckTask {
 
     // ---
 
-    /// Handle a QUIC read-half error: signal link-down, wait for a fresh
-    /// stream, deliver the new halves to the timer task and ack reader.
+    /// Handle a QUIC read-half error: signal link-down, poll `data_ready`
+    /// while waiting for a fresh stream so TCP EOF is not missed during
+    /// the reconnect window, then deliver the new halves to the timer task
+    /// and ack reader.
     ///
     /// Returns `true` to continue the loop, `false` on permanent failure.
     async fn on_stream_error(&mut self, e: String) -> bool {
         // ---
         tracing::warn!(uuid = %self.uuid,
-            "uplink: ack reader stream error: {e} — waiting for reconnect");
+                       "uplink: ACK READER stream error: {e} — waiting for reconnect");
 
         self.rate_limiter.link_down();
 
-        match self.stream_rx.recv().await {
+        // Check immediately in case TCP EOF arrived before the link went down.
+        self.try_send_finish().await;
+
+        let new_stream = loop {
+            tokio::select! {
+                _ = self.data_ready.notified() => {
+                    self.try_send_finish().await;
+                }
+                result = self.stream_rx.recv() => {
+                    break result;
+                }
+            }
+        };
+
+        match new_stream {
             Some(new_stream) => {
                 let replay_from = self.spool.lock().await.bytes_acked;
                 tracing::info!(uuid = %self.uuid, replay_from, "uplink: new stream — resuming");
@@ -1121,13 +1255,12 @@ impl AckTask {
                     tracing::warn!(uuid = %self.uuid, "uplink: link_up failed: {e}");
                     return false;
                 }
-                // Timer task will re-drain spool on the new stream.
                 self.finish_sent = false;
                 true
             }
             None => {
                 tracing::warn!(uuid = %self.uuid,
-                    "uplink: stream handle dropped — failing stream");
+                               "uplink: stream handle dropped — failing stream");
                 self.cb_tx
                     .send(CallbackCmd::StreamFailed {
                         uuid: self.uuid,
@@ -1172,41 +1305,5 @@ impl AckTask {
                 tracing::warn!(uuid = %self.uuid, "uplink: finish() failed: {e}");
             }
         }
-    }
-}
-
-// ---
-
-/// Entry point: construct and run the [`AckTask`] for one uplink stream.
-#[allow(clippy::too_many_arguments)]
-async fn run_ack_task(
-    uuid: Uuid,
-    spool: Arc<Mutex<SpoolBuffer>>,
-    space_ready: Arc<Notify>,
-    data_ready: Arc<Notify>,
-    stream_rx: mpsc::Receiver<QueLayStreamPtr>,
-    cb_tx: CallbackTx,
-    initial_rx: tokio::io::ReadHalf<QueLayStreamPtr>,
-    rate_limiter: RateLimiter,
-    size_bytes: Option<u64>,
-    arl: Arc<AggregateRateLimiter>,
-) {
-    // ---
-    match AckTask::new(
-        uuid,
-        spool,
-        space_ready,
-        data_ready,
-        stream_rx,
-        cb_tx,
-        rate_limiter,
-        size_bytes,
-        initial_rx,
-        arl,
-    )
-    .await
-    {
-        Some(task) => task.run().await,
-        None => tracing::warn!(%uuid, "uplink: ack reader gone before initial stream delivered"),
     }
 }

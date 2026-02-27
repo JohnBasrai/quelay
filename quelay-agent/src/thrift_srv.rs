@@ -220,12 +220,12 @@ impl QueLayAgentSyncHandler for AgentHandler {
     ) -> thrift::Result<StartStreamReturn> {
         // ---
 
-        tracing::info!(uuid = %uuid_str, priority, "stream_start");
+        tracing::debug!(uuid = %uuid_str, priority, "THFT: stream_start");
 
         let uuid = Uuid::parse_str(&uuid_str).map_err(|e| {
             thrift::Error::Application(thrift::ApplicationError::new(
                 thrift::ApplicationErrorKind::InvalidTransform,
-                e.to_string(),
+                format!("thrift_srv: Invalid UUID:{uuid_str}:{e}"),
             ))
         })?;
 

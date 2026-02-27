@@ -662,7 +662,7 @@ dependencies = [
 
 [[package]]
 name = "quelay-agent"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -685,7 +685,7 @@ dependencies = [
 
 [[package]]
 name = "quelay-domain"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -698,7 +698,7 @@ dependencies = [
 
 [[package]]
 name = "quelay-example"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "anyhow",
  "clap",
@@ -717,7 +717,7 @@ dependencies = [
 
 [[package]]
 name = "quelay-quic"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -735,7 +735,7 @@ dependencies = [
 
 [[package]]
 name = "quelay-thrift"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "ordered-float 4.6.0",
  "quelay-domain",
