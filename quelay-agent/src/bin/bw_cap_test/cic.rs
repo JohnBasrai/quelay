@@ -123,6 +123,8 @@ pub struct CicConfig {
 // Cic
 // ---------------------------------------------------------------------------
 
+type TunerJobKey = (String, Role);
+
 /// Central Intelligence Controller.
 pub struct Cic {
     // ---
@@ -131,20 +133,21 @@ pub struct Cic {
     cic_tx: mpsc::Sender<CicMsg>,
 
     /// Master dispatch map: `(uuid, role)` → tuner command channel.
-    dispatch: HashMap<(String, Role), mpsc::Sender<TunerCmd>>,
+    dispatch: HashMap<TunerJobKey, mpsc::Sender<TunerCmd>>,
 
     /// Paired UUIDs — used for coordinated shutdown.
     pairs: Vec<TunerPair>,
 
     /// Join handles for all spawned tuner tasks (cleanup only — results arrive
     /// via [`CicMsg::TunerFinished`]).
-    handles: Vec<((String, Role), JoinHandle<anyhow::Result<()>>)>,
+    #[allow(dead_code)]
+    handles: Vec<(TunerJobKey, JoinHandle<anyhow::Result<()>>)>,
 
     /// Collected results, filled as [`CicMsg::TunerFinished`] messages arrive.
     results: Vec<TunerResult>,
 
     /// Keep track of Tuner have been given a StreamStarted
-    ported: HashSet<(String, Role)>,
+    ported: HashSet<TunerJobKey>,
 }
 
 // ---

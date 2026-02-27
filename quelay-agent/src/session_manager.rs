@@ -664,8 +664,8 @@ impl SessionManager {
         write_connect_header(&mut stream, &header).await?;
 
         // Register with ARL — get alloc_rx (capped) or None (uncapped),
-        // plus the backlog atomic the StreamPump will update after each drain.
-        let (alloc_rx, backlog) = arl.register(pending.uuid, pending.priority).await;
+        // plus head_offset/q atomics used by the ARL timer to compute backlog (T - Q).
+        let (alloc_rx, head_offset, q_atomic) = arl.register(pending.uuid, pending.priority).await;
 
         let handle = ActiveStream::spawn_uplink(
             pending.uuid,
@@ -675,7 +675,8 @@ impl SessionManager {
             cb_tx,
             UplinkContext {
                 alloc_rx,
-                backlog,
+                head_offset,
+                q_atomic,
                 arl: Arc::clone(&arl),
             },
         )

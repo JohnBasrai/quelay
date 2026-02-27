@@ -16,7 +16,7 @@
 //! ```
 //!
 //! On receiving an `AllocTicket` the pump drains up to `n` bytes from its
-//! [`SpoolBuffer`] into the QUIC write half, then updates its backlog atomic
+//! [`SpoolBuffer`] into the QUIC write half, then updates its head/q atomics
 //! so the ARL scheduler sees current data for the next tick.
 //!
 //! ## Backlog tracking (Option A)
@@ -189,9 +189,16 @@ struct StreamEntry {
     /// Allocation ticket channel to the pump task.
     alloc_tx: mpsc::Sender<AllocTicket>,
 
-    /// Backlog written by the pump after each drain.  Read by the ARL timer
-    /// before calling `scheduler.set_backlog()` + `schedule()`.
-    backlog: Arc<AtomicU64>,
+    /// Absolute offset of the byte one past the last byte currently in the spool (`T`).
+    ///
+    /// Written by the TCP reader task after each `push()` and on EOF sentinel.
+    head_offset: Arc<AtomicU64>,
+
+    /// Pump drain cursor (`Q`) — absolute offset of the next byte to transmit.
+    ///
+    /// Written by the StreamPump after each successful QUIC write, and on rewind
+    /// during LinkDown/LinkUp.
+    q_atomic: Arc<AtomicU64>,
 }
 
 // ---------------------------------------------------------------------------
@@ -237,7 +244,9 @@ impl AggregateTimerTask {
                 streams
                     .iter()
                     .map(|(uuid, entry)| {
-                        let backlog = entry.backlog.load(Ordering::Acquire);
+                        let head = entry.head_offset.load(Ordering::Acquire);
+                        let q = entry.q_atomic.load(Ordering::Acquire);
+                        let backlog = head.saturating_sub(q);
                         (*uuid, backlog, entry.alloc_tx.clone())
                     })
                     .collect()
@@ -261,12 +270,16 @@ impl AggregateTimerTask {
                 }
             };
 
-            // 3) Compute consumed bytes and reduce carryover
-            let consumed: u64 = allocs.iter().map(|(_, bytes)| *bytes).sum();
-            available_budget = available_budget.saturating_sub(consumed);
-
-            // 4) Deliver tickets without holding any locks
+            // 3) Deliver tickets without holding any locks, while tracking
+            // how much budget was *actually* delivered to pumps.
             //
+            // We only subtract delivered bytes from carryover, so that:
+            // - if a pump's alloc channel is full, we don't "spend" budget
+            //   the pump never receives
+            // - if a pump task is gone (channel closed), we can deregister it
+            let mut delivered: u64 = 0;
+            let mut closed_streams: Vec<Uuid> = Vec::new();
+
             // Snapshot lookup: linear scan is fine at small N; if you want,
             // replace with HashMap<Uuid, AllocTx>.
             for (uuid, bytes) in allocs {
@@ -277,7 +290,38 @@ impl AggregateTimerTask {
                     // Non-blocking: if the pump's alloc channel is full it
                     // already has a ticket queued; discard this one so we
                     // don't pile up stale budget grants.
-                    let _ = tx.try_send(AllocTicket { bytes });
+                    match tx.try_send(AllocTicket { bytes }) {
+                        Ok(()) => {
+                            delivered = delivered.saturating_add(bytes);
+                        }
+                        Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {
+                            // Keep carryover; we'll attempt to deliver again
+                            // on a later tick.
+                        }
+                        Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => {
+                            closed_streams.push(uuid);
+                        }
+                    }
+                }
+            }
+
+            // 4) Reduce carryover only by delivered bytes.
+            available_budget = available_budget.saturating_sub(delivered);
+
+            // 5) Clean up streams whose pumps are gone so the scheduler doesn't
+            // keep allocating to closed channels.
+            if !closed_streams.is_empty() {
+                {
+                    let mut streams = self.streams.lock().await;
+                    for uuid in &closed_streams {
+                        streams.remove(uuid);
+                    }
+                }
+                {
+                    let mut sched = self.scheduler.lock().await;
+                    for uuid in &closed_streams {
+                        sched.deregister(*uuid);
+                    }
                 }
             }
         }
@@ -295,7 +339,7 @@ impl AggregateTimerTask {
 /// - A single [`DrrScheduler`] that distributes the aggregate tick budget.
 /// - One [`AggregateTimerTask`] running as a background tokio task.
 /// - A map of per-stream [`StreamEntry`]s holding the alloc channel and
-///   backlog atomic for each active pump.
+///   head/q atomics for each active pump.
 ///
 /// Streams register on open (`register`) and deregister on close
 /// (`deregister`).  The timer task reads the map each tick; entries added
@@ -357,9 +401,14 @@ impl AggregateRateLimiter {
         &self,
         uuid: Uuid,
         priority: Priority,
-    ) -> (Option<mpsc::Receiver<AllocTicket>>, Arc<AtomicU64>) {
+    ) -> (
+        Option<mpsc::Receiver<AllocTicket>>,
+        Arc<AtomicU64>,
+        Arc<AtomicU64>,
+    ) {
         // ---
-        let backlog = Arc::new(AtomicU64::new(0));
+        let head_offset = Arc::new(AtomicU64::new(0));
+        let q_atomic = Arc::new(AtomicU64::new(0));
 
         self.scheduler.lock().await.register(uuid, priority);
 
@@ -373,12 +422,13 @@ impl AggregateRateLimiter {
                 uuid,
                 StreamEntry {
                     alloc_tx,
-                    backlog: Arc::clone(&backlog),
+                    head_offset: Arc::clone(&head_offset),
+                    q_atomic: Arc::clone(&q_atomic),
                 },
             );
-            (Some(alloc_rx), backlog)
+            (Some(alloc_rx), head_offset, q_atomic)
         } else {
-            (None, backlog)
+            (None, head_offset, q_atomic)
         }
     }
 
@@ -414,8 +464,6 @@ struct StreamPump {
     alloc_rx: mpsc::Receiver<AllocTicket>,
     cmd_rx: mpsc::Receiver<RateCmd>,
 
-    /// Written after each drain so the ARL timer sees current backlog.
-    backlog: Arc<AtomicU64>,
     q_atomic: Arc<AtomicU64>,
     done: bool,
     finishing: bool,
@@ -443,8 +491,12 @@ impl StreamPump {
                 cmd = self.cmd_rx.recv() => {
                     match cmd {
                         Some(RateCmd::LinkDown) => {
+
                             self.q = self.spool.lock().await.bytes_acked;
+                            self.q_atomic.store(self.q, Ordering::Release);
+
                             tracing::info!("stream pump: link down — rewound Q, waiting for LinkUp");
+
                             if !self.wait_for_link_up().await {
                                 return;
                             }
@@ -474,7 +526,6 @@ impl StreamPump {
                                 // atomic.  Refresh it now using self.q so a
                                 // stale bytes_acked value from run_tcp_reader
                                 // doesn't cause the ARL to under-schedule.
-                                self.backlog.store(remaining, Ordering::Release);
                             }
                         }
                         None => return,
@@ -489,7 +540,7 @@ impl StreamPump {
 
     /// Drain up to `budget` bytes from the spool, sending chunks to QUIC.
     ///
-    /// Updates the backlog atomic after draining so the ARL scheduler has
+    /// Updates the head/q atomics after draining so the ARL scheduler has
     /// current data for the next tick.
     async fn drain_alloc(&mut self, budget: u64, chunk_size: usize) {
         // ---
@@ -540,19 +591,18 @@ impl StreamPump {
             remaining = remaining.saturating_sub(chunk.len() as u64);
         }
 
-        // Update backlog: bytes in spool ahead of Q.
-        let (backlog, head_at_end) = {
+        // Snapshot remaining bytes and EOF sentinel after draining.
+        let (remaining_bytes, head_at_end) = {
             let s = self.spool.lock().await;
             (s.head_offset().saturating_sub(self.q), s.head)
         };
-        self.backlog.store(backlog, Ordering::Release);
 
         // Post-drain sentinel: the budget may have been exhausted on the last
         // chunk (remaining == 0 at top of loop), causing the loop to exit
         // before the in-loop sentinel could fire.  Check here so we don't
         // leave the pump stuck in select! with backlog == 0 and Finish already
         // processed — the 30-second idle-timeout stall in issue #6.
-        if self.finishing && head_at_end == u64::MAX && backlog == 0 {
+        if self.finishing && head_at_end == u64::MAX && remaining_bytes == 0 {
             tracing::info!("stream pump: spool drained, sending FIN");
             let _ = self.quic_tx.shutdown().await;
             self.done = true;
@@ -575,17 +625,25 @@ impl StreamPump {
                     match cmd {
                         Some(RateCmd::LinkUp(new_tx)) => {
                             self.q = self.spool.lock().await.bytes_acked;
+                            self.q_atomic.store(self.q, Ordering::Release);
                             self.quic_tx = new_tx;
-                            tracing::debug!(q = self.q, "stream pump: link up — new write half installed");
+
+                            tracing::debug!(q = self.q,
+                                            "stream pump: link up — new write half installed");
+
                             return true;
                         }
                         Some(RateCmd::LinkDown) => {
                             // Duplicate LinkDown — rewind again (defensive).
                             self.q = self.spool.lock().await.bytes_acked;
-                            tracing::warn!("stream pump: duplicate LinkDown while waiting for LinkUp");
+                            self.q_atomic.store(self.q, Ordering::Release);
+
+                            tracing::warn!(q = self.q,
+                                           "stream pump: duplicate LinkDown while waiting for LinkUp");
                         }
                         Some(RateCmd::Finish) => {
-                            tracing::warn!("stream pump: got RateCmd::Finish while waiting for LinkUp");
+                            tracing::warn!(q = self.q,
+                                           "stream pump: got RateCmd::Finish while waiting for LinkUp");
                             self.finishing = true;
                         }
                         None => return false,
@@ -637,7 +695,6 @@ impl RateLimiter {
         quic_tx: WriteHalf<QueLayStreamPtr>,
         alloc_rx: Option<mpsc::Receiver<AllocTicket>>,
         spool: Arc<Mutex<SpoolBuffer>>,
-        backlog: Arc<AtomicU64>,
         q_atomic: Arc<AtomicU64>,
     ) -> Self {
         // ---
@@ -657,7 +714,6 @@ impl RateLimiter {
                         quic_tx,
                         alloc_rx,
                         cmd_rx,
-                        backlog,
                         q_atomic,
                         done: false,
                         finishing: false,

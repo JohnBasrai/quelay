@@ -48,6 +48,7 @@ mod tuner;
 pub use callback::{CallbackActor, Role};
 pub use cic::{assert_aggregate_bw, Cic, CicConfig, CicHandle, CicMsg, TunerPair};
 pub use tuner::{spawn_receiver, spawn_sender, TunerCmd, TunerOutcome, TunerResult};
+use uuid::Uuid;
 
 // ---------------------------------------------------------------------------
 // Imports
@@ -63,7 +64,6 @@ use anyhow::Context as _;
 use clap::Parser;
 use rand::{RngCore, SeedableRng};
 use tokio::sync::mpsc;
-use uuid::Uuid;
 
 // ---
 
@@ -234,11 +234,12 @@ async fn real_main() -> anyhow::Result<()> {
     let mut sender_agent = connect_agent(cli.sender_c2i)?;
     let mut receiver_agent = connect_agent(cli.receiver_c2i)?;
 
-    println!("  starting {} stream pairs...", cli.count);
+    println!("bw_cap_test: starting {} stream pairs...", cli.count);
 
     let t_wall = Instant::now();
 
     for (i, payload) in payloads.into_iter().enumerate() {
+        // ---
         let uuid = Uuid::new_v4().to_string();
 
         // --- sender tuner ---
@@ -261,14 +262,17 @@ async fn real_main() -> anyhow::Result<()> {
         let mut attrs = BTreeMap::new();
         attrs.insert("filename".to_string(), format!("bw-cap-stream-{i}.bin"));
 
-        let res = sender_agent.stream_start(
-            uuid.clone(),
-            StreamInfo {
-                size_bytes: Some(payload_bytes as i64),
-                attrs: Some(attrs.clone()),
-            },
-            0,
-        )?;
+        let res = sender_agent
+            .stream_start(
+                uuid.clone(),
+                StreamInfo {
+                    size_bytes: Some(payload_bytes as i64),
+                    attrs: Some(attrs.clone()),
+                },
+                0,
+            )
+            .context("Error in sender_agent.stream_start")?;
+
         anyhow::ensure!(
             res.err_msg.as_deref().unwrap_or("").is_empty(),
             "sender stream_start[{i}] failed: {:?}",
@@ -276,14 +280,17 @@ async fn real_main() -> anyhow::Result<()> {
         );
 
         // --- stream_start on receiver agent ---
-        let res = receiver_agent.stream_start(
-            uuid.clone(),
-            StreamInfo {
-                size_bytes: Some(payload_bytes as i64),
-                attrs: Some(attrs),
-            },
-            0,
-        )?;
+        let res = receiver_agent
+            .stream_start(
+                uuid.clone(),
+                StreamInfo {
+                    size_bytes: Some(payload_bytes as i64),
+                    attrs: Some(attrs),
+                },
+                0,
+            )
+            .context("Error in receiver_agent.stream_start")?;
+        tracing::info!("real_main: T5");
         anyhow::ensure!(
             res.err_msg.as_deref().unwrap_or("").is_empty(),
             "receiver stream_start[{i}] failed: {:?}",

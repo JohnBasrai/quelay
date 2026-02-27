@@ -59,11 +59,12 @@
 //! at the end.
 
 use std::collections::VecDeque;
+use std::io;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::net::TcpListener;
+use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{mpsc, Mutex, Notify};
 use uuid::Uuid;
 
@@ -224,9 +225,16 @@ pub(crate) struct UplinkContext {
     /// Allocation ticket receiver — `Some` in capped mode, `None` uncapped.
     pub alloc_rx: Option<mpsc::Receiver<AllocTicket>>,
 
-    /// Backlog atomic written by [`StreamPump`] after each drain; read by
-    /// the ARL timer before calling `DrrScheduler::schedule`.
-    pub backlog: Arc<AtomicU64>,
+    /// Absolute offset of the byte one past the last byte currently in the spool (`T`).
+    ///
+    /// Written by the TCP reader task after each `push()` and on EOF sentinel.
+    pub head_offset: Arc<AtomicU64>,
+
+    /// Pump drain cursor (`Q`) — absolute offset of the next byte to transmit.
+    ///
+    /// Written by the StreamPump after each successful QUIC write, and on rewind
+    /// during LinkDown/LinkUp.
+    pub q_atomic: Arc<AtomicU64>,
 
     /// Shared ARL — deregistered by the [`AckTask`] when the stream exits.
     pub arl: Arc<AggregateRateLimiter>,
@@ -352,7 +360,8 @@ impl ActiveStream {
         // ---
         let UplinkContext {
             alloc_rx,
-            backlog,
+            head_offset,
+            q_atomic,
             arl,
         } = ctx;
 
@@ -383,13 +392,10 @@ impl ActiveStream {
         let capped = alloc_rx.is_some();
         tracing::info!(%uuid, capped, "uplink: rate limiter mode");
 
-        let q_atomic = Arc::<AtomicU64>::new(AtomicU64::new(0));
-
         let rate_limiter = RateLimiter::new(
             initial_tx,
             alloc_rx,
             Arc::clone(&spool),
-            Arc::clone(&backlog),
             Arc::clone(&q_atomic),
         );
         let link_down_tx = rate_limiter.link_down_tx_clone();
@@ -410,8 +416,7 @@ impl ActiveStream {
             data_ready: Arc::clone(&data_ready),
             space_ready: Arc::clone(&space_ready),
             cb_tx: cb_tx.clone(),
-            backlog: Arc::clone(&backlog),
-            q_atomic: Arc::clone(&q_atomic),
+            head_offset: Arc::clone(&head_offset),
         };
 
         tokio::spawn(run_tcp_reader(uuid, tcp_ctx));
@@ -788,8 +793,7 @@ struct TcpReaderCtx {
     data_ready: Arc<Notify>,
     space_ready: Arc<Notify>,
     cb_tx: CallbackTx,
-    backlog: Arc<AtomicU64>,
-    q_atomic: Arc<AtomicU64>,
+    head_offset: Arc<AtomicU64>,
 }
 
 async fn run_tcp_reader(
@@ -804,8 +808,7 @@ async fn run_tcp_reader(
         data_ready,
         space_ready,
         cb_tx,
-        backlog,
-        q_atomic,
+        head_offset,
     } = ctx;
 
     // ---
@@ -834,12 +837,10 @@ async fn run_tcp_reader(
     let mut first_read_logged = false;
 
     loop {
-        // Block until the spool has room for one full chunk.
+        // Block until the spool has room for one full chunk OR EOF.
         let mut logged_full = false;
-        loop {
-            if spool.lock().await.available() >= CHUNK_SIZE {
-                break;
-            }
+
+        while spool.lock().await.available() < CHUNK_SIZE {
             if !logged_full {
                 tracing::debug!(
                     %uuid,
@@ -850,44 +851,51 @@ async fn run_tcp_reader(
             } else {
                 tracing::trace!(%uuid, "uplink: spool still full — waiting");
             }
-            space_ready.notified().await;
+
+            match wait_space_or_eof(&tcp, &spool, &space_ready).await {
+                Ok(true) => {
+                    handle_eof(&spool, &head_offset, &data_ready).await;
+                    return;
+                }
+                Ok(false) => {}
+                Err(e) => {
+                    tracing::warn!(%uuid, "uplink: TCP peek error: {e}");
+                    handle_eof(&spool, &head_offset, &data_ready).await;
+                    return;
+                }
+            }
+            // if Ok(false): space is available now; loop condition will re-check and exit
         }
+
         if logged_full {
             tracing::info!(%uuid, "uplink: spool space available — resuming TCP reader");
         }
 
         match tcp.read(&mut tcp_buf).await {
             Ok(0) => {
-                let mut s = spool.lock().await;
-                s.head = u64::MAX; // EOF sentinel
-                                   // Backlog: remaining unacked bytes still to be pumped.
-                let q = q_atomic.load(Ordering::Acquire);
-                let b = s.head_offset().saturating_sub(q);
-                drop(s);
-
-                tracing::info!(%uuid, %b, %q, "uplink: TCP EOF from client");
-
-                backlog.store(b, Ordering::Release);
-                data_ready.notify_one();
+                tracing::info!(%uuid, "uplink: TCP EOF from client");
+                handle_eof(&spool, &head_offset, &data_ready).await;
                 return;
             }
+
             Ok(n) => {
-                let mut s = spool.lock().await;
-                s.push(&tcp_buf[..n]);
-                let q = q_atomic.load(Ordering::Acquire);
-                let b = s.head_offset().saturating_sub(q);
-                drop(s);
+                let head = {
+                    let mut s = spool.lock().await;
+                    s.push(&tcp_buf[..n]);
+                    s.head_offset()
+                };
 
                 if !first_read_logged {
                     tracing::info!(%uuid, bytes = n, "uplink: first TCP bytes received");
                     first_read_logged = true;
                 } else {
-                    tracing::debug!(%uuid, backlog = %b, %q, bytes = n, "uplink: TCP bytes received");
+                    tracing::debug!(%uuid, head_offset = %head, bytes = n, "uplink: TCP bytes received");
                 }
 
-                backlog.store(b, Ordering::Release);
+                head_offset.store(head as u64, Ordering::Release);
                 data_ready.notify_one();
             }
+
             Err(e) => {
                 tracing::warn!(%uuid, "uplink: TCP read error: {e}");
                 cb_tx
@@ -897,7 +905,68 @@ async fn run_tcp_reader(
                         reason: format!("TCP read error: {e}"),
                     })
                     .await;
+
+                handle_eof(&spool, &head_offset, &data_ready).await;
                 return;
+            }
+        } // match
+    } // loop
+} // run_tcp_reader
+
+async fn handle_eof(
+    spool: &Arc<Mutex<SpoolBuffer>>,
+    head_offset: &Arc<AtomicU64>,
+    data_ready: &Notify,
+) {
+    let head = {
+        let mut s = spool.lock().await;
+
+        if s.head == u64::MAX {
+            return; // already published
+        }
+
+        s.head = u64::MAX;
+        s.head_offset()
+    };
+
+    head_offset.store(head as u64, Ordering::Release);
+    data_ready.notify_one();
+}
+
+// EOF detection path even while backpressured.
+async fn wait_space_or_eof(
+    tcp: &TcpStream,
+    spool: &Arc<Mutex<SpoolBuffer>>,
+    space_ready: &Notify,
+) -> io::Result<bool> {
+    // ---
+
+    let mut peek_buf = [0u8; 1];
+
+    loop {
+        // Fast path: space available
+        if spool.lock().await.available() >= CHUNK_SIZE {
+            return Ok(false);
+        }
+
+        tokio::select! {
+            _ = space_ready.notified() => {
+                // loop and re-check
+            }
+
+            res = tcp.peek(&mut peek_buf) => {
+                match res {
+                    Ok(0) => {
+                        // EOF
+                        tracing::info!("uplink: TCP peek EOF while backpressured");
+                        return Ok(true);
+                    }
+                    Ok(_) => {
+                        // Data pending but no space yet.
+                        // Just continue waiting.
+                    }
+                    Err(e) => return Err(e),
+                }
             }
         }
     }

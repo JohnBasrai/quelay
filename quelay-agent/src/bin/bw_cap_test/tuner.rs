@@ -94,13 +94,14 @@ pub fn spawn_sender(
         tracing::debug!("spawn_sender: starting ...");
 
         let t_start = Instant::now();
-
         let port = match wait_for_port(&uuid, Role::Sender, &mut cmd_rx, &cic, t_start).await {
             Some(p) => p,
-            None => return Ok(()),
+            None => {
+                tracing::info!("spawn_sender: wait_for_port returns None");
+                return Ok(());
+            }
         };
         tracing::info!(%uuid, port, "sender: connecting");
-
         // --- spawn blocking TCP writer ---
         let (abort_tx, abort_rx) = tokio::sync::oneshot::channel::<()>();
         let write_handle = tokio::spawn(async_tcp_writer(port, payload, abort_rx));
@@ -165,7 +166,10 @@ pub fn spawn_receiver(
 
         let port = match wait_for_port(&uuid, Role::Receiver, &mut cmd_rx, &cic, t_start).await {
             Some(p) => p,
-            None => return Ok(()),
+            None => {
+                tracing::info!(%uuid, "receiver: Got None return from wait_for_port");
+                return Ok(());
+            }
         };
 
         tracing::info!(%uuid, port, "receiver: connecting");
@@ -220,17 +224,24 @@ async fn wait_for_port(
     t_start: Instant,
 ) -> Option<u16> {
     // ---
+    tracing::debug!(uuid, "wait_for_port");
     loop {
         match cmd_rx.recv().await {
-            Some(TunerCmd::Port(p)) => return Some(p),
+            Some(TunerCmd::Port(p)) => {
+                tracing::debug!("wait_for_port: Got TunerCmd::Port from rx.recv");
+                return Some(p);
+            }
             Some(TunerCmd::Kill) => {
+                tracing::debug!("wait_for_port: Got TunerCmd::Kill from rx.recv");
                 finish(cic, killed(uuid, role, t_start)).await;
                 return None;
             }
             Some(other) => {
-                tracing::warn!(%uuid, ?role, ?other, "tuner: unexpected cmd awaiting port")
+                tracing::debug!("wait_for_port: Got Some({other:?}) from rx.recv",);
+                tracing::warn!(%uuid, ?role, ?other, "tuner: unexpected cmd awaiting port");
             }
             None => {
+                tracing::debug!("wait_for_port: Got None from rx.recv");
                 finish(cic, disconnected(uuid, role, t_start)).await;
                 return None;
             }
@@ -264,6 +275,7 @@ async fn wait_for_shutdown(
                 let _ = abort_tx.send(());
 
                 tracing::info!(%uuid, "wait_for_shutdown: TunerCmd::Shutdown, aborting sender");
+
                 match write_handle.await {
                     Ok(Ok(())) => {}
                     Ok(Err(e)) => tracing::warn!(%uuid, "write task error: {e}"),
@@ -433,7 +445,7 @@ async fn async_tcp_writer(
             }
         }
     }
-    // drop(tcp) → EOF
+    let _ = tcp.shutdown().await;
     Ok(())
 }
 
