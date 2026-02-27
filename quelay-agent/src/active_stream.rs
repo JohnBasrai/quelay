@@ -871,7 +871,7 @@ async fn run_tcp_reader(
         }
 
         if logged_full {
-            tracing::info!(%uuid, "uplink: spool space available — resuming TCP reader");
+            tracing::debug!(%uuid, "uplink: spool space available — resuming TCP reader");
         }
 
         match tcp.read(&mut tcp_buf).await {

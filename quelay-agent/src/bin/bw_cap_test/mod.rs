@@ -230,9 +230,11 @@ async fn real_main() -> anyhow::Result<()> {
         anyhow::ensure!(e.is_empty(), "set_callback (receiver): {e}");
     }
 
-    // --- single agent connections for all stream_start calls ---
+    // --- single agent connection for all stream_start calls ---
+    // Only the sender agent is driven via stream_start; the receiver agent
+    // sets up its downlink automatically when the QUIC session accepts the
+    // incoming stream from the sender.
     let mut sender_agent = connect_agent(cli.sender_c2i)?;
-    let mut receiver_agent = connect_agent(cli.receiver_c2i)?;
 
     println!("bw_cap_test: starting {} stream pairs...", cli.count);
 
@@ -267,7 +269,7 @@ async fn real_main() -> anyhow::Result<()> {
                 uuid.clone(),
                 StreamInfo {
                     size_bytes: Some(payload_bytes as i64),
-                    attrs: Some(attrs.clone()),
+                    attrs: Some(attrs),
                 },
                 0,
             )
@@ -279,23 +281,10 @@ async fn real_main() -> anyhow::Result<()> {
             res.err_msg,
         );
 
-        // --- stream_start on receiver agent ---
-        let res = receiver_agent
-            .stream_start(
-                uuid.clone(),
-                StreamInfo {
-                    size_bytes: Some(payload_bytes as i64),
-                    attrs: Some(attrs),
-                },
-                0,
-            )
-            .context("Error in receiver_agent.stream_start")?;
-
-        anyhow::ensure!(
-            res.err_msg.as_deref().unwrap_or("").is_empty(),
-            "receiver stream_start[{i}] failed: {:?}",
-            res.err_msg,
-        );
+        // The receiver agent does not need stream_start — its downlink is
+        // established automatically by the QUIC accept loop when the sender
+        // agent's stream arrives.  It fires StreamStarted(Role::Receiver)
+        // via the registered callback once the downlink TCP port is open.
 
         println!("  stream {i} started  uuid={uuid}");
     }

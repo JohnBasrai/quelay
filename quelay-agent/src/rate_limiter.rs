@@ -588,7 +588,11 @@ impl StreamPump {
                     break;
                 }
                 if s.head_offset() <= self.q {
-                    tracing::trace!(head_offset = s.head_offset(), q = self.q, "drain_alloc: no new data");
+                    tracing::trace!(
+                        head_offset = s.head_offset(),
+                        q = self.q,
+                        "drain_alloc: no new data"
+                    );
                     break; // nothing new yet
                 }
 
@@ -602,7 +606,11 @@ impl StreamPump {
             }
 
             let encoded = encode_chunk(self.q, &chunk);
-            tracing::debug!(q = self.q, n = chunk.len(), "drain_alloc: writing chunk to QUIC");
+            tracing::debug!(
+                q = self.q,
+                n = chunk.len(),
+                "drain_alloc: writing chunk to QUIC"
+            );
             if let Err(e) = self.quic_tx.write_all(&encoded).await {
                 tracing::warn!("stream pump: QUIC write error: {e} — waiting for LinkUp");
                 if !self.wait_for_link_up().await {
