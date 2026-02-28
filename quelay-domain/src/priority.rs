@@ -4,17 +4,9 @@
 /// to an internal quantum (weight) and may adjust dynamically. More levels
 /// can be added here without changing scheduler internals.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub enum Priority {
-    // ---
-    /// Command and control traffic. Very small payloads, very rare.
-    /// Bypasses DRR entirely via strict-priority queue; always drained
-    /// before any BulkTransfer stream is scheduled.
-    C2I,
+pub struct Priority(i8);
 
-    /// All file and stream transfers. Scheduled fairly via DRR among
-    /// all active streams at this level.
-    BulkTransfer,
-}
+const STRICT_MIN: i8 = 64;
 
 // ---
 
@@ -25,24 +17,37 @@ impl Priority {
     /// BulkTransfer starts equal; the scheduler may adjust dynamically.
     pub fn initial_quantum(&self) -> u32 {
         // ---
-        match self {
-            Priority::C2I => 65_536,
-            Priority::BulkTransfer => 8_192,
+        if self.is_strict() {
+            65_536_u32
+        } else {
+            8_192_u32
         }
     }
 
     /// Map a raw Thrift priority byte (0..=127) to a `Priority` level.
-    ///
-    /// Convention (mirrors the IDL constants):
-    ///   0..=63   → BulkTransfer
-    ///   64..=127 → C2I
-    pub fn from_i8(v: i8) -> Self {
+    pub fn from_i8(value: i8) -> Self {
         // ---
-        if v >= 64 {
-            Priority::C2I
-        } else {
-            Priority::BulkTransfer
-        }
+        Self(value)
+    }
+
+    /// Return the raw priority value.
+    pub fn as_i8(self) -> i8 {
+        // ---
+        self.0
+    }
+
+    /// Default DRR quantum in bytes for bulk transfer streams (priority < STRICT_MIN).
+    /// All bulk streams start equal; the scheduler may adjust dynamically.
+    pub fn bulk_quantum() -> u32 {
+        8_192
+    }
+
+    /// Minimum priority value for strict-priority (c2i or non-DRR) scheduling.
+    /// Streams at or above this priority bypass DRR and are always drained
+    /// before any bulk stream.
+    pub fn c2i_priority_min() -> Self {
+        // ---
+        Self(STRICT_MIN)
     }
 
     // ---
@@ -51,6 +56,6 @@ impl Priority {
     /// bandwidth allows (strict priority).
     pub fn is_strict(&self) -> bool {
         // ---
-        matches!(self, Priority::C2I)
+        self.0 >= 64
     }
 }

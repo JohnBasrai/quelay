@@ -17,12 +17,26 @@ use tracing::{debug, info}; // trace
 
 // ---
 
-use quelay_domain::{LinkState, QueLayTransport};
+use quelay_domain::{
+    // ---
+    LinkState,
+    Priority,
+    QueLaySessionPtr,
+    QueLayTransport,
+    QueueStatus,
+    StreamInfo as DomainStreamInfo,
+};
+
 use quelay_quic::{CertBundle, QuicTransport};
 
 use quelay_thrift::{
     // ---
+    LinkState as WireLinkState,
+    QueLayAgentSyncHandler,
     QueLayAgentSyncProcessor,
+    StartStreamReturn as WireStreamStartReturn, // return struct
+    StreamInfo as WireStreamInfo,
+    StreamStartStatus as WireStreamStartStatus, // status enum
     TBinaryInputProtocolFactory,
     TBinaryOutputProtocolFactory,
     TBufferedReadTransportFactory,
@@ -47,14 +61,34 @@ mod thrift_srv;
 use agent::Agent;
 use callback::{spawn_ping_timer, CallbackAgent};
 use config::{Config, Mode};
-use session_manager::{SessionManager, TransportConfig};
-use thrift_srv::{AgentHandler, RuntimeConfig};
+
+use session_manager::{
+    // ---
+    SessionCommand,
+    SessionCommandQueue,
+    SessionManager,
+    SessionManagerConfig,
+    TransportConfig,
+};
+
+use thrift_srv::{AgentHandler, RuntimeConfig, StreamStartResponse};
 
 // Gateway re-exports — siblings import via super::Symbol per EMBP §2.3
-pub(crate) use active_stream::{ActiveStream, SpoolBuffer, UplinkContext};
-pub use active_stream::{DownlinkHandle, UplinkHandle};
-
-pub(crate) use rate_limiter::{AggregateRateLimiter, AllocTicket, RateCmd, RateLimiter};
+pub(crate) use active_stream::{
+    // --
+    ActiveStream,
+    DownlinkHandle,
+    SpoolBuffer,
+    UplinkContext,
+    UplinkHandle,
+};
+pub(crate) use rate_limiter::{
+    // --
+    AggregateRateLimiter,
+    AllocTicket,
+    RateCmd,
+    RateLimiter,
+};
 
 pub use callback::{CallbackCmd, CallbackTx};
 pub use framing::{
@@ -75,8 +109,8 @@ pub use framing::{
     CHUNK_HEADER_LEN,
     CHUNK_SIZE,
 };
-pub use session_manager::SessionManagerHandle;
-pub use thrift_srv::AgentCmd;
+pub(crate) use session_manager::SessionManagerHandle;
+pub(crate) use thrift_srv::AgentCmd;
 
 // ---------------------------------------------------------------------------
 // main
@@ -112,6 +146,7 @@ async fn main() -> anyhow::Result<()> {
         chunk_size_bytes = cfg.chunk_size_bytes,
         spool_capacity_bytes = cfg.spool_capacity_bytes,
         max_concurrent = cfg.max_concurrent,
+        max_pending = cfg.max_pending,
         "quelay-agent starting",
     );
 
@@ -131,14 +166,14 @@ async fn main() -> anyhow::Result<()> {
 
     let (initial_session, transport_cfg) = match &cfg.mode {
         Mode::Server { bind } => {
-            info!("server mode: binding QUIC on {bind}");
+            debug!("server mode: binding QUIC on {bind}");
 
             let bundle = CertBundle::generate("quelay")?;
             let cert_der = bundle.cert_der.clone();
 
             let cert_path = std::env::current_dir()?.join("quelay-server.der");
             fs::write(&cert_path, cert_der.as_ref())?;
-            info!("server mode: cert written to {}", cert_path.display());
+            debug!("server mode: cert written to {}", cert_path.display());
 
             let transport = QuicTransport::server(bundle, *bind)?;
             let mut sess_rx = transport.listen(*bind).await?;
@@ -148,7 +183,7 @@ async fn main() -> anyhow::Result<()> {
                 .recv()
                 .await
                 .ok_or_else(|| anyhow::anyhow!("no incoming QUIC session"))?;
-            info!("server mode: client connected");
+            debug!("server mode: client connected");
 
             let tcfg = TransportConfig::Server { sess_rx };
             (Arc::new(session) as quelay_domain::QueLaySessionPtr, tcfg)
@@ -177,20 +212,24 @@ async fn main() -> anyhow::Result<()> {
         }
     };
 
-    // SessionManager::new signature is unchanged — runtime_cfg wiring into
-    // session_manager.rs is a follow-on task (chunk_size_bytes, max_concurrent).
-    let sm = Arc::new(SessionManager::new(
+    let (sm, sm_cmd_tx, sm_cmd_rx) = SessionManager::new(
         initial_session,
         transport_cfg,
         link_state.clone(),
         cb_tx.clone(),
         cfg.bw_cap_bps(),
-    ));
+        SessionManagerConfig {
+            max_pending: cfg.max_pending(),
+            max_concurrent: cfg.max_concurrent(),
+        },
+    );
+    let sm = Arc::new(sm);
+
     let sm_handle = SessionManagerHandle::new(sm.clone());
 
-    tokio::spawn(sm.run());
+    tokio::spawn(sm.run(sm_cmd_rx));
 
-    let agent = Agent::new(cmd_rx, sm_handle);
+    let agent = Agent::new(cmd_rx, sm_cmd_tx, sm_handle);
     tokio::spawn(agent.run());
 
     let rt = tokio::runtime::Handle::current();

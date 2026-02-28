@@ -237,6 +237,10 @@ pub(crate) struct UplinkContext {
 
     /// Shared ARL — deregistered by the [`AckTask`] when the stream exits.
     pub arl: Arc<AggregateRateLimiter>,
+
+    /// Channel back to `SessionManager` — used to fire `StreamFinished` when
+    /// the ack task exits so the freed slot can be filled from pending.
+    pub session_cmd_tx: super::SessionCommandQueue,
 }
 
 // ---------------------------------------------------------------------------
@@ -253,6 +257,7 @@ pub struct UplinkHandle {
     // ---
     /// Stable stream identity.  Used by `SessionManager` to deregister the
     /// stream from the [`AggregateRateLimiter`] when the pump exits.
+    #[allow(dead_code)]
     pub uuid: Uuid,
 
     /// Deliver a fresh `QueLayStreamPtr` here after reconnect.
@@ -263,6 +268,7 @@ pub struct UplinkHandle {
     spool: Arc<Mutex<SpoolBuffer>>,
 
     /// Retained so `SessionManager` can re-open the stream on a new session.
+    #[allow(dead_code)]
     pub info: StreamInfo,
 
     /// Priority for re-opening.
@@ -362,12 +368,13 @@ impl ActiveStream {
             head_offset,
             q_atomic,
             arl,
+            session_cmd_tx,
         } = ctx;
 
         let listener = TcpListener::bind("127.0.0.1:0").await?;
         let port = listener.local_addr()?.port();
 
-        tracing::info!(%uuid, port, "uplink: ephemeral TCP port open, firing stream_started");
+        tracing::debug!(%uuid, port, "uplink: ephemeral TCP port open, firing stream_started");
 
         cb_tx
             .send(CallbackCmd::StreamStarted {
@@ -389,7 +396,7 @@ impl ActiveStream {
         // Construct the rate limiter; in capped mode the StreamPump is
         // spawned inside new() and driven by alloc_rx tickets from the ARL.
         let capped = alloc_rx.is_some();
-        tracing::info!(%uuid, capped, "uplink: rate limiter mode");
+        tracing::debug!(%uuid, capped, "uplink: rate limiter mode");
 
         let rate_limiter = RateLimiter::new(
             initial_tx,
@@ -432,6 +439,7 @@ impl ActiveStream {
                 size_bytes: info.size_bytes,
                 initial_rx,
                 arl,
+                session_cmd_tx,
             };
 
             match AckTask::new(uuid, ack_ctx).await {
@@ -472,7 +480,7 @@ impl ActiveStream {
         let listener = TcpListener::bind("127.0.0.1:0").await?;
         let port = listener.local_addr()?.port();
 
-        tracing::info!(%uuid, port, "downlink: ephemeral TCP port open, firing stream_started");
+        tracing::debug!(%uuid, port, "downlink: ephemeral TCP port open, firing stream_started");
 
         cb_tx
             .send(CallbackCmd::StreamStarted {
@@ -566,7 +574,7 @@ impl ActiveStream {
 
         let mut tcp = match listener.accept().await {
             Ok((tcp, addr)) => {
-                tracing::info!(%uuid, %addr, "downlink: client connected");
+                tracing::debug!(%uuid, %addr, "downlink: client connected");
                 tcp
             }
             Err(e) => {
@@ -612,7 +620,7 @@ impl ActiveStream {
                     // delivered.  Stop reading; write Done and close our write
                     // half cleanly so the sender's ack task reads Done then
                     // sees a clean EOF on the read half it holds.
-                    tracing::info!(
+                    tracing::debug!(
                         %uuid,
                         bytes = bytes_written,
                         "downlink: QUIC EOF, transfer complete",
@@ -816,7 +824,7 @@ async fn run_tcp_reader(
     // ---
     let mut tcp = match listener.accept().await {
         Ok((tcp, addr)) => {
-            tracing::info!(%uuid, %addr, "uplink: client connected");
+            tracing::debug!(%uuid, %addr, "uplink: client connected");
             tcp
         }
         Err(e) => {
@@ -860,7 +868,7 @@ async fn run_tcp_reader(
 
         match tcp.read(&mut tcp_buf).await {
             Ok(0) => {
-                tracing::info!(%uuid, "uplink: TCP EOF from client");
+                tracing::debug!(%uuid, "uplink: TCP EOF from client");
                 handle_eof(&spool, &head_offset, &data_ready).await;
                 return;
             }
@@ -873,7 +881,7 @@ async fn run_tcp_reader(
                 };
 
                 if !first_read_logged {
-                    tracing::info!(%uuid, bytes = n, "uplink: first TCP bytes received");
+                    tracing::debug!(%uuid, bytes = n, "uplink: first TCP bytes received");
                     first_read_logged = true;
                 } else {
                     tracing::trace!(%uuid, head_offset = %head, bytes = n, "uplink: TCP bytes received");
@@ -984,6 +992,9 @@ struct AckTask {
     finish_sent: bool,
     /// Shared ARL — deregistered when this task exits (done or failed).
     arl: Arc<AggregateRateLimiter>,
+    /// Notify `SessionManager` when this stream finishes so it can promote
+    /// the next pending stream into the freed active slot.
+    session_cmd_tx: super::SessionCommandQueue,
 }
 
 // ---
@@ -1002,6 +1013,7 @@ struct AckTaskCtx {
     size_bytes: Option<u64>,
     initial_rx: tokio::io::ReadHalf<QueLayStreamPtr>,
     arl: Arc<AggregateRateLimiter>,
+    session_cmd_tx: super::SessionCommandQueue,
 }
 
 impl AckTask {
@@ -1023,6 +1035,7 @@ impl AckTask {
             size_bytes,
             initial_rx,
             arl,
+            session_cmd_tx,
         } = ctx;
 
         let (stream_ack_tx, ack_rx) = Self::spawn_reader(uuid);
@@ -1042,6 +1055,7 @@ impl AckTask {
             next_progress: PROGRESS_INTERVAL_BYTES,
             finish_sent: false,
             arl,
+            session_cmd_tx,
         };
 
         if task.stream_ack_tx.send(initial_rx).await.is_err() {
@@ -1083,7 +1097,7 @@ impl AckTask {
                             AckMsg::Ack { bytes_received }
                         }
                         Ok(WormholeMsg::Done) => {
-                            tracing::info!(%uuid, "uplink: receiver done (ack reader)");
+                            tracing::debug!(%uuid, "uplink: receiver done (ack reader)");
                             let _ = ack_tx.send(AckMsg::Done).await;
                             return;
                         }
@@ -1120,6 +1134,15 @@ impl AckTask {
 
         tracing::debug!(%self.uuid, bytes_sent = self.bytes_sent, "uplink: deregistering from ARL");
         self.arl.deregister(self.uuid).await;
+
+        // Notify SessionManager so it can remove this UUID from active_uplinks
+        // and promote the next pending stream into the freed slot.
+        let _ = self
+            .session_cmd_tx
+            .send(super::SessionCommand::StreamFinished {
+                uuid: self.uuid.to_string(),
+            })
+            .await;
     }
 
     // ---
@@ -1144,7 +1167,7 @@ impl AckTask {
             match msg {
                 Some(AckMsg::Ack { bytes_received }) => self.on_ack(bytes_received).await,
                 Some(AckMsg::Done) => {
-                    tracing::info!(uuid = %self.uuid, bytes = self.bytes_sent, "uplink: receiver done");
+                    tracing::debug!(uuid = %self.uuid, bytes = self.bytes_sent, "uplink: receiver done");
                     self.cb_tx
                         .send(CallbackCmd::StreamDone {
                             uuid: self.uuid,
@@ -1299,7 +1322,7 @@ impl AckTask {
         }
         if self.spool.lock().await.head == u64::MAX {
             self.finish_sent = true;
-            tracing::info!(uuid = %self.uuid, "uplink: TCP EOF — sending Finish to timer task");
+            tracing::debug!(uuid = %self.uuid, "uplink: TCP EOF — sending Finish to timer task");
             if let Err(e) = self.rate_limiter.finish().await {
                 tracing::warn!(uuid = %self.uuid, "uplink: finish() failed: {e}");
             }

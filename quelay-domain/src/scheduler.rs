@@ -11,11 +11,15 @@ use super::{Priority, QueLayError, Result};
 #[derive(Debug)]
 struct StreamEntry {
     // ---
+    /// Operator-visible priority level
     priority: Priority,
+
     /// Accumulated deficit in bytes. Carries over between rounds.
     deficit: u32,
+
     /// Per-round byte quantum. May be updated dynamically by `rebalance`.
     quantum: u32,
+
     /// Estimated backlog in bytes. Updated by the session / spooler.
     backlog: u64,
 }
@@ -31,21 +35,22 @@ struct StreamEntry {
 /// may send up to `deficit` bytes. Unused deficit carries over (hence
 /// "deficit" RR — bursts are amortised, not penalised).
 ///
-/// [`Priority::C2I`] streams bypass DRR via a strict-priority queue and
-/// are always drained before any [`Priority::BulkTransfer`] stream.
+/// Streams with priority ≥ 64 bypass DRR via a strict-priority queue and
+/// are always drained before any bulk transfer stream.
 ///
 /// The AIMD pacer (not yet implemented) sits above this and provides the
 /// total byte budget passed to [`DrrScheduler::schedule`] each tick.
 #[derive(Debug, Default)]
 pub struct DrrScheduler {
     // ---
-    /// Current active stream table
+    /// Current active stream table.
     streams: HashMap<Uuid, StreamEntry>,
 
-    /// Round-robin order for BulkTransfer streams.
+    /// Round-robin order for bulk transfer streams (priority < 64).
     bulk_order: VecDeque<Uuid>,
 
-    /// Strict-priority queue for C2I streams (drained first, in order).
+    /// Strict-priority queue for high-priority streams (priority ≥ 64),
+    /// drained before any bulk stream.
     c2i_queue: VecDeque<Uuid>,
 }
 
@@ -201,7 +206,9 @@ impl DrrScheduler {
         if self.bulk_order.is_empty() {
             return;
         }
-        let quantum = Priority::BulkTransfer.initial_quantum();
+
+        let quantum = Priority::bulk_quantum();
+
         for id in self.bulk_order.iter() {
             if let Some(entry) = self.streams.get_mut(id) {
                 entry.quantum = quantum;

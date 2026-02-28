@@ -71,7 +71,7 @@ pub async fn run() {
         .expect("connect failed");
 
     let mut stream = session
-        .open_stream(Priority::C2I)
+        .open_stream(Priority::c2i_priority_min())
         .await
         .expect("open_stream failed");
 

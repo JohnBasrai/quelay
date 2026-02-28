@@ -9,8 +9,7 @@ use tokio::sync::mpsc;
 
 // ---
 
-use super::AgentCmd;
-use super::SessionManagerHandle;
+use super::{AgentCmd, SessionCommand, SessionCommandQueue, SessionManagerHandle};
 
 // ---------------------------------------------------------------------------
 // Agent
@@ -20,14 +19,23 @@ pub struct Agent {
     // ---
     cmd_rx: mpsc::Receiver<AgentCmd>,
     sm: SessionManagerHandle,
+    sm_cmd_tx: SessionCommandQueue,
 }
 
 // ---
 
 impl Agent {
     // ---
-    pub fn new(cmd_rx: mpsc::Receiver<AgentCmd>, sm: SessionManagerHandle) -> Self {
-        Self { cmd_rx, sm }
+    pub fn new(
+        cmd_rx: mpsc::Receiver<AgentCmd>,
+        sm_cmd_tx: SessionCommandQueue,
+        sm: SessionManagerHandle,
+    ) -> Self {
+        Self {
+            cmd_rx,
+            sm_cmd_tx,
+            sm,
+        }
     }
 
     // ---
@@ -40,9 +48,20 @@ impl Agent {
                     uuid,
                     info,
                     priority,
+                    reply_tx,
                 } => {
+                    // ---
                     tracing::debug!(%uuid, ?priority, "stream_start → session manager");
-                    self.sm.stream_start(uuid, info, priority).await;
+
+                    let _ = self
+                        .sm_cmd_tx
+                        .send(SessionCommand::StreamStart {
+                            uuid,
+                            info,
+                            priority,
+                            reply_tx,
+                        })
+                        .await;
                 }
 
                 AgentCmd::LinkEnable(enabled) => {
@@ -55,6 +74,12 @@ impl Agent {
                 // here beyond the log line.
                 AgentCmd::SetMaxConcurrent(n) => {
                     tracing::info!(n, "set_max_concurrent (test/debug)");
+                    // n == 0 means "restore default / unlimited"; propagate as None.
+                    let limit = if n == 0 { None } else { Some(n) };
+                    let _ = self
+                        .sm_cmd_tx
+                        .send(SessionCommand::SetMaxConcurrent(limit))
+                        .await;
                 }
             }
         }

@@ -33,6 +33,9 @@ pub const DEFAULT_SPOOL_CAPACITY_BYTES: usize = 1024 * 1024; // 1 MiB
 /// Default maximum concurrent active streams (0 = unlimited).
 pub const DEFAULT_MAX_CONCURRENT: usize = 0;
 
+/// Default maximum depth of the pending queue.
+pub const DEFAULT_MAX_PENDING: usize = 100;
+
 // ---------------------------------------------------------------------------
 // Config
 // ---------------------------------------------------------------------------
@@ -86,6 +89,14 @@ pub struct Config {
     /// via `set_max_concurrent`.
     #[arg(short = 'N', long, default_value_t = DEFAULT_MAX_CONCURRENT)]
     pub max_concurrent: usize,
+
+    /// Maximum number of streams allowed in the pending queue (default: 100).
+    ///
+    /// When the pending queue is full, `stream_start` returns
+    /// `queue_position == -1` and an error message.  Capped at 100 to bound
+    /// the size of the `pending_queue` snapshot returned by `stream_start`.
+    #[arg(long, default_value_t = DEFAULT_MAX_PENDING)]
+    pub max_pending: usize,
 }
 
 // ---
@@ -117,6 +128,36 @@ impl Config {
             anyhow::bail!("--spool-capacity-bytes must be > 0");
         }
         Ok(())
+    }
+
+    /// Maximum concurrent active streams, or `None` if unlimited.
+    pub fn max_concurrent(&self) -> Option<usize> {
+        // ---
+        if self.max_concurrent == 0 {
+            None
+        } else {
+            Some(self.max_concurrent)
+        }
+    }
+
+    /// Maximum depth of the pending queue.
+    pub fn max_pending(&self) -> usize {
+        // ---
+        self.max_pending
+    }
+
+    /// Chunk payload size in bytes.
+    #[allow(dead_code)]
+    pub fn chunk_size_bytes(&self) -> usize {
+        // ---
+        self.chunk_size_bytes
+    }
+
+    /// In-memory spool capacity per uplink stream in bytes.
+    #[allow(dead_code)]
+    pub fn spool_capacity_bytes(&self) -> usize {
+        // ---
+        self.spool_capacity_bytes
     }
 }
 

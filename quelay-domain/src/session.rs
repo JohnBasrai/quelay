@@ -3,9 +3,9 @@ use std::collections::HashMap;
 use async_trait::async_trait;
 use uuid::Uuid;
 
-use super::error::Result;
-use super::priority::Priority;
-use super::transport::LinkState;
+use super::LinkState;
+use super::Priority;
+use super::Result;
 
 // ---------------------------------------------------------------------------
 // StreamInfo
