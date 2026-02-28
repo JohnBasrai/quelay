@@ -250,7 +250,7 @@ impl AggregateTimerTask {
                         (*uuid, backlog, entry.alloc_tx.clone())
                     })
                     .collect();
-                tracing::debug!(
+                tracing::trace!(
                     n_streams = snap.len(),
                     total_backlog = snap.iter().map(|(_, b, _)| b).sum::<u64>(),
                     "ARL tick: snapshot"
@@ -286,7 +286,7 @@ impl AggregateTimerTask {
             let mut delivered: u64 = 0;
             let mut closed_streams: Vec<Uuid> = Vec::new();
 
-            tracing::debug!(
+            tracing::trace!(
                 n_allocs = snapshot.len(),
                 available_budget,
                 "ARL tick: delivering tickets"
@@ -304,7 +304,7 @@ impl AggregateTimerTask {
                     // don't pile up stale budget grants.
                     match tx.try_send(AllocTicket { bytes }) {
                         Ok(()) => {
-                            tracing::debug!(%uuid, bytes, "ARL tick: ticket delivered");
+                            tracing::trace!(%uuid, bytes, "ARL tick: ticket delivered");
                             delivered = delivered.saturating_add(bytes);
                         }
                         Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {
@@ -432,7 +432,7 @@ impl AggregateRateLimiter {
             // in the steady state.  Depth 1 lets one ticket queue up if the
             // pump is slow, preventing timer-task stalls on a full channel.
             let (alloc_tx, alloc_rx) = mpsc::channel::<AllocTicket>(1);
-            tracing::debug!("ATT:register, locking streams...");
+            tracing::trace!("ATT:register, locking streams...");
             self.streams.lock().await.insert(
                 uuid,
                 StreamEntry {
@@ -452,7 +452,7 @@ impl AggregateRateLimiter {
     /// Deregister a stream — called when the pump exits (done or failed).
     pub async fn deregister(&self, uuid: Uuid) {
         // ---
-        tracing::debug!(%uuid, "ATT:deregister, ...");
+        tracing::trace!(%uuid, "ATT:deregister, ...");
         self.scheduler.lock().await.deregister(uuid);
         self.streams.lock().await.remove(&uuid);
     }
@@ -490,14 +490,14 @@ impl StreamPump {
         // ---
         use super::CHUNK_SIZE;
 
-        tracing::debug!("stream pump: task started, entering select loop");
+        tracing::trace!("stream pump: task started, entering select loop");
 
         while !self.done {
             tokio::select! {
                 ticket = self.alloc_rx.recv() => {
                     match ticket {
                         Some(t) => {
-                            tracing::debug!(bytes = t.bytes, q = self.q, "stream pump: AllocTicket received");
+                            tracing::trace!(bytes = t.bytes, q = self.q, "stream pump: AllocTicket received");
                             self.drain_alloc(t.bytes, CHUNK_SIZE).await;
                         }
                         None => {
@@ -566,7 +566,7 @@ impl StreamPump {
         // ---
         let mut remaining = budget;
 
-        tracing::debug!(budget, q = self.q, "drain_alloc: enter");
+        tracing::trace!(budget, q = self.q, "drain_alloc: enter");
 
         loop {
             if remaining == 0 {
@@ -581,7 +581,7 @@ impl StreamPump {
                 if head == u64::MAX && s.head_offset() <= self.q {
                     drop(s);
                     if self.finishing {
-                        tracing::info!("stream pump: spool drained, sending FIN");
+                        tracing::debug!("stream pump: spool drained, sending FIN");
                         let _ = self.quic_tx.shutdown().await;
                         self.done = true;
                     }
@@ -606,7 +606,7 @@ impl StreamPump {
             }
 
             let encoded = encode_chunk(self.q, &chunk);
-            tracing::debug!(
+            tracing::trace!(
                 q = self.q,
                 n = chunk.len(),
                 "drain_alloc: writing chunk to QUIC"

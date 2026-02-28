@@ -97,11 +97,11 @@ pub fn spawn_sender(
         let port = match wait_for_port(&uuid, Role::Sender, &mut cmd_rx, &cic, t_start).await {
             Some(p) => p,
             None => {
-                tracing::info!("spawn_sender: wait_for_port returns None");
+                tracing::debug!("spawn_sender: wait_for_port returns None");
                 return Ok(());
             }
         };
-        tracing::info!(%uuid, port, "sender: connecting");
+        tracing::debug!(%uuid, port, "sender: connecting");
         // --- spawn blocking TCP writer ---
         let (abort_tx, abort_rx) = tokio::sync::oneshot::channel::<()>();
         let write_handle = tokio::spawn(async_tcp_writer(port, payload, abort_rx));
@@ -117,15 +117,15 @@ pub fn spawn_sender(
         .await
         {
             Some(n) => {
-                tracing::info!(%uuid, %n, "sender: got wait_for_shutdown");
+                tracing::debug!(%uuid, %n, "sender: got wait_for_shutdown");
                 n
             }
             None => {
-                tracing::info!(%uuid, "sender: got NONE return from wait_for_shutdown");
+                tracing::debug!(%uuid, "sender: got NONE return from wait_for_shutdown");
                 return Ok(());
             }
         };
-        tracing::info!(%uuid, "sender: after wait_for_shutdown");
+        tracing::debug!(%uuid, "sender: after wait_for_shutdown");
 
         // --- wait for agent's Done / Failed after the socket was closed ---
         let final_bytes =
@@ -167,12 +167,12 @@ pub fn spawn_receiver(
         let port = match wait_for_port(&uuid, Role::Receiver, &mut cmd_rx, &cic, t_start).await {
             Some(p) => p,
             None => {
-                tracing::info!(%uuid, "receiver: Got None return from wait_for_port");
+                tracing::debug!(%uuid, "receiver: Got None return from wait_for_port");
                 return Ok(());
             }
         };
 
-        tracing::info!(%uuid, port, "receiver: connecting");
+        tracing::debug!(%uuid, port, "receiver: connecting");
 
         // --- spawn blocking TCP reader ---
         let read_handle = tokio::task::spawn_blocking(move || blocking_tcp_reader(port));
@@ -264,17 +264,17 @@ async fn wait_for_shutdown(
 ) -> Option<u64> {
     // ---
 
-    tracing::info!(%uuid, "sender: wait_for_shutdown, starting...");
+    tracing::trace!(%uuid, "sender: wait_for_shutdown, starting...");
 
     loop {
         let cmd = cmd_rx.recv().await;
-        tracing::info!(%uuid, "sender: wait_for_shutdown: {:?}", cmd);
+        tracing::trace!(%uuid, "sender: wait_for_shutdown: {:?}", cmd);
 
         match cmd {
             Some(TunerCmd::Shutdown) => {
                 let _ = abort_tx.send(());
 
-                tracing::info!(%uuid, "wait_for_shutdown: TunerCmd::Shutdown, aborting sender");
+                tracing::debug!(%uuid, "wait_for_shutdown: TunerCmd::Shutdown, aborting sender");
 
                 match write_handle.await {
                     Ok(Ok(())) => {}
@@ -298,7 +298,7 @@ async fn wait_for_shutdown(
             Some(TunerCmd::Done { bytes, .. }) => {
                 let _ = abort_tx.send(());
 
-                tracing::info!(%uuid, "wait_for_shutdown: TunerCmd::Done");
+                tracing::debug!(%uuid, "wait_for_shutdown: TunerCmd::Done");
                 let _ = write_handle.await;
                 return Some(bytes);
             }
@@ -318,7 +318,7 @@ async fn wait_for_shutdown(
             None => {
                 let _ = abort_tx.send(());
 
-                tracing::info!(%uuid, "wait_for_shutdown: None");
+                tracing::debug!(%uuid, "wait_for_shutdown: None");
                 write_handle.abort();
                 finish(cic, disconnected(uuid, Role::Sender, t_start)).await;
                 return None;
@@ -437,7 +437,7 @@ async fn async_tcp_writer(
         tokio::select! {
             biased;
             _ = &mut abort_rx => {
-                tracing::info!("async_tcp_writer: abort received");
+                tracing::debug!("async_tcp_writer: abort received");
                 break;
             }
             result = tcp.write_all(chunk) => {
@@ -445,7 +445,7 @@ async fn async_tcp_writer(
             }
         }
     }
-    tracing::info!("async_tcp_writer: calling tcp.shutdown()");
+    tracing::trace!("async_tcp_writer: calling tcp.shutdown()");
     let _ = tcp.shutdown().await;
     Ok(())
 }
@@ -466,7 +466,7 @@ fn blocking_tcp_reader(port: u16) -> anyhow::Result<u64> {
         tracing::debug!("reader: reading chunk !!");
         let n = tcp.read(&mut buf)?;
         if n == 0 {
-            tracing::info!("reader: got EOF !!");
+            tracing::debug!("reader: got EOF !!");
             break; // EOF
         }
         total += n as u64;

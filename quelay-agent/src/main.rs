@@ -13,14 +13,13 @@ use std::sync::Arc;
 
 use clap::Parser;
 use tokio::sync::{mpsc, Mutex};
-use tracing::info;
+use tracing::{debug, info}; // trace
 
 // ---
 
 use quelay_domain::{LinkState, QueLayTransport};
 use quelay_quic::{CertBundle, QuicTransport};
 
-#[rustfmt::skip]
 use quelay_thrift::{
     // ---
     QueLayAgentSyncProcessor,
@@ -97,11 +96,16 @@ async fn main() -> anyhow::Result<()> {
 
     tracing_subscriber::fmt()
         .with_target(false)
+        .with_file(true)
+        .with_line_number(true)
         .with_ansi(!no_color)
-        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
+        )
         .init();
 
-    info!(
+    debug!(
         version = env!("CARGO_PKG_VERSION"),
         idl_version = IDL_VERSION,
         bw_cap_mbps = cfg.bw_cap_mbps,
@@ -127,24 +131,24 @@ async fn main() -> anyhow::Result<()> {
 
     let (initial_session, transport_cfg) = match &cfg.mode {
         Mode::Server { bind } => {
-            info!("server mode, binding QUIC on {bind}");
+            info!("server mode: binding QUIC on {bind}");
 
             let bundle = CertBundle::generate("quelay")?;
             let cert_der = bundle.cert_der.clone();
 
             let cert_path = std::env::current_dir()?.join("quelay-server.der");
             fs::write(&cert_path, cert_der.as_ref())?;
-            info!("server cert written to {}", cert_path.display());
+            info!("server mode: cert written to {}", cert_path.display());
 
             let transport = QuicTransport::server(bundle, *bind)?;
             let mut sess_rx = transport.listen(*bind).await?;
 
-            info!("waiting for client connection...");
+            debug!("server mode: waiting for client connection...");
             let session = sess_rx
                 .recv()
                 .await
                 .ok_or_else(|| anyhow::anyhow!("no incoming QUIC session"))?;
-            info!("client connected");
+            info!("server mode: client connected");
 
             let tcfg = TransportConfig::Server { sess_rx };
             (Arc::new(session) as quelay_domain::QueLaySessionPtr, tcfg)
@@ -155,14 +159,14 @@ async fn main() -> anyhow::Result<()> {
             server_name,
             cert,
         } => {
-            info!("client mode, connecting to peer {peer}");
+            info!("client mode: connecting to peer {peer}");
 
             let cert_bytes = fs::read(cert)?;
             let cert_der = rustls_pki_types::CertificateDer::from(cert_bytes);
 
             let transport = QuicTransport::client(cert_der.clone(), server_name.clone())?;
             let session = transport.connect(*peer).await?;
-            info!("connected to {peer}");
+            info!("client mode: connected to server @{peer}");
 
             let tcfg = TransportConfig::Client {
                 peer: *peer,

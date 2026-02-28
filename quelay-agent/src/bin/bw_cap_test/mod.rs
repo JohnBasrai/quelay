@@ -67,7 +67,6 @@ use tokio::sync::mpsc;
 
 // ---
 
-#[rustfmt::skip]
 use quelay_thrift::{
     // ---
     QueLayAgentSyncClient,
@@ -164,15 +163,23 @@ async fn real_main() -> anyhow::Result<()> {
         || !std::io::IsTerminal::is_terminal(&std::io::stdout());
 
     tracing_subscriber::fmt()
-        .with_target(false)
-        .without_time()
+        .with_target(false) // drop module path to avoid redundancy
+        .with_file(true)
+        .with_line_number(true)
         .with_ansi(!no_color)
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
+        )
         .init();
 
-    println!("=== bw-cap-test ===");
-    println!(
-        "  count={} duration={}s  sender={}  receiver={}",
-        cli.count, cli.duration_secs, cli.sender_c2i, cli.receiver_c2i,
+    tracing::info!("=== bw-cap-test ===");
+    tracing::info!(
+        "  - count={} duration={}s  sender={}  receiver={}",
+        cli.count,
+        cli.duration_secs,
+        cli.sender_c2i,
+        cli.receiver_c2i,
     );
 
     ensure_agent_running(cli.sender_c2i)?;
@@ -180,8 +187,8 @@ async fn real_main() -> anyhow::Result<()> {
 
     // --- query BW cap from sender agent ---
     let cap_mbps = query_cap(cli.sender_c2i).context("query_cap failed")?;
-    println!(
-        "  BW cap: {}",
+    tracing::info!(
+        "  - BW cap: {}",
         cap_mbps
             .map(|c| format!("{c} Mbit/s"))
             .unwrap_or_else(|| "uncapped".into()),
@@ -195,13 +202,13 @@ async fn real_main() -> anyhow::Result<()> {
         })
         .unwrap_or(FALLBACK_PAYLOAD_BYTES);
 
-    println!(
-        "  payload per stream: {} MiB  ({payload_bytes} B)",
+    tracing::info!(
+        "  - payload per stream: {} MiB  ({payload_bytes} B)",
         payload_bytes / (1024 * 1024),
     );
 
     // --- generate all payloads sequentially before any transfer starts ---
-    println!("  generating {} payloads...", cli.count);
+    tracing::info!("  - generating {} payloads...", cli.count);
     let mut payloads = Vec::with_capacity(cli.count);
     for i in 0..cli.count {
         let seed = 0xDEAD_BEEF_0000_0000u64 | i as u64;
@@ -236,7 +243,7 @@ async fn real_main() -> anyhow::Result<()> {
     // incoming stream from the sender.
     let mut sender_agent = connect_agent(cli.sender_c2i)?;
 
-    println!("bw_cap_test: starting {} stream pairs...", cli.count);
+    tracing::info!("bw_cap_test: starting {} stream pairs...", cli.count);
 
     let t_wall = Instant::now();
 
@@ -286,29 +293,30 @@ async fn real_main() -> anyhow::Result<()> {
         // agent's stream arrives.  It fires StreamStarted(Role::Receiver)
         // via the registered callback once the downlink TCP port is open.
 
-        println!("  stream {i} started  uuid={uuid}");
+        tracing::info!("  stream {i} started  uuid={uuid}");
     }
 
     // --- run CIC dispatch loop ---
-    println!("  CIC running ({} s)...", cli.duration_secs);
+    tracing::info!("  CIC running ({} s)...", cli.duration_secs);
     let results = cic.run().await?;
     let wall_elapsed = t_wall.elapsed();
 
     // --- per-tuner summary ---
-    println!("\n  ┌── per-stream results ──────────────────────────────────┐");
+    tracing::info!("");
+    tracing::info!("  ┌── per-stream results ───────────────┐");
     for r in &results {
         let status = match &r.outcome {
-            TunerOutcome::Pass => "✓".to_string(),
-            TunerOutcome::Fail { reason } => format!("✗ {reason}"),
+            TunerOutcome::Pass => "✓  │".to_string(),
+            TunerOutcome::Fail { reason } => format!("✗  │ {reason}"),
         };
-        println!(
-            "  │  {:8?}  {:>12} B  {:>6.2}s  {status}",
-            r.role,
+        tracing::info!(
+            "  │  {:<8} {:>10} B  {:>6.2}s  {status}",
+            format!("{:?}", r.role),
             r.bytes,
-            r.elapsed.as_secs_f64(),
+            r.elapsed.as_secs_f32(),
         );
     }
-    println!("  └────────────────────────────────────────────────────────┘\n");
+    tracing::info!("  └─────────────────────────────────────┘\n");
 
     // --- fail fast if any tuner reported an error ---
     let failures: Vec<_> = results
@@ -319,7 +327,7 @@ async fn real_main() -> anyhow::Result<()> {
     if !failures.is_empty() {
         for f in &failures {
             if let TunerOutcome::Fail { reason } = &f.outcome {
-                eprintln!("  FAIL  {:?}  {}  — {reason}", f.role, f.uuid);
+                tracing::info!("  FAIL  {:?}  {}  — {reason}", f.role, f.uuid);
             }
         }
         anyhow::bail!("{} tuner(s) failed", failures.len());
@@ -328,10 +336,10 @@ async fn real_main() -> anyhow::Result<()> {
     // --- aggregate BW assertion ---
     match cap_mbps {
         Some(cap) => assert_aggregate_bw(&results, cap, wall_elapsed, BW_TOLERANCE)?,
-        None => println!("  BW assertion skipped (no cap configured)"),
+        None => tracing::info!("  BW assertion skipped (no cap configured)"),
     }
 
-    println!("\n  bw-cap-test PASSED ✓\n");
+    tracing::info!("\n  bw-cap-test PASSED ✓\n");
     Ok(())
 }
 
@@ -423,6 +431,7 @@ fn generate_payload(n: usize, seed: u64) -> Vec<u8> {
 
 #[cfg(test)]
 mod tests {
+    // ---
     use super::*;
     use clap::CommandFactory;
 

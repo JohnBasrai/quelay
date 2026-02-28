@@ -118,7 +118,7 @@ impl CallbackTx {
     /// Send a command. Returns `false` if the channel has closed (agent exited).
     pub async fn send(&self, cmd: CallbackCmd) -> bool {
         if self.tx.send(cmd).await.is_err() {
-            tracing::warn!("CallbackAgent channel closed — dropping callback event");
+            tracing::info!("CallbackAgent channel closed — dropping callback event");
             return false;
         }
         true
@@ -171,7 +171,7 @@ impl CallbackAgent {
             let cmd = match self.rx.blocking_recv() {
                 Some(cmd) => cmd,
                 None => {
-                    tracing::info!("callback channel closed — agent exiting");
+                    tracing::debug!("callback channel closed — agent exiting");
                     return;
                 }
             };
@@ -181,7 +181,7 @@ impl CallbackAgent {
                     client = None; // drop existing connection first
                     match connect(&endpoint) {
                         Ok(c) => {
-                            tracing::info!(%endpoint, "callback socket connected");
+                            tracing::debug!(%endpoint, "callback socket connected");
                             client = Some(c);
                         }
                         Err(e) => {
@@ -193,7 +193,7 @@ impl CallbackAgent {
                 CallbackCmd::Ping => {
                     if let Some(ref mut c) = client {
                         if let Err(e) = c.ping() {
-                            tracing::warn!("callback ping failed ({e}) — marking client dead");
+                            tracing::info!("callback ping failed ({e}) — marking client dead");
                             client = None;
                         }
                     }

@@ -41,7 +41,7 @@ impl Agent {
                     info,
                     priority,
                 } => {
-                    tracing::info!(%uuid, ?priority, "stream_start → session manager");
+                    tracing::debug!(%uuid, ?priority, "stream_start → session manager");
                     self.sm.stream_start(uuid, info, priority).await;
                 }
 
@@ -59,6 +59,6 @@ impl Agent {
             }
         }
 
-        tracing::info!("agent loop exiting");
+        tracing::debug!("agent loop exiting");
     }
 }
