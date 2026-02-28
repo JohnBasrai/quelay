@@ -16,7 +16,7 @@ your option.
 | `quelay-quic`    | QUIC transport via `quinn` |
 | `quelay-thrift`  | Apache Thrift C2I service stubs |
 | `quelay-agent`   | Deployable relay daemon — data pump, `SessionManager`, rate limiter, reconnect |
-| `quelay-example` | Demos and C2I smoke tests |
+| `quelay-example` | Demonstrating clients |
 
 ---
 
