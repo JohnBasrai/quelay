@@ -256,7 +256,7 @@ impl QueLayAgentSyncHandler for AgentHandler {
     fn handle_set_callback(&self, endpoint: String) -> thrift::Result<String> {
         // ---
 
-        tracing::info!(%endpoint, "callback endpoint registered");
+        tracing::debug!(%endpoint, "callback endpoint registered");
 
         self.send_callback_cmd(CallbackCmd::Register(endpoint))?;
 

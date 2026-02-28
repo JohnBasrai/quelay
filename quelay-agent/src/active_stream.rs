@@ -605,7 +605,7 @@ impl ActiveStream {
         let (mut quic_rx, mut quic_tx) = tokio::io::split(quic);
 
         loop {
-            tracing::debug!(%uuid, "downlink: calling read_chunk");
+            tracing::trace!(%uuid, "downlink: calling read_chunk");
             match read_chunk(&mut quic_rx).await {
                 Ok(None) => {
                     // Sender closed its write half (QUIC FIN) — all chunks
@@ -633,7 +633,7 @@ impl ActiveStream {
                     stream_offset,
                     payload,
                 })) => {
-                    tracing::debug!(%uuid, stream_offset, len = payload.len(), "downlink: got chunk");
+                    tracing::trace!(%uuid, stream_offset, len = payload.len(), "downlink: got chunk");
 
                     // Duplicate: sender replayed a chunk already delivered.
                     // Silently skip — bytes_written is ground truth.
@@ -731,7 +731,7 @@ impl ActiveStream {
                             },
                         )
                         .await;
-                        tracing::debug!(
+                        tracing::trace!(
                             %uuid,
                             bytes_received = bytes_written,
                             "downlink: sent ack",
@@ -844,7 +844,7 @@ async fn run_tcp_reader(
 
         if spool.lock().await.available() < CHUNK_SIZE {
             if !logged_full {
-                tracing::debug!(
+                tracing::trace!(
                     %uuid,
                     spool_capacity = SPOOL_CAPACITY,
                     "uplink: spool full — pausing TCP reader",
@@ -855,7 +855,7 @@ async fn run_tcp_reader(
         }
 
         if logged_full {
-            tracing::debug!(%uuid, "uplink: spool space available — resuming TCP reader");
+            tracing::trace!(%uuid, "uplink: spool space available — resuming TCP reader");
         }
 
         match tcp.read(&mut tcp_buf).await {
@@ -876,7 +876,7 @@ async fn run_tcp_reader(
                     tracing::info!(%uuid, bytes = n, "uplink: first TCP bytes received");
                     first_read_logged = true;
                 } else {
-                    tracing::debug!(%uuid, head_offset = %head, bytes = n, "uplink: TCP bytes received");
+                    tracing::trace!(%uuid, head_offset = %head, bytes = n, "uplink: TCP bytes received");
                 }
 
                 head_offset.store(head, Ordering::Release);
@@ -1079,7 +1079,7 @@ impl AckTask {
                 loop {
                     let msg = match read_wormhole_msg(&mut rx).await {
                         Ok(WormholeMsg::Ack { bytes_received }) => {
-                            tracing::debug!(%uuid, bytes_received, "uplink: receiver ack");
+                            tracing::trace!(%uuid, bytes_received, "uplink: receiver ack");
                             AckMsg::Ack { bytes_received }
                         }
                         Ok(WormholeMsg::Done) => {
@@ -1120,7 +1120,6 @@ impl AckTask {
 
         tracing::debug!(%self.uuid, bytes_sent = self.bytes_sent, "uplink: deregistering from ARL");
         self.arl.deregister(self.uuid).await;
-        tracing::debug!(%self.uuid, "uplink: ack task exit");
     }
 
     // ---

@@ -613,7 +613,7 @@ impl SessionManager {
                 .await
                 {
                     Ok(handle) => {
-                        tracing::info!(%uuid, "pending stream re-issued after reconnect");
+                        tracing::debug!(%uuid, "pending stream re-issued after reconnect");
                         remote.pending.remove(&uuid);
                         remote.active_uplinks.insert(uuid, handle);
                     }
