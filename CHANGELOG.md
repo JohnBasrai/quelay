@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.1.3] - 2026-02-28
+
+### Changed
+- Refactored split up `e2e_test.rs` from a single 1400-line file
+
+### Fixed
+- `set_max_concurrent` C2I call was a no-op in `SessionManager`
+- `AckTask` did not notify `SessionManager` on stream completion
+- `enqueue()` returned the stream's sorted insertion rank
+
+### Added
+- Added full integration test for max-concurrent agent option
+
 ## [0.1.2] - 2026-02-26
 
 ### Changed
