@@ -5,6 +5,13 @@ use uuid::Uuid;
 use super::{Priority, QueLayError, Result};
 
 // ---------------------------------------------------------------------------
+// Priority helpers
+// ---------------------------------------------------------------------------
+
+/// Default per-tick quantum for bulk streams (bytes).
+const BULK_QUANTUM_BYTES: u32 = 4 * 1024;
+
+// ---------------------------------------------------------------------------
 // Internal types
 // ---------------------------------------------------------------------------
 
@@ -77,8 +84,21 @@ impl DrrScheduler {
                 backlog: 0,
             },
         );
+
         if priority.is_strict() {
-            self.c2i_queue.push_back(id);
+            // Keep strict queue in priority-desc order.
+            let insert_at = self
+                .c2i_queue
+                .iter()
+                .position(|other| {
+                    self.streams
+                        .get(other)
+                        .map(|e| e.priority)
+                        .unwrap_or(Priority::from_i8(0))
+                        < priority
+                })
+                .unwrap_or(self.c2i_queue.len());
+            self.c2i_queue.insert(insert_at, id);
         } else {
             self.bulk_order.push_back(id);
             self.rebalance();
@@ -130,7 +150,6 @@ impl DrrScheduler {
     /// C2I streams consume from the budget first. The remaining budget is
     /// distributed across BulkTransfer streams via DRR.
     pub fn schedule(&mut self, mut budget: u64) -> Result<Vec<(Uuid, u64)>> {
-        // ---
         let mut result = Vec::new();
 
         // --- strict priority: drain C2I first ---
@@ -155,23 +174,47 @@ impl DrrScheduler {
             return Ok(result);
         }
 
-        // Accumulate per-stream allocations so each stream appears at most
-        // once in the result.
         let mut bulk_allocs: HashMap<Uuid, u64> = HashMap::new();
 
-        // Keep rotating through streams until the budget is exhausted or all
-        // streams are idle.  A single pass of `n` streams is not enough when
-        // budget >> quantum — the loop must continue until no stream can make
-        // progress.
-        let mut consecutive_idle = 0;
-        while budget > 0 && consecutive_idle < n {
-            // ---
+        // Phase 1: Give **every** bulk stream exactly one turn (mandatory fair round)
+        // This ensures that with small budgets, no stream is completely skipped.
+        for _ in 0..n {
+            if budget == 0 {
+                break;
+            }
+
             if let Some(id) = self.bulk_order.front().copied() {
-                // ---
                 let entry = self
                     .streams
                     .get_mut(&id)
                     .ok_or(QueLayError::StreamNotFound(id))?;
+
+                entry.deficit += entry.quantum;
+
+                let send = budget.min(entry.deficit as u64).min(entry.backlog);
+                if send > 0 {
+                    entry.deficit -= send as u32;
+                    *bulk_allocs.entry(id).or_insert(0) += send;
+                    budget = budget.saturating_sub(send);
+                } else {
+                    // Idle → prevent deficit accumulation
+                    entry.deficit = 0;
+                }
+
+                self.bulk_order.rotate_left(1);
+            }
+        }
+
+        // Phase 2: Continue giving extra turns to active streams while budget remains
+        // (this handles cases where budget >> total quantum × n)
+        let mut consecutive_idle = 0;
+        while budget > 0 && consecutive_idle < n {
+            if let Some(id) = self.bulk_order.front().copied() {
+                let entry = self
+                    .streams
+                    .get_mut(&id)
+                    .ok_or(QueLayError::StreamNotFound(id))?;
+
                 entry.deficit += entry.quantum;
 
                 let send = budget.min(entry.deficit as u64).min(entry.backlog);
@@ -181,8 +224,6 @@ impl DrrScheduler {
                     budget = budget.saturating_sub(send);
                     consecutive_idle = 0;
                 } else {
-                    // Idle stream — reset deficit to prevent burst credit
-                    // accumulation while the stream has no data.
                     entry.deficit = 0;
                     consecutive_idle += 1;
                 }
@@ -191,7 +232,10 @@ impl DrrScheduler {
             }
         }
 
+        // Append bulk allocations in the order they were served
+        // (preserves rough temporal order from the RR cycle)
         result.extend(bulk_allocs);
+
         Ok(result)
     }
 
@@ -207,7 +251,7 @@ impl DrrScheduler {
             return;
         }
 
-        let quantum = Priority::bulk_quantum();
+        let quantum = BULK_QUANTUM_BYTES;
 
         for id in self.bulk_order.iter() {
             if let Some(entry) = self.streams.get_mut(id) {
@@ -262,8 +306,8 @@ mod tests {
         let c2i = Uuid::new_v4();
         let bulk = Uuid::new_v4();
 
-        sched.register(c2i, Priority::C2I);
-        sched.register(bulk, Priority::BulkTransfer);
+        sched.register(c2i, Priority::c2i_priority_min());
+        sched.register(bulk, Priority::bulk_priority_min());
         sched.set_backlog(c2i, 1_024);
         sched.set_backlog(bulk, 4_096);
 
@@ -284,8 +328,8 @@ mod tests {
         let a = Uuid::new_v4();
         let b = Uuid::new_v4();
 
-        sched.register(a, Priority::BulkTransfer);
-        sched.register(b, Priority::BulkTransfer);
+        sched.register(a, Priority::bulk_priority_min());
+        sched.register(b, Priority::bulk_priority_min());
         sched.set_backlog(a, 16_384);
         sched.set_backlog(b, 16_384);
 
@@ -312,7 +356,7 @@ mod tests {
         let mut sched = DrrScheduler::new();
         let a = Uuid::new_v4();
 
-        sched.register(a, Priority::BulkTransfer);
+        sched.register(a, Priority::bulk_priority_min());
         sched.set_backlog(a, 0); // idle
 
         sched.schedule(8_192)?;
@@ -333,7 +377,7 @@ mod tests {
         let mut sched = DrrScheduler::new();
         let a = Uuid::new_v4();
 
-        sched.register(a, Priority::BulkTransfer);
+        sched.register(a, Priority::bulk_priority_min());
         sched.set_backlog(a, 4_096);
         sched.deregister(a);
 
@@ -352,8 +396,8 @@ mod tests {
         let a = Uuid::new_v4();
         let b = Uuid::new_v4();
 
-        sched.register(a, Priority::BulkTransfer);
-        sched.register(b, Priority::BulkTransfer);
+        sched.register(a, Priority::bulk_priority_min());
+        sched.register(b, Priority::bulk_priority_min());
         sched.set_backlog(a, 1_000_000);
         sched.set_backlog(b, 1_000_000);
 
@@ -379,8 +423,8 @@ mod tests {
         let c2i = Uuid::new_v4();
         let bulk = Uuid::new_v4();
 
-        sched.register(c2i, Priority::C2I);
-        sched.register(bulk, Priority::BulkTransfer);
+        sched.register(c2i, Priority::c2i_priority_min());
+        sched.register(bulk, Priority::bulk_priority_min());
         sched.set_backlog(c2i, 512);
         sched.set_backlog(bulk, 1_000_000);
 

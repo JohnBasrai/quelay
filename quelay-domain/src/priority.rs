@@ -50,6 +50,11 @@ impl Priority {
         Self(STRICT_MIN)
     }
 
+    pub fn bulk_priority_min() -> Self {
+        // ---
+        Self(0)
+    }
+
     // ---
 
     /// Returns `true` if this level bypasses DRR and is sent as soon as
