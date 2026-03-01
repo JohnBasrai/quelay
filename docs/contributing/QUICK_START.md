@@ -59,8 +59,8 @@ quelay/
 ├── quelay-domain/    # Domain model and core traits (start here)
 ├── quelay-quic/      # QUIC transport (quinn)
 ├── quelay-thrift/    # Thrift C2I — IDL, generated stubs, mapping
-├── quelay-agent/     # Deployable relay daemon
-├── quelay-example/   # Demos and live C2I smoke check
+├── quelay-agent/     # Deployable relay agent daemon and integration tests
+├── quelay-example/   # Demos and examples
 ├── scripts/          # CI and build helpers
 └── docs/             # Contributing guides
 ```

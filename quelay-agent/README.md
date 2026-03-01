@@ -154,8 +154,8 @@ active_stream.rs   — Uplink/downlink data pumps, SpoolBuffer (three-pointer A/
 rate_limiter.rs    — Timer-task-based BW cap; link_down / link_up without reconstruction
 framing.rs         — 8-byte stream-open header, 10-byte chunk header, read/write helpers
 callback.rs        — CallbackAgent: async Thrift callback push path
-bin/e2e_test.rs    — Quelay integration test binary
-bin/bw-cap-test/   — Bandwidth cap integration test.
+bin/e2e_test/      — Quelay integration test binary
+bin/bw-cap-test/   — Bandwidth cap integration test
 ```
 
 `TServer` is launched via `tokio::task::spawn_blocking`, which hands it to a
