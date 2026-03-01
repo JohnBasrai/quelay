@@ -7,6 +7,7 @@ quelay-thrift/src/gen/
 *.swp
 *.swo
 *~
+quelay-server.der
 
 # OS files
 .DS_Store

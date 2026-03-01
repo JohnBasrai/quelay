@@ -104,9 +104,23 @@ cargo test --workspace
 
 ## Network Impairment Testing
 
-Quelay relies on QUIC for packet-loss recovery, reordering, and deduplication —
-there is no in-process link simulator. To test under realistic satellite
-conditions, use Linux `tc netem` on the interface between two agent instances:
+`scripts/link-sim-test.sh` runs two `quelay-agent` instances connected via a
+`veth` pair with `tc netem` impairment applied, then verifies 100 MiB
+bidirectional transfer integrity via SHA-256.
+```bash
+# 2% packet loss (GEO satellite default)
+./scripts/link-sim-test.sh loss
+
+# 500ms delay ±50ms jitter
+./scripts/link-sim-test.sh delay
+
+# Both combined
+./scripts/link-sim-test.sh both --loss-percent 5 --delay 300 --quelay-cap-mbps 5
+```
+
+Requires Linux (`tc netem`, `veth`). The script self-escalates via `sudo`.
+See [`quelay-agent/README.md`](quelay-agent/README.md#network-impairment-testing)
+for results and full option reference.
 
 ```bash
 # 5 % packet loss, 200 ms delay on the test interface

@@ -221,3 +221,43 @@ Stream lifecycle management flows through the session layer:
 
 See `docs/contributing/ARCHITECTURE.md` for the intended recovery model and
 design details.
+
+## Network Impairment Testing
+
+`scripts/link-sim-test.sh` sets up an isolated `veth` pair, applies `tc netem`
+impairment, starts two `quelay-agent` instances, and runs `e2e-test multi-file
+--bidirectional`. Pass/fail is SHA-256 only — no throughput assertion.
+
+The netem link BW is always 2× the Quelay cap to leave headroom for QUIC
+retransmissions. After the QUIC handshake both agents are symmetric;
+QUIC server/client refers only to startup role.
+
+### Usage
+```
+./scripts/link-sim-test.sh <PROFILE> [OPTIONS]
+
+PROFILES:
+  loss    Packet loss only
+  delay   Delay + jitter only
+  both    Packet loss + delay + jitter
+
+OPTIONS:
+  --loss-percent N     Loss % [default: 2]               valid for: loss, both
+  --delay N            One-way delay ms [default: 500]   valid for: delay, both
+  --jitter N           Delay jitter ±ms [default: 50]    valid for: delay, both
+  --quelay-cap-mbps N  Quelay agent BW cap [default: 10] valid for: all
+  --size-mb N          Transfer file size in MiB [default: 100]
+  --duration-secs N    Derive file size from BW cap × N seconds
+```
+
+### Results (debug build, 10 Mbit/s cap)
+
+Both profiles show QUIC absorbing all impairment transparently — the token
+bucket rate limiter remains the binding constraint in all cases.
+
+| Profile | Loss | Delay | Elapsed (s) | BW Util |
+|:--------|:-----|:------|:------------|:--------|
+| `loss`  | 2%   | —     | 83.7        | 100.2%  |
+| `both`  | 2%   | 500ms ±50ms | 83.7  | 100.2%  |
+
+All transfers: 4 × 100 MiB bidirectional, SHA-256 ✓, 10 Mbit/s cap.
