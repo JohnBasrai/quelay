@@ -1,0 +1,127 @@
+#!/usr/bin/env bash
+# Usage:
+#   ./scripts/ci-integration-test.sh | tee ci-int-test.log | \
+#   ./scripts/generate-bw-report /dev/stdin
+set -euo pipefail
+
+usage() {
+    echo "Usage: $0 <logfile>"
+    echo ""
+    echo "Generates a Markdown bandwidth performance report from e2e_test logs."
+    echo ""
+    echo "Example:"
+    echo "  $0 test.log > perf_report.md"
+}
+
+# Help handling
+if [[ $# -eq 0 ]]; then
+    usage
+    exit 1
+fi
+
+if [[ "$1" == "-h" || "$1" == "--help" ]]; then
+    usage
+    exit 0
+fi
+
+LOG="$1"
+
+if [[ ! -f "$LOG" ]]; then
+    echo "Error: File not found: $LOG"
+    exit 1
+fi
+
+awk '
+function flush_record() {
+    if (file_size_bytes == "") return
+
+    theoretical = cap_kbps / 8.0
+    delta = actual_kBps - theoretical
+
+    if (util_numeric > 105.0) {
+        util_display = "**" util_raw "** ⚠"
+    } else {
+        util_display = util_raw
+    }
+
+    drop_display = (drop_test == "Yes") ? "Yes" : "No"
+
+    printf "%d|%.3f|%.3f|%.0f|%.1f|%.1f|%.1f|%s|%s\n",
+        file_size_bytes,
+        file_size_mb,
+        elapsed_sec,
+        cap_kbps,
+        theoretical,
+        actual_kBps,
+        delta,
+        util_display,
+        drop_display
+
+    file_size_bytes=""
+    file_size_mb=""
+    elapsed_sec=""
+    cap_kbps=""
+    actual_kBps=""
+    util_raw=""
+    util_numeric=""
+    drop_test=""
+}
+
+BEGIN {}
+
+# Detect start of test block
+/\[multi-file/ {
+    flush_record()
+    match($0, /\] *([0-9]+) *B/, m)
+    file_size_bytes = m[1]
+}
+
+/Payload Size/ {
+    match($0, /([0-9.]+) *MB/, m)
+    file_size_mb = m[1]
+}
+
+/Elapsed time/ {
+    match($0, /([0-9.]+) *seconds/, m)
+    elapsed_sec = m[1]
+}
+
+/Actual BW/ {
+    match($0, /([0-9.]+) *kBps/, m)
+    actual_kBps = m[1]
+}
+
+/BW Cap/ {
+    match($0, /([0-9.]+) *kbps/, m)
+    cap_kbps = m[1]
+}
+
+/BW Utilization/ {
+    match($0, /([0-9.]+)%/, m)
+    util_raw = m[1] "%"
+    util_numeric = m[1]
+}
+
+/drop|outage/ {
+    drop_test="Yes"
+}
+
+END {
+    flush_record()
+}
+' "$LOG" | sort -t'|' -k1,1nr | awk -F'|' '
+BEGIN {
+    print "| File Size (B) | File Size (MB) | Elapsed (s) | Rate Cap (kbps) | Theoretical (kBps) | Actual (kBps) | Δ kBps | BW Utilization | Drop Test |"
+    print "|----------------|----------------|-------------|------------------|---------------------|---------------|--------|----------------|------------|"
+}
+{
+    printf "| %s | %s | %s | %s | %s | %s | %s | %s | %s |\n",
+        $1,$2,$3,$4,$5,$6,$7,$8,$9
+}
+END {
+    print ""
+    print "*Footnote:*"
+    print "- ⚠ indicates utilization > 105%."
+    print "- Δ kBps = Actual − (cap_kbps / 8)."
+}
+'

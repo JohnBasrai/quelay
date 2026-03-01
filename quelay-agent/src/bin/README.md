@@ -1,306 +1,317 @@
-# `quelay-agent/src/bin/e2e_test` — Integration Test Design
+# `quelay-agent/src/bin` — Integration Test Binaries
 
-## Overview
-
-`e2e_test` is the primary integration test binary for the Quelay relay daemon.
-It replaces the legacy C++ `FTAClientEndToEndTest` binary and the shell scripts
-that orchestrated it (`run-all-tests`, `run-end-to-end-test`, `run-link-down-test`,
-`run-air-restart-test`), eliminating the fragile script-based orchestration in
-favor of a single, self-contained Rust binary with a structured CLI.
-
-The binary lives in `quelay-agent/src/bin/e2e_test.rs` rather than
-`quelay-example/` so that it has direct access to agent-internal types, constants
-(spool capacity, framing constants, priority bounds), and test-only utilities
-without requiring those symbols to be exported through the public API.
-
-A thin shell script `scripts/ci-integration-test.sh` starts/stops agents and
-calls `e2e_test` subcommands in sequence. This script is wired into `ci.yml` and
-`local-test.sh`.
+Two integration test binaries live under `quelay-agent/src/bin/`.  Both require
+two live `quelay-agent` instances and are driven by `scripts/ci-integration-test.sh`.
 
 ---
 
-## IDL additions required
+## Binaries at a glance
 
-Two new methods are needed on `QueLayAgent` before `e2e_test` can be
-self-configuring. Add to `quelay-thrift/quelay.thrift`:
-
-```thrift
-/// Get the agent's currently configured uplink BW cap in Mbit/s.
-/// Returns 0 if uncapped.
-u32 get_bandwidth_cap_mbps(),
-
-/// Set the agent's uplink BW cap in Mbit/s.
-/// Set to 0 to remove the cap entirely.
-/// Used by integration tests to configure agents without restart.
-void set_bandwidth_cap_mbps(1: u32 bw_cap_mbps),
-```
-
-By querying the agents for their current cap, `e2e_test` derives all timing
-parameters internally. The `--bw-cap-mbps` duplication between agent startup and
-test invocation is eliminated. If both agents report different caps (asymmetric
-uplink/downlink — a realistic satellite scenario), the test uses the sender's cap
-for timing and reports both in the transfer summary.
+| Binary         | Entry point                         | Purpose |
+|:---------------|:------------------------------------|:--------|
+| `e2e-test`     | `src/bin/e2e-test/main.rs`          | Full data-pump path — file transfer, DRR ordering, link outage, framing edge cases, max-concurrent enforcement |
+| `bw-cap-test`  | `src/bin/bw_cap_test/mod.rs`        | Rate-limiter accuracy — N concurrent streams, aggregate BW asserted within ±10 % of configured cap |
 
 ---
 
-## CLI design
+## `e2e-test`
+
+### Overview
+
+`e2e-test` is the primary integration test binary.  It replaces the legacy C++
+`FTAClientEndToEndTest` binary and the shell scripts that orchestrated it
+(`run-all-tests`, `run-end-to-end-test`, `run-link-down-test`,
+`run-air-restart-test`).
+
+The binary lives in `quelay-agent/src/bin/` so that it has direct access to
+agent-internal constants (spool capacity, framing constants, priority bounds)
+without requiring those to be re-exported through the public API.
+
+### Source layout
 
 ```
-e2e_test [GLOBAL OPTIONS] <SUBCOMMAND>
+quelay-agent/src/bin/e2e-test/
+├── main.rs                  CLI, Cli/Command, run_transfer, shared helpers
+├── callback.rs              TestCallbackEvent, TestCallbackHandler,
+│                            TestCallbackServer (incl. last_queue_status)
+├── drr.rs                   cmd_drr, DrrArgs
+├── max_concurrent.rs        cmd_max_concurrent, MaxConcurrentArgs
+├── multi_file.rs            cmd_multi_file, MultiFileArgs
+└── small_file_edge_cases.rs cmd_small_file_edge_cases, SmallFileEdgeCasesArgs
+```
 
-GLOBAL OPTIONS:
+### CLI
+
+```
+e2e-test [OPTIONS] <SUBCOMMAND>
+
+OPTIONS:
     --sender-c2i    ADDR    C2I address of the sending agent   [default: 127.0.0.1:9090]
     --receiver-c2i  ADDR    C2I address of the receiving agent [default: 127.0.0.1:9091]
-    -N, --concurrent N      Set max concurrent streams on both agents before running the
-                            test, then restore the original value after. Leave unset to
-                            keep the agents' current configuration.
     --debug                 Run with RUST_LOG=debug
 
 SUBCOMMANDS:
-    multi-file              Multi-file transfer test — the primary workhorse
-    drr                     DRR scheduler priority ordering test
-    small-file-edge-cases   Boundary-condition file size tests
+    multi-file              Multi-file transfer — large, small, link-outage
+    drr                     DRR scheduler — anchor transfer + pending queue formation
+    small-file-edge-cases   Framing boundary file sizes
+    max-concurrent          Max-concurrent stream slot enforcement and queue ordering
 ```
 
 ---
 
-## Global option: `-N` / `--concurrent`
+### Subcommand: `multi-file`
 
-Controls the maximum number of concurrent active streams the scheduler allows on
-both agents. The test saves the current value via `get_queue_status().max_concurrent`,
-sets the requested value, runs the test, then restores the original.
-
-This is expressed as a live C2I command (add `set_max_concurrent(i32)` to the IDL)
-rather than a startup flag so agents do not need to be restarted between subcommands
-within a single CI run.
-
-The `drr` subcommand always sets `-N 1` internally. Other subcommands leave the
-value unchanged unless `--concurrent N` is explicitly passed.
-
----
-
-## Subcommand: `multi-file`
-
-The primary workhorse. Covers large files, small files, bidirectional transfers,
-link outage recovery, and link failure. All timing is derived from the agent's
+Covers large file throughput, small boundary-condition files, bidirectional
+transfers, and link outage recovery.  All timing is derived from the agent's
 configured BW cap (queried via `get_bandwidth_cap_mbps()`).
 
 ```
 multi-file [OPTIONS]
-
-File size selection (mutually exclusive; if none given, defaults to --count 2 at
-a size derived from the BW cap × 10 seconds):
-    --large             3 large files with the size progression that exercises
-                        the full BW cap over a measurable duration.
-                        Default sizes: 30 MiB, 2 MiB, 500 KiB.
-    --small             4 boundary-condition file sizes:
-                          9 000 B  (8 blocks + fragment)
-                          1 024 B  (exact single block, no fragment)
-                            512 B  (half block)
-                              1 B  (single byte — minimum C2I stream over link)
-                        See "Small file rationale" below.
-    --size-mb N         Single custom file size in MiB.
-    --duration-secs N   Derive file size from BW cap × N seconds.
-    --count N           Number of files (default: 2). Ignored when --large or
-                        --small is given.
-
-Transfer behavior:
-    --bidirectional     Send files in both directions (sender→receiver and
-                        receiver→sender). Default: one direction only.
-
-Link outage injection (mutually exclusive):
-    --link-outage       Simulate a recoverable link outage mid-transfer.
-                        Sequence:
-                          1. Start first file transfer.
-                          2. After 1 s, disable link on both agents
-                             (LinkState → Degraded).
-                          3. While link is down, enqueue a second file.
-                             Verifies the pending queue is maintained across
-                             the reconnect.
-                          4. After the configured link-down window, re-enable
-                             the link (background thread, not the write path).
-                          5. Assert all files complete with SHA-256 match.
-                        All durations are derived from the BW cap — no
-                        hard-coded sleeps.
-
-    --link-fail         Simulate a permanent link failure.
-                        Sequence:
-                          1. Start a file transfer.
-                          2. After 1 s, disable link on both agents.
-                          3. Wait past the link-fail timeout.
-                          4. Assert LinkState == Failed on both agents.
-                          5. Assert the in-flight file receives a
-                             stream_failed callback with code LinkFailed.
-                          6. Send a second file; assert it is also rejected.
-                        Note: the link-fail test was present but skipped
-                        in the legacy C++ scripts (see run-link-down-test,
-                        "exit 0" before the fail test). Implement and gate
-                        it behind a feature flag or --enable-fail-test until
-                        confirmed stable.
-
-Validation (all default on; use negating flag to disable):
-    --no-verify-sha256  Skip SHA-256 integrity check on received data.
-    --no-report-bw      Skip BW utilization report.
+    --large             3 large files (30 MiB / 2 MiB / 500 KiB)
+    --small             4 boundary-condition sizes (see small-file-edge-cases)
+    --count N           Number of files [default: 2]
+    --bidirectional     Test both transfer directions
+    --link-outage       Inject a recoverable mid-transfer link outage
 ```
-
-### Small file rationale
-
-The four sizes in `--small` are not arbitrary. They were introduced in the
-legacy C++ suite specifically because each one exposed a distinct class of
-field bug:
-
-- **9 000 B** — exercises 8 full blocks plus a trailing fragment; caught
-  off-by-one errors in fragment handling.
-- **1 024 B** — exactly one block with no fragment; caught corner cases in
-  the "no fragment" code path that was rarely exercised by larger files.
-- **512 B** — half a block; caught issues with minimum-chunk logic.
-- **1 B** — single byte; the minimum possible C2I stream. Exercises the
-  entire framing path at its boundary and is effectively a "can a 1-byte
-  payload traverse the QUIC link" regression test.
 
 ---
 
-## Subcommand: `drr`
+### Subcommand: `drr`
 
-Tests the DRR (Deficit Round Robin) scheduler's priority ordering. This test
-requires the agent to have `max_concurrent = 1` so that queued streams are
-reordered by priority before they become active. The test sets this automatically
-via `-N 1` before running and restores the original value after.
+Tests that the DRR scheduler correctly holds streams in the pending queue while
+the single active slot is occupied, and that the anchor transfer completes with
+SHA-256 integrity.
+
+Sets `max_concurrent = 1` on the sender agent for the duration of the test and
+restores unlimited concurrency afterwards.
 
 ```
 drr [OPTIONS]
-    --file-count N      Number of priority-varied files to queue behind the
-                        anchor file (default: 3 — low/med/high).
-
-    --no-verify-sha256  Skip SHA-256 integrity check.
-    --no-report-bw      Skip BW utilization report.
+    --file-count N      Files to queue behind the anchor [default: 3]
 ```
 
-Test sequence:
+Sequence:
 
-1. Enqueue a large "anchor" file at priority 0 to occupy the single active slot.
-2. Immediately enqueue `N` files at varying priorities in non-sorted order
-   (e.g. low=10, high=30, med=20).
-3. Call `stream_start`; capture the returned `queue_position` and
-   `QueueStatus.pending` list from the `queue_status_update` callback.
-4. Assert that `pending` is sorted highest→lowest priority.
-5. Re-enable normal concurrency; wait for all files to complete.
-6. Assert SHA-256 on all received files.
+1. Set `max_concurrent = 1` on the sender agent.
+2. Enqueue a large anchor file at priority 0 to occupy the single active slot.
+3. Enqueue `N` files at priorities `[low=10, high=30, med=20]` — deliberately
+   out of priority order.
+4. Assert each `stream_start` returns `PENDING` with `queue_position` equal to
+   the queue depth at submission time (1, 2, 3 …).
+5. Wait for the anchor to transfer completely; verify SHA-256.
+6. Restore `max_concurrent = 0` (unlimited).
 
-Naming note: `drr` rather than `multi-file --priority` because the test requires
-specific agent state (`max_concurrent = 1`) that would be surprising to have
-injected silently by a flag on `multi-file`.
+**What `drr` does not test** — it verifies that streams enter the pending queue
+and that the anchor completes, but it does not assert the order in which pending
+streams are subsequently promoted.  Priority-sorted promotion order is verified
+by the `max-concurrent` subcommand via `QueueStatus` callback inspection.
+
+**Historical note** — before `max_concurrent` enforcement was implemented,
+`drr` would open all streams immediately (no pending queue formed) and the
+`PENDING` / `queue_position` assertions would have failed.  The test was written
+with those assertions present, implicitly depending on `set_max_concurrent`
+working correctly.  Both now work.
 
 ---
 
-## Subcommand: `small-file-edge-cases`
+### Subcommand: `small-file-edge-cases`
 
-Runs the four boundary-condition file sizes from `multi-file --small` as an
-independently callable subcommand. This allows the CI script to run them
-separately from the bulk multi-file tests and produce a distinct pass/fail signal.
+Runs four boundary-condition file sizes as a standalone subcommand so that a
+framing regression produces a targeted CI failure rather than one buried inside
+a larger `multi-file` run.
 
 ```
 small-file-edge-cases [OPTIONS]
-    --bidirectional     Test both transfer directions for each size.
-    --no-verify-sha256  Skip SHA-256 integrity check.
-    --no-report-bw      Skip BW utilization report.
+    --bidirectional     Test both directions for each size
 ```
 
-This subcommand is effectively an alias for `multi-file --small`, but callable
-independently so a regression in framing boundary handling produces a targeted
-failure rather than a failure buried inside a larger multi-file run.
+The test sets chunk size to **1024 B** on both agents before running and
+restores the default afterwards (`set_chunk_size_bytes(0)`).  All four sizes
+are interpreted relative to that 1024 B chunk size.
+
+| Size | Chunks | Fragment | Exercises |
+|-----:|-------:|:--------:|:----------|
+| 9000 B | 8 full | 776 B | Off-by-one in multi-chunk + fragment handling |
+| 1024 B | 1 full | none | Exact single-chunk, no-fragment corner case |
+|  512 B | none | 512 B | Sub-chunk (single fragment) payload |
+|    1 B | none | 1 B | Pathological minimum — one byte through the full framing path |
+
+At the agent default chunk size (16 KiB), both 9000 B and 1024 B would be
+single-fragment transfers and the multi-chunk path would go untested.  The
+1024 B override is what makes 9000 B a genuine 8-chunk + fragment case.
 
 ---
 
-## Internal structure
+### Subcommand: `max-concurrent`
 
-### `TestCallbackHandler` vs. `e2e_demo.rs` `CallbackHandler`
-
-`e2e_demo.rs` (in `quelay-example/`) retains its simple `CallbackHandler` —
-it is intentionally minimal for onboarding readability.
-
-`e2e_test.rs` uses a richer `TestCallbackHandler` that accumulates:
-
-- Per-transfer SHA-256 digest (streaming, so the full payload is not held in
-  memory twice).
-- Actual bytes received (for BW calculation).
-- Wall-clock timestamps for start and done events.
-- `LinkState` change history (for link-outage and link-fail assertions).
-- Progress message count (for the BW utilization report).
-
-If the two handlers share more than ~80 lines of infrastructure, extract a
-`test_support` module within `quelay-agent/src/` gated behind a `test-support`
-Cargo feature. Do not make it part of the default build.
-
-### Timing derivation
-
-All durations are derived from the agents' configured BW cap rather than
-hard-coded. The pattern established in `e2e_demo.rs` is the baseline:
+Verifies that the agent enforces the configured max-concurrent stream limit and
+that the pending queue is maintained with correct priority ordering.  This is
+the definitive test for pending queue sort order — it inspects the `QueueStatus`
+callback to assert that pending UUIDs are listed highest-priority-first.
 
 ```
-payload_bytes  = cap_bytes_per_sec × target_duration_secs
-drop_after     = 1 MiB                           (spool outage trigger)
-link_down_secs = spool_capacity × fill_fraction / cap_bytes_per_sec
-post_bytes     = cap_bytes_per_sec × link_down_secs × 1.5
-transfer_timeout = (total_bytes / cap_bytes_per_sec × 3.0 + link_down_secs × 2.0).max(60s)
+max-concurrent [OPTIONS]
+    --max-concurrent N  Maximum active streams [default: 2]
+    --stream-count N    Total streams to submit (must be > --max-concurrent) [default: 5]
 ```
 
-The `SPOOL_CAPACITY`, `SPOOL_FILL_FRACTION`, and block-size constants used for
-timing are imported directly from the agent crate — this is one of the primary
-reasons `e2e_test` lives in `quelay-agent/src/bin/` rather than `quelay-example/`.
+Sequence:
+
+1. Set `max_concurrent = N` on the sender agent.
+2. Submit `stream_count` streams with priorities in interleaved order
+   (low / high / mid / …) so the priority-sorted insertion in `enqueue()` is
+   exercised with out-of-order arrivals.
+3. Assert the first `N` streams returned `RUNNING` and the remaining returned
+   `PENDING` with `queue_position` values `1..=(stream_count − N)`.
+4. Drain `QueueStatus` callbacks via `last_queue_status(200 ms)`; assert
+   `active_count == N` and the pending UUID list is in priority-descending order.
+5. Restore `max_concurrent = 0` (unlimited).
+
+---
+
+### `TestCallbackServer`
+
+`callback.rs` provides a Thrift callback server used by all subcommands.
+
+| Method | Description |
+|:-------|:------------|
+| `bind()` | Binds on an ephemeral port; spawns the Thrift server thread |
+| `recv_event(timeout)` | Block until the next event |
+| `recv_event_for(uuid, timeout)` | Block until an event matching `uuid` arrives; discards others |
+| `last_queue_status(timeout)` | Drain events for `timeout`; return the last `QueueStatus` seen |
+| `progress_count()` | Number of progress callbacks received |
+
+`QueueStatus` events are forwarded into the channel and used exclusively by
+`cmd_max_concurrent` to verify pending queue sort order.
+
+---
+
+## `bw-cap-test`
+
+### Overview
+
+`bw-cap-test` verifies that the agent's `RateLimiter` correctly shapes N
+concurrent streams to the configured aggregate bandwidth cap.  Each stream
+transmits continuously for `--duration-secs` seconds; aggregate throughput is
+then asserted within ±10 % of the cap.
+
+In practice, observed utilization for transfers larger than ~4 KiB is
+consistently within ±2 % of the cap.  The ±10 % tolerance exists to
+accommodate the start-up and tear-down transients that dominate measurement
+error for very small or very short transfers.
+
+### Source layout
+
+```
+quelay-agent/src/bin/bw_cap_test/
+├── mod.rs      CLI, main, stream orchestration
+├── callback.rs CallbackActor — Thrift callback handler for sender/receiver roles
+├── cic.rs      CIC (Concurrent Integration Controller) — event dispatch, BW assertion
+└── tuner.rs    TunerCmd/TunerOutcome — per-stream sender and receiver tasks
+```
+
+### CLI
+
+```
+bw-cap-test [OPTIONS]
+
+OPTIONS:
+    --sender-c2i    ADDR    Sending agent C2I address   [default: 127.0.0.1:9090]
+    --receiver-c2i  ADDR    Receiving agent C2I address [default: 127.0.0.1:9091]
+    --count N               Number of concurrent streams [default: 3]
+    --duration-secs N       Transmission duration per stream [default: 5]
+    --debug                 Run with RUST_LOG=debug
+```
+
+### Design
+
+Each stream payload is sized so the writer remains mid-stream when the duration
+timer fires (`cap_bytes_per_sec × duration × PAYLOAD_HEADROOM`), ensuring the
+rate limiter is continuously under load for the full measurement window.  After
+all tuners exit, `assert_aggregate_bw` computes total bytes / wall-clock time
+and checks it against the cap within the tolerance.
+
+The BW cap is queried from the sender agent at startup (`get_bandwidth_cap_mbps`).
+
+### Observed performance
+
+Results from a representative `bw-cap-test` run: 3 concurrent streams at a
+10 Mbit/s cap, 5 s duration.
+
+```
+┌── per-stream results ───────────────┐
+│  Receiver    5 537 024 B   13.16s ✓ │
+│  Receiver    5 537 024 B   13.16s ✓ │
+│  Receiver    5 537 024 B   13.16s ✓ │
+│  Sender      5 492 736 B   13.16s ✓ │
+│  Sender      5 488 640 B   13.16s ✓ │
+│  Sender      5 491 928 B   13.16s ✓ │
+└─────────────────────────────────────┘
+
+  Aggregate BW: 1251.4 KB/s  cap: 1250.0 KB/s  (100.1%)
+  Aggregate BW within ±10% ✓
+```
+
+In practice, observed utilization for transfers larger than ~4 KiB is
+consistently within ±2 % of the cap.  The ±10 % tolerance exists to
+accommodate the start-up and tear-down transients that dominate measurement
+error for very small or very short transfers.
+
+The per-stream results table reports receiver elapsed as 13.16 s against a
+5 s transmit window because the receiver measures from stream open to final
+byte received — it includes the time the sender tuner spent writing data
+before the duration timer fired and the tail of the transfer drained.
+
+---
+
+## Scheduler unit tests (`quelay-domain`)
+
+The DRR scheduler unit tests live in `quelay-domain/src/scheduler.rs`.  Six
+unit tests cover the core scheduling invariants:
+
+- `c2i_drains_before_bulk`
+- `bulk_streams_share_budget`
+- `idle_stream_does_not_accumulate_deficit`
+- `deregister_removes_stream`
+- `schedule_never_exceeds_budget`
+- `c2i_does_not_starve_when_bulk_present`
+
+End-to-end scheduler coverage is provided by `bw-cap-test` (aggregate
+throughput under concurrent load), `e2e-test drr` (pending queue formation),
+and `e2e-test max-concurrent` (priority-sorted promotion order).
 
 ---
 
 ## CI integration
 
-`scripts/ci-integration-test.sh` replaces `scripts/ci-e2e-test.sh`. Structure:
+`scripts/ci-integration-test.sh` orchestrates both binaries:
 
 ```bash
-# Phase A — high cap (100 Mbit/s): large file throughput + rate limiter
-start_agents 100
-e2e_test multi-file --large --bidirectional
-stop_agents
-
-# Phase B — low cap (10 Mbit/s): reconnect, priority, edge cases
-# (lower cap gives the link-outage window enough time to be deterministic)
+# Rate limiter accuracy
 start_agents 10
-e2e_test multi-file --small
-e2e_test multi-file --count 2 --link-outage
-e2e_test drr
-e2e_test small-file-edge-cases
+bw-cap-test --count 3 --duration-secs 5
+stop_agents
+
+# Full data-pump path
+start_agents 10
+e2e-test multi-file --large --bidirectional
+e2e-test multi-file --small
+e2e-test multi-file --count 2 --link-outage
+e2e-test drr
+e2e-test small-file-edge-cases
+e2e-test max-concurrent
 stop_agents
 ```
-
-`ci.yml` step `End to end test` changes from:
-```yaml
-run: ./scripts/ci-e2e-test.sh
-```
-to:
-```yaml
-run: ./scripts/ci-integration-test.sh
-```
-
-`local-test.sh` adds a call to `ci-integration-test.sh` after the existing
-smoke test.
 
 ---
 
 ## Legacy test mapping
 
-The table below maps the legacy C++ test suite to the new subcommands. This is
-documentation only — no legacy references appear in `--help` output.
-
-| Legacy test / script            | New subcommand                                    | Notes |
-|---------------------------------|---------------------------------------------------|-------|
-| `run-end-to-end-test large`     | `multi-file --large --bidirectional`              | C++ also ran ground→air and air→ground |
-| `run-end-to-end-test small`     | `multi-file --small` / `small-file-edge-cases`    | See small file rationale above |
-| `run-end-to-end-test bad-file`  | Unit tests in `quelay-agent` (`#[test]`)          | Not an integration test |
-| `run-end-to-end-test priority`  | `drr`                                             | Requires `-N 1` |
-| `run-link-down-test` (long)     | `multi-file --count 2 --link-outage`              | File 1 longer than link-down window |
-| `run-link-down-test` (short)    | `multi-file --small --link-outage`                | File 1 shorter than link-down window |
-| `run-link-down-test` (fail)     | `multi-file --link-fail`                          | Was skipped in C++ (`exit 0` before it) |
-| `run-air-restart-test`          | Not ported (QUIC reconnect covered by link-outage)| C++ tested FTA *process* restart |
-| `run-no-callback-test`          | Not ported (disabled in C++ since SZIP2-1352)     | — |
-| Phase 1 BW validation           | `multi-file --large`                              | ±10% BW tolerance assertion |
-| Phase 2 spool reconnect         | `multi-file --count 2 --link-outage`              | SHA-256 across reconnect |
-| Rate limiter accuracy test      | `multi-file --large`                              | BW utilization assertion (±10%) validates end-to-end |
+| Legacy test / script            | New subcommand / binary                        |
+|---------------------------------|------------------------------------------------|
+| `run-end-to-end-test large`     | `e2e-test multi-file --large --bidirectional`  |
+| `run-end-to-end-test small`     | `e2e-test small-file-edge-cases`               |
+| `run-end-to-end-test priority`  | `e2e-test drr`                                 |
+| `run-link-down-test`            | `e2e-test multi-file --link-outage`            |
+| Rate limiter accuracy           | `bw-cap-test`                                  |
+| `run-air-restart-test`          | Not ported (QUIC reconnect covered by `--link-outage`) |
