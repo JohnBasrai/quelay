@@ -72,6 +72,7 @@ use quelay_thrift::{
     QueLayAgentSyncClient,
     QueLayCallbackSyncProcessor,
     StreamInfo,
+    StreamStartStatus as Status,
     TBinaryInputProtocol,
     TBinaryInputProtocolFactory,
     TBinaryOutputProtocol,
@@ -283,9 +284,10 @@ async fn real_main() -> anyhow::Result<()> {
             .context("Error in sender_agent.stream_start")?;
 
         anyhow::ensure!(
-            res.err_msg.as_deref().unwrap_or("").is_empty(),
-            "sender stream_start[{i}] failed: {:?}",
-            res.err_msg,
+            res.status == Some(Status::RUNNING),
+            "stream_start failed: expected {:?}, got {:?}",
+            Status::RUNNING,
+            res.status
         );
 
         // The receiver agent does not need stream_start — its downlink is

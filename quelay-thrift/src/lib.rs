@@ -30,6 +30,7 @@ pub use gen::{
     QueueStatus,
     StartStreamReturn,
     StreamInfo,
+    StreamStartStatus,
     TQueLayAgentSyncClient,
     TQueLayCallbackSyncClient,
     IDL_VERSION,

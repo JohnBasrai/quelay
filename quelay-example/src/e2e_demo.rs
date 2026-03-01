@@ -256,12 +256,7 @@ pub async fn run(
         },
         0,
     )?;
-    anyhow::ensure!(
-        result.err_msg.as_deref().unwrap_or("").is_empty(),
-        "stream_start failed: {:?}",
-        result.err_msg
-    );
-    println!("  stream_start accepted, uuid: {uuid}");
+    println!("  stream_start accepted, uuid: {uuid}, result {:?}", result);
 
     // Connect to sender's ephemeral port and write the payload.
     let sender_port = match sender_cb.recv_event(timeout)? {

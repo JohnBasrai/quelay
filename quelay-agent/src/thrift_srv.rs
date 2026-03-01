@@ -18,7 +18,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use tokio::runtime::Handle;
-use tokio::sync::{mpsc, Mutex as AsyncMutex};
+use tokio::sync::{mpsc, oneshot, Mutex as AsyncMutex};
 use uuid::Uuid;
 
 use quelay_domain::{
@@ -28,12 +28,13 @@ use quelay_domain::{
     StreamInfo as DomainStreamInfo,
 };
 
-use quelay_thrift::{
+use super::{
     // ---
-    LinkState as WireLinkState,
     QueLayAgentSyncHandler,
-    StartStreamReturn,
-    StreamInfo as WireStreamInfo,
+    WireLinkState,
+    WireStreamInfo,
+    WireStreamStartReturn,
+    WireStreamStartStatus,
     IDL_VERSION,
 };
 
@@ -100,6 +101,35 @@ impl RuntimeConfig {
 pub type RuntimeConfigHandle = Arc<std::sync::Mutex<RuntimeConfig>>;
 
 // ---------------------------------------------------------------------------
+// StreamStartResponse
+// ---------------------------------------------------------------------------
+
+/// Response sent back to `handle_stream_start` via a oneshot channel after
+/// the session manager has determined whether the stream is active or queued.
+#[derive(Debug)]
+pub struct StreamStartResponse {
+    // ---
+    /// Status of stream, `Running`, `Pending`, `QueueFull`.
+    status: WireStreamStartStatus,
+
+    /// If status is `Pending` or `NotConnected`, this value exists and is the
+    /// jobs position in the pending queue
+    queue_position: Option<i32>,
+}
+
+impl StreamStartResponse {
+    // ---
+    pub(crate) fn new(status: WireStreamStartStatus, queue_position: Option<i32>) -> Self {
+        // ---
+
+        Self {
+            queue_position,
+            status,
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // AgentCmd
 // ---------------------------------------------------------------------------
 
@@ -111,6 +141,7 @@ pub enum AgentCmd {
         uuid: Uuid,
         info: DomainStreamInfo,
         priority: Priority,
+        reply_tx: oneshot::Sender<StreamStartResponse>,
     },
 
     /// Test/debug only — enable or disable the QUIC link.
@@ -217,7 +248,7 @@ impl QueLayAgentSyncHandler for AgentHandler {
         uuid_str: String,
         info: WireStreamInfo,
         priority: i8,
-    ) -> thrift::Result<StartStreamReturn> {
+    ) -> thrift::Result<WireStreamStartReturn> {
         // ---
 
         tracing::debug!(uuid = %uuid_str, priority, "THFT: stream_start");
@@ -238,16 +269,27 @@ impl QueLayAgentSyncHandler for AgentHandler {
 
         let domain_priority = Priority::from_i8(priority);
 
+        let (reply_tx, reply_rx) = oneshot::channel::<StreamStartResponse>();
+
         self.send_cmd(AgentCmd::StreamStart {
             uuid,
             info: domain_info,
             priority: domain_priority,
+            reply_tx,
         })?;
 
-        Ok(StartStreamReturn {
-            err_msg: Some(String::new()),
-            queue_position: Some(0),
-            pending_queue: Some(Vec::new()),
+        let response = self.rt.block_on(async {
+            reply_rx.await.map_err(|_| {
+                thrift::Error::Application(thrift::ApplicationError::new(
+                    thrift::ApplicationErrorKind::InternalError,
+                    "stream_start reply channel dropped",
+                ))
+            })
+        })?;
+
+        Ok(WireStreamStartReturn {
+            status: Some(response.status),
+            queue_position: response.queue_position,
         })
     }
 
@@ -309,7 +351,7 @@ impl QueLayAgentSyncHandler for AgentHandler {
         // ---
 
         let n = n as usize;
-        tracing::info!(n, "set_max_concurrent (test/debug)");
+        tracing::warn!(n, "set_max_concurrent (test/debug)");
 
         {
             let mut cfg = self.lock_runtime_cfg()?;
@@ -325,7 +367,7 @@ impl QueLayAgentSyncHandler for AgentHandler {
         // ---
 
         let requested = n as usize;
-        tracing::info!(requested, "set_chunk_size_bytes (test/debug)");
+        tracing::debug!(requested, "set_chunk_size_bytes (test/debug)");
 
         let effective = if requested == 0 {
             DEFAULT_CHUNK_SIZE_BYTES

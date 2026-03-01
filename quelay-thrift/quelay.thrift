@@ -123,26 +123,32 @@ struct ProgressInfo {
     3: optional double percent_done,
 }
 
+enum StreamStartStatus {
+  // ---
+  /// Stream was started; wait for `stream_started` callback.
+  Running = 0,
+
+  /// Stream was added to pending queue; wait for `stream_started` callback.
+  Pending = 1,
+
+  /// Stream was rejected because the pending queue is full
+  QueueFull = 2,
+
+  /// Connection to peer agent has not been establised yet and job was added 
+  /// to pending queue.
+  NotConnected = 3,
+}
+
+
 /// Return value from `stream_start`.
 struct StartStreamReturn {
 
-    /// Empty on success; error description on failure.
-    /// `queue_position` is -1 when err_msg is non-empty.
-    1: string err_msg,
+    /// Status of stream, `Running`, `Pending`, `QueueFull`.
+    1: StreamStartStatus status,
 
-    /// Position in the pending queue.
-    ///   0  — stream is active; wait for `stream_started` callback.
-    ///  >0  — stream is queued; wait for `stream_started` callback.
-    ///  -1  — queue is full; request rejected (see err_msg).
-    2: i32    queue_position,
-
-    /// Snapshot of the pending queue at the moment of enqueue, ordered
-    /// highest-priority first.  Each entry is "<priority>\t<uuid>".
-    ///
-    /// Present on success; empty list when err_msg is non-empty.
-    /// Used by the `drr` integration test to assert priority ordering
-    /// without polling `get_queue_status`.
-    3: list<string> pending_queue,
+    /// If status is `Pending` or `NotConnected`, this value exists and is the 
+    /// jobs position in the pending queue
+    2: optional i32 queue_position,
 }
 
 // ---------------------------------------------------------------------------

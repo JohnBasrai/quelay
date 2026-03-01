@@ -115,5 +115,11 @@ start_agents 10
 
 stop_agents
 
+start_agents 10 2
+"$E2E_BIN" \
+    --sender-c2i "$AGENT1_C2I" \
+    --receiver-c2i "$AGENT2_C2I" \
+    max-concurrent
+
 echo ""
 echo "==> ci-integration-test.sh: all tests PASSED."

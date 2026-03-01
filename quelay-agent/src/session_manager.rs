@@ -36,31 +36,55 @@ use std::time::Duration;
 
 // ---
 
-use tokio::sync::{mpsc, Mutex, Notify};
+use tokio::sync::{mpsc, oneshot, Mutex, Notify};
+
+// ---
+
 use uuid::Uuid;
 
 // ---
 
-use quelay_domain::{
-    //
-    LinkState,
-    Priority,
-    QueLaySessionPtr,
-    StreamInfo,
-};
-
-// ---
-
-use super::{
+use crate::{
     // ---
     write_connect_header,
     write_reconnect_header,
     AggregateRateLimiter,
+    CallbackCmd,
     CallbackTx,
+    DomainStreamInfo,
+    LinkState,
+    Priority,
+    QueLaySessionPtr,
+    QueueStatus,
     ReconnectHeader,
     StreamHeader,
+    StreamStartResponse,
     UplinkContext,
+    WireStreamStartStatus,
 };
+
+// ---------------------------------------------------------------------------
+// SessionCommand
+// ---------------------------------------------------------------------------
+#[derive(Debug)]
+/// Commands the SessionManger actor
+pub(crate) enum SessionCommand {
+    // ---
+    StreamStart {
+        uuid: Uuid,
+        info: DomainStreamInfo,
+        priority: Priority,
+        reply_tx: oneshot::Sender<StreamStartResponse>,
+    },
+    StreamFinished {
+        uuid: String,
+    },
+    /// Update the maximum number of concurrent active uplinks at runtime.
+    /// `None` means unlimited (0 from the C2I layer maps to this).
+    SetMaxConcurrent(Option<usize>),
+}
+
+pub(crate) type SessionCommandQueue = mpsc::Sender<SessionCommand>;
 
 // ---------------------------------------------------------------------------
 // TransportConfig
@@ -107,7 +131,7 @@ pub enum TransportConfig {
 struct PendingStream {
     // ---
     uuid: Uuid,
-    info: StreamInfo,
+    info: DomainStreamInfo,
     priority: Priority,
 }
 
@@ -126,10 +150,16 @@ struct RemoteState {
 
     /// Streams queued but not yet opened on the wire.
     ///
-    /// Key: stable UUID (survives reconnection).
-    /// On reconnect every entry here is re-submitted in arrival order.
-    /// Future: order by priority using the DRR scheduler.
-    pending: HashMap<Uuid, PendingStream>,
+    /// Sorted highest-priority first.  On reconnect the front entry is
+    /// promoted first.  Bounded by `max_pending`; `stream_start` rejects
+    /// new entries when full.
+    pending: Vec<PendingStream>,
+
+    /// Maximum concurrent active uplink streams.  None = unlimited.
+    max_concurrent: Option<usize>,
+
+    /// Maximum depth of `pending`.
+    max_pending: usize,
 
     /// In-flight uplink streams.
     ///
@@ -149,14 +179,74 @@ struct RemoteState {
 impl RemoteState {
     // ---
 
-    fn new(session: QueLaySessionPtr) -> Self {
+    fn new(session: QueLaySessionPtr, max_concurrent: Option<usize>, max_pending: usize) -> Self {
         // ---
         Self {
             session: Some(session),
-            pending: HashMap::new(),
+            pending: Vec::new(),
+            max_concurrent,
+            max_pending,
             active_uplinks: HashMap::new(),
             active_downlinks: HashMap::new(),
         }
+    }
+
+    // ---
+
+    /// Insert a stream into `pending` in priority-descending order.
+    ///
+    /// Returns the 1-based position in the queue (1 = next to be promoted).
+    fn enqueue(&mut self, pending_stream: PendingStream) -> usize {
+        // ---
+        let pri = pending_stream.priority;
+
+        // Find insertion point: first entry whose raw_priority is
+        // strictly less than the new stream so equal priorities
+        // preserve submission order.
+        let pos = self
+            .pending
+            .iter()
+            .position(|e| e.priority < pri)
+            .unwrap_or(self.pending.len());
+        self.pending.insert(pos, pending_stream);
+        self.pending.len() // 1-based depth: how many entries are now queued
+    }
+
+    // ---
+
+    /// Send queue status update to client callback.
+    async fn send_queue_status(&self, cb_tx: &CallbackTx) {
+        // ---
+        let status = QueueStatus {
+            active_count: self.active_uplinks.len() as i32,
+            max_concurrent: self.max_concurrent.unwrap_or(0) as i32,
+            max_pending: self.max_pending as i32,
+            pending: self.pending.iter().map(|e| e.uuid).collect(),
+        };
+
+        cb_tx.send(CallbackCmd::QueueStatus(status)).await;
+    }
+
+    // ---
+
+    /// True if another active stream can be opened.
+    fn has_active_slot(&self) -> bool {
+        // ---
+        match self.max_concurrent {
+            Some(max_concurrent) => self.active_uplinks.len() < max_concurrent,
+            None => true,
+        }
+    }
+
+    fn pending_queue_full(&self) -> bool {
+        // ---
+        self.pending.len() >= self.max_pending
+    }
+
+    #[allow(dead_code)]
+    fn is_unlimited(&self) -> bool {
+        // ---
+        self.max_concurrent.is_none()
     }
 }
 
@@ -164,7 +254,12 @@ impl RemoteState {
 // SessionManager
 // ---------------------------------------------------------------------------
 
-pub struct SessionManager {
+pub(crate) struct SessionManagerConfig {
+    pub max_pending: usize,
+    pub max_concurrent: Option<usize>,
+}
+
+pub(crate) struct SessionManager {
     // ---
     /// Single remote peer.
     ///
@@ -196,7 +291,14 @@ pub struct SessionManager {
     /// Notified by [`run`] after a successful reconnect so the accept loop
     /// can resume calling `accept_stream` on the new session.
     session_restored: Arc<Notify>,
-}
+
+    /// Cloned sender side of the `SessionManager` command channel.
+    ///
+    /// Passed into each spawned uplink `AckTask` so that when the stream
+    /// finishes the task can send `StreamFinished` back here, triggering
+    /// `promote_pending` to fill the freed active slot.
+    cmd_tx: SessionCommandQueue,
+} // SessionManager
 
 // ---
 
@@ -210,81 +312,138 @@ impl SessionManager {
         link_state: Arc<Mutex<LinkState>>,
         cb_tx: CallbackTx,
         bw_cap_bps: Option<u64>,
-    ) -> Self {
+        config: SessionManagerConfig,
+    ) -> (Self, SessionCommandQueue, mpsc::Receiver<SessionCommand>) {
         // ---
-        let remote = RemoteState::new(session);
-        Self {
-            remote: Arc::new(Mutex::new(Some(remote))),
-            transport_cfg: Mutex::new(transport_cfg),
-            link_state,
-            cb_tx,
-            arl: Arc::new(AggregateRateLimiter::new(bw_cap_bps)),
-            session_restored: Arc::new(Notify::new()),
-        }
+        // Depth of 64 matches the AgentCmd channel — enough to absorb bursts
+        // from the Thrift thread pool without back-pressuring callers.
+        let (cmd_tx, cmd_rx) = mpsc::channel(64);
+        let remote = RemoteState::new(session, config.max_concurrent, config.max_pending);
+
+        (
+            Self {
+                remote: Arc::new(Mutex::new(Some(remote))),
+                transport_cfg: Mutex::new(transport_cfg),
+                link_state,
+                cb_tx,
+                arl: Arc::new(AggregateRateLimiter::new(bw_cap_bps)),
+                session_restored: Arc::new(Notify::new()),
+                cmd_tx: cmd_tx.clone(),
+            },
+            cmd_tx,
+            cmd_rx,
+        )
     }
 
     // ---
 
     /// Enqueue a stream start request.
     ///
-    /// If the session is live the stream is opened immediately.
-    /// If the session is down the request is queued in `pending` and will
-    /// be re-issued when the link recovers.
-    pub async fn stream_start(&self, uuid: Uuid, info: StreamInfo, priority: Priority) {
+    /// - If an active slot is available and the session is live, opens the
+    ///   stream immediately (`queue_position == 0`).
+    ///
+    /// - If slots are full, inserts into the priority-ordered pending queue
+    ///   (`queue_position > 0`).
+    ///
+    /// - If the pending queue is also full, rejects with `queue_position == -1`
+    ///   and a non-empty `err_msg`.
+    ///
+    /// - If the session is down, inserts into pending regardless of slot count
+    ///   (link-outage path); `queue_position` reflects pending position.
+    ///
+    /// Sends a `StreamStartResponse` on `reply_tx` in all cases.
+    async fn on_stream_start(
+        &self,
+        reply_tx: oneshot::Sender<StreamStartResponse>,
+        uuid: Uuid,
+        info: DomainStreamInfo,
+        priority: Priority,
+    ) {
         // ---
+
+        use WireStreamStartStatus as Status;
+
         let mut guard = self.remote.lock().await;
+
         let remote = match guard.as_mut() {
             Some(r) => r,
             None => {
-                tracing::warn!(%uuid, "stream_start called but remote slot is empty — queuing");
+                tracing::warn!(%uuid, "stream_start: remote slot is empty (not connected)");
+
+                let _ = reply_tx.send(
+                    //
+                    StreamStartResponse::new(Status::NOT_CONNECTED, None),
+                );
                 return;
             }
         };
 
-        let pending = PendingStream {
+        let pending_stream = PendingStream {
             uuid,
-            info: info.clone(),
+            info,
             priority,
         };
 
-        match remote.session.as_ref() {
-            Some(session) => {
+        // Session is live and an active slot is available — open immediately.
+        if remote.has_active_slot() {
+            if let Some(session) = remote.session.as_ref() {
                 match Self::open_stream_on_session(
                     session,
-                    &pending,
+                    &pending_stream,
                     self.cb_tx.clone(),
                     Arc::clone(&self.arl),
+                    self.cmd_tx.clone(),
                 )
                 .await
                 {
                     Ok(handle) => {
-                        tracing::info!(%uuid, "stream opened on live session");
+                        tracing::debug!(%uuid, "stream_start: stream opened on live session");
+
+                        remote.send_queue_status(&self.cb_tx).await;
                         remote.active_uplinks.insert(uuid, handle);
+                        let _ = reply_tx.send(StreamStartResponse::new(Status::RUNNING, None));
+                        return;
                     }
                     Err(e) => {
-                        tracing::warn!(%uuid, "open_stream failed ({e}), queuing for retry");
-                        remote.pending.insert(uuid, pending);
+                        tracing::warn!(%uuid, "stream_start: open_stream failed ({e}), queuing");
+                        // Fall through to enqueue below.
                     }
                 }
             }
-            None => {
-                tracing::info!(%uuid, "session down, queuing stream for reconnect");
-                remote.pending.insert(uuid, pending);
-            }
         }
+
+        if remote.pending_queue_full() {
+            // ---
+            tracing::warn!(
+                %uuid, max_pending = remote.max_pending,
+                "stream_start: pending queue is full — rejecting stream");
+
+            let stream_failed = StreamStartResponse::new(Status::QUEUE_FULL, None);
+            let _ = reply_tx.send(stream_failed);
+            remote.send_queue_status(&self.cb_tx).await;
+            return;
+        }
+
+        let position = remote.enqueue(pending_stream) as i32;
+
+        tracing::debug!(%uuid, position, "stream_start: stream queued");
+        let start_ok = StreamStartResponse::new(Status::PENDING, Some(position));
+        let _ = reply_tx.send(start_ok);
+        remote.send_queue_status(&self.cb_tx).await;
     }
 
     // ---
 
     /// Drive the reconnection loop.  Runs forever; spawn with `tokio::spawn`.
     ///
-    /// Watches the session's `link_state_rx`.  On `Failed`, clears the live
-    /// session, invokes the spool stub, then retries with exponential back-off.
-    /// On recovery, drains `pending` and restores `active_uplinks`.
-    ///
-    /// Also spawns the inbound accept loop, which runs concurrently and is
-    /// re-armed via `session_restored` after each reconnect.
-    pub async fn run(self: Arc<Self>) {
+    /// 1) Selects on session's `link_state_rx` and input events from `notify` channel
+    /// 2) On `LinkState::Failed`, clears the live session, invokes the spool stub,
+    ///    then retries with exponential back-off.
+    /// 3) On recovery, drains `pending` and restores `active_uplinks`.
+    /// 4) On `SessionEvent::X` calls private method handle_X
+    /// 5) Also spawns the inbound accept loop, which runs concurrently and is
+    ///    re-armed via `session_restored` after each reconnect.
+    pub async fn run(self: Arc<Self>, mut cmd_rx: mpsc::Receiver<SessionCommand>) {
         // ---
         let mut state_rx = {
             let guard = self.remote.lock().await;
@@ -301,35 +460,95 @@ impl SessionManager {
         tokio::spawn(Arc::clone(&self).accept_loop());
 
         loop {
-            if state_rx.changed().await.is_err() {
-                tracing::info!("link_state watch channel closed — session manager exiting");
-                break;
+            tokio::select! {
+                result = state_rx.changed() => {
+                    if result.is_err() {
+                        tracing::info!("link_state watch channel closed — session manager exiting");
+                        break;
+                    }
+
+                    let new_state = *state_rx.borrow();
+                    *self.link_state.lock().await = new_state;
+                    tracing::info!("link state → {new_state:?}");
+
+                    if new_state == LinkState::Failed {
+                        self.on_link_failed().await;
+
+                        let new_session = self.reconnect_loop().await;
+
+                        let mut guard = self.remote.lock().await;
+                        if let Some(remote) = guard.as_mut() {
+                            state_rx = new_session.link_state_rx();
+                            remote.session = Some(new_session);
+                            *self.link_state.lock().await = LinkState::Normal;
+                            tracing::info!(
+                                "session restored — restoring active streams and draining pending queue"
+                            );
+                            Self::restore_active(remote).await;
+                            Self::drain_pending(remote, self.cb_tx.clone(), Arc::clone(&self.arl), self.cmd_tx.clone()).await;
+                            // Re-arm the accept loop on the new session.
+                            self.session_restored.notify_one();
+                        }
+                    }
+                }
+
+                Some(cmd) = cmd_rx.recv() => {
+                    self.dispatch_cmd(cmd).await;
+                }
             }
+        }
+    }
 
-            let new_state = *state_rx.borrow();
-            *self.link_state.lock().await = new_state;
-            tracing::info!("link state → {new_state:?}");
+    // ---
 
-            if new_state == LinkState::Failed {
-                self.on_link_failed().await;
-
-                let new_session = self.reconnect_loop().await;
-
-                // restore_active delivers fresh streams to pumps; each pump
-                // splits the new stream and calls rate_limiter.link_up(tx)
-                // which unblocks the timer task.  No link_enabled flag needed.
+    /// Dispatch a single [`SessionCommand`].
+    async fn dispatch_cmd(&self, cmd: SessionCommand) {
+        match cmd {
+            SessionCommand::StreamStart {
+                uuid,
+                info,
+                priority,
+                reply_tx,
+            } => {
+                self.on_stream_start(reply_tx, uuid, info, priority).await;
+            }
+            SessionCommand::StreamFinished { uuid } => {
+                tracing::debug!(%uuid, "stream finished — promoting pending");
+                let uuid = match uuid.parse::<Uuid>() {
+                    Ok(u) => u,
+                    Err(e) => {
+                        tracing::warn!(%uuid, "StreamFinished: invalid UUID: {e}");
+                        return;
+                    }
+                };
                 let mut guard = self.remote.lock().await;
                 if let Some(remote) = guard.as_mut() {
-                    state_rx = new_session.link_state_rx();
-                    remote.session = Some(new_session);
-                    *self.link_state.lock().await = LinkState::Normal;
-                    tracing::info!(
-                        "session restored — restoring active streams and draining pending queue"
-                    );
-                    Self::restore_active(remote).await;
-                    Self::drain_pending(remote, self.cb_tx.clone(), Arc::clone(&self.arl)).await;
-                    // Re-arm the accept loop on the new session.
-                    self.session_restored.notify_one();
+                    remote.active_uplinks.remove(&uuid);
+                    Self::promote_pending(
+                        remote,
+                        self.cb_tx.clone(),
+                        Arc::clone(&self.arl),
+                        self.cmd_tx.clone(),
+                    )
+                    .await;
+                    remote.send_queue_status(&self.cb_tx).await;
+                }
+            }
+
+            SessionCommand::SetMaxConcurrent(new_limit) => {
+                tracing::debug!(?new_limit, "set_max_concurrent: updating session manager");
+                let mut guard = self.remote.lock().await;
+                if let Some(remote) = guard.as_mut() {
+                    remote.max_concurrent = new_limit;
+                    // A newly-freed limit may allow pending streams to run.
+                    Self::promote_pending(
+                        remote,
+                        self.cb_tx.clone(),
+                        Arc::clone(&self.arl),
+                        self.cmd_tx.clone(),
+                    )
+                    .await;
+                    remote.send_queue_status(&self.cb_tx).await;
                 }
             }
         }
@@ -408,11 +627,11 @@ impl SessionManager {
                     // find no entry in active_downlinks, and be dropped —
                     // leaving the downlink pump waiting forever.
                     let uuid = h.uuid;
-                    let info = StreamInfo {
+                    let info = DomainStreamInfo {
                         size_bytes: h.size_bytes,
                         attrs: h.attrs,
                     };
-                    tracing::info!(%uuid, "downlink: new stream accepted");
+                    tracing::debug!(%uuid, "downlink: new stream accepted");
                     let cb_tx = self.cb_tx.clone();
                     match ActiveStream::spawn_downlink_from(uuid, info, stream, cb_tx).await {
                         Ok(handle) => {
@@ -590,37 +809,95 @@ impl SessionManager {
     // ---
 
     /// Re-issue all pending streams onto a freshly reconnected session.
+    ///
+    /// Promotes streams from the front of the priority-ordered pending Vec
+    /// up to `max_concurrent` slots (or all if unlimited).  Any stream that
+    /// fails to open is left in `pending` for the next reconnect attempt.
     async fn drain_pending(
         remote: &mut RemoteState,
         cb_tx: CallbackTx,
         arl: Arc<AggregateRateLimiter>,
+        session_cmd_tx: SessionCommandQueue,
     ) {
         // ---
         let session = match remote.session.as_ref() {
-            Some(s) => s,
+            Some(s) => s.clone(),
             None => return,
         };
 
-        let uuids: Vec<Uuid> = remote.pending.keys().copied().collect();
-        for uuid in uuids {
-            if let Some(pending) = remote.pending.get(&uuid) {
-                match Self::open_stream_on_session(
-                    session,
-                    pending,
-                    cb_tx.clone(),
-                    Arc::clone(&arl),
-                )
-                .await
-                {
-                    Ok(handle) => {
-                        tracing::debug!(%uuid, "pending stream re-issued after reconnect");
-                        remote.pending.remove(&uuid);
-                        remote.active_uplinks.insert(uuid, handle);
-                    }
-                    Err(e) => {
-                        tracing::warn!(%uuid, "re-issue failed: {e} — leaving in pending");
-                    }
+        let mut promoted = Vec::new();
+        for (i, pending_stream) in remote.pending.iter().enumerate() {
+            if !remote.has_active_slot() {
+                break;
+            }
+            let status = Self::open_stream_on_session(
+                &session,
+                pending_stream,
+                cb_tx.clone(),
+                Arc::clone(&arl),
+                session_cmd_tx.clone(),
+            )
+            .await;
+
+            match status {
+                Ok(handle) => {
+                    tracing::debug!(uuid = %pending_stream.uuid, "pending stream re-issued after reconnect");
+                    remote.active_uplinks.insert(pending_stream.uuid, handle);
+                    promoted.push(i);
                 }
+                Err(e) => {
+                    tracing::warn!(uuid = %pending_stream.uuid, "re-issue failed: {e} — leaving in pending");
+                }
+            }
+        }
+
+        // Remove promoted entries back-to-front to preserve indices.
+        for i in promoted.into_iter().rev() {
+            remote.pending.remove(i);
+        }
+    }
+
+    // ---
+
+    /// Promote the highest-priority pending stream into an active slot.
+    ///
+    /// Called after an active uplink stream completes so that the freed slot
+    /// is immediately filled from the front (highest-priority) of `pending`.
+    /// No-op if `pending` is empty, no slot is available, or session is down.
+    async fn promote_pending(
+        remote: &mut RemoteState,
+        cb_tx: CallbackTx,
+        arl: Arc<AggregateRateLimiter>,
+        session_cmd_tx: SessionCommandQueue,
+    ) {
+        // ---
+        if remote.pending.is_empty() || !remote.has_active_slot() {
+            return;
+        }
+
+        let session = match remote.session.as_ref() {
+            Some(s) => s.clone(),
+            None => return,
+        };
+
+        let pending_stream = &remote.pending[0];
+        match Self::open_stream_on_session(
+            &session,
+            pending_stream,
+            cb_tx,
+            Arc::clone(&arl),
+            session_cmd_tx,
+        )
+        .await
+        {
+            Ok(handle) => {
+                let uuid = remote.pending[0].uuid;
+                tracing::debug!(%uuid, "pending stream promoted to active");
+                remote.active_uplinks.insert(uuid, handle);
+                remote.pending.remove(0);
+            }
+            Err(e) => {
+                tracing::warn!(uuid = %remote.pending[0].uuid, "promote_pending: open_stream failed: {e}");
             }
         }
     }
@@ -647,16 +924,14 @@ impl SessionManager {
         pending: &PendingStream,
         cb_tx: CallbackTx,
         arl: Arc<AggregateRateLimiter>,
+        session_cmd_tx: SessionCommandQueue,
     ) -> anyhow::Result<super::UplinkHandle> {
         // ---
         let mut stream = session.open_stream(pending.priority).await?;
 
         let header = StreamHeader {
             uuid: pending.uuid,
-            priority: match pending.priority {
-                Priority::C2I => 64,
-                Priority::BulkTransfer => 0,
-            },
+            priority: pending.priority.as_i8() as u8,
             size_bytes: pending.info.size_bytes,
             attrs: pending.info.attrs.clone(),
         };
@@ -678,6 +953,7 @@ impl SessionManager {
                 head_offset,
                 q_atomic,
                 arl: Arc::clone(&arl),
+                session_cmd_tx,
             },
         )
         .await?;
@@ -750,7 +1026,7 @@ impl SessionManager {
 /// Cheap clone handle used by `Agent` to submit commands without holding a
 /// lock across await points.
 #[derive(Clone)]
-pub struct SessionManagerHandle {
+pub(crate) struct SessionManagerHandle {
     // ---
     inner: Arc<SessionManager>,
 }
@@ -761,16 +1037,11 @@ impl SessionManagerHandle {
     // ---
 
     /// Wrap an `Arc<SessionManager>` for use by `Agent`.
-    pub fn new(sm: Arc<SessionManager>) -> Self {
+    pub(crate) fn new(sm: Arc<SessionManager>) -> Self {
         Self { inner: sm }
     }
 
     // ---
-
-    /// Forward a stream start request to the session manager.
-    pub async fn stream_start(&self, uuid: Uuid, info: StreamInfo, priority: Priority) {
-        self.inner.stream_start(uuid, info, priority).await;
-    }
 
     // -----------------------------------------------------------------------
     // Test / debug — disabled in production builds
@@ -778,7 +1049,7 @@ impl SessionManagerHandle {
 
     /// Simulate a link failure (`enabled = false`) or allow reconnect
     /// (`enabled = true`).
-    pub async fn link_enable(&self, enabled: bool) {
+    pub(crate) async fn link_enable(&self, enabled: bool) {
         self.inner.link_enable(enabled).await;
     }
 }

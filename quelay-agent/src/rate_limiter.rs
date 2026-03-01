@@ -553,7 +553,7 @@ impl StreamPump {
                 }
             }
         }
-        tracing::info!("stream pump: exiting");
+        tracing::debug!("stream pump: exiting");
     }
 
     // ---
@@ -635,7 +635,7 @@ impl StreamPump {
         // leave the pump stuck in select! with backlog == 0 and Finish already
         // processed — the 30-second idle-timeout stall in issue #6.
         if self.finishing && head_at_end == u64::MAX && remaining_bytes == 0 {
-            tracing::info!("stream pump: spool drained, sending FIN");
+            tracing::debug!("stream pump: spool drained, sending FIN");
             let _ = self.quic_tx.shutdown().await;
             self.done = true;
         }

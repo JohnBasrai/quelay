@@ -56,11 +56,6 @@ Options:
           example clients and other local C2I consumers connect here
           [default: 127.0.0.1:9090]
 
-      --spool-dir <SPOOL_DIR>
-          Directory used to spool stream data when the link is down.
-          Created automatically if it does not exist.
-          [default: /tmp/quelay-spool]
-
       --bw-cap-mbps <BW_CAP_MBPS>
           Uplink bandwidth cap in Mbit/s.
           
@@ -160,6 +155,7 @@ rate_limiter.rs    — Timer-task-based BW cap; link_down / link_up without reco
 framing.rs         — 8-byte stream-open header, 10-byte chunk header, read/write helpers
 callback.rs        — CallbackAgent: async Thrift callback push path
 bin/e2e_test.rs    — Quelay integration test binary
+bin/bw-cap-test/   — Bandwidth cap integration test.
 ```
 
 `TServer` is launched via `tokio::task::spawn_blocking`, which hands it to a

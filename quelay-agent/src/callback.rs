@@ -27,7 +27,14 @@ use uuid::Uuid;
 
 // ---
 
-use quelay_domain::{LinkState, QueLayError, QueueStatus, Result, StreamInfo};
+use quelay_domain::{
+    //
+    LinkState,
+    QueLayError,
+    QueueStatus,
+    Result,
+    StreamInfo,
+};
 
 // ---
 

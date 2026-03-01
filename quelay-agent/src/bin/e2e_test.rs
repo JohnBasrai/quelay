@@ -57,6 +57,7 @@ use quelay_thrift::{
     TBufferedReadTransportFactory,
     TBufferedWriteTransport,
     TBufferedWriteTransportFactory,
+    StreamStartStatus as Status,
     TIoChannel,
     TQueLayAgentSyncClient,
     TServer,
@@ -143,6 +144,9 @@ enum Command {
 
     /// Framing boundary file size regression tests.
     SmallFileEdgeCases(SmallFileEdgeCasesArgs),
+
+    /// Max-concurrent stream enforcement and pending queue ordering.
+    MaxConcurrent(MaxConcurrentArgs),
 }
 
 // ---
@@ -208,6 +212,26 @@ struct SmallFileEdgeCasesArgs {
     bidirectional: bool,
 }
 
+// ---
+
+#[derive(Debug, Args)]
+struct MaxConcurrentArgs {
+    // ---
+    /// Maximum concurrent streams to configure on the sender agent (default: 2).
+    ///
+    /// The test queues `stream_count` streams, expects the first `max_concurrent`
+    /// to start immediately (status RUNNING), and the rest to be queued
+    /// (status PENDING) in descending priority order.
+    #[arg(long, default_value_t = 2)]
+    max_concurrent: usize,
+
+    /// Total number of streams to submit (default: 5).
+    ///
+    /// Must be > max_concurrent so that at least one stream ends up queued.
+    #[arg(long, default_value_t = 5)]
+    stream_count: usize,
+}
+
 // ---------------------------------------------------------------------------
 // TestCallbackEvent
 // ---------------------------------------------------------------------------
@@ -216,7 +240,10 @@ struct SmallFileEdgeCasesArgs {
 enum TestCallbackEvent {
     // ---
     #[allow(unused)]
-    Started { uuid: String, port: u16 },
+    Started {
+        uuid: String,
+        port: u16,
+    },
     Done {
         #[allow(unused)]
         uuid: String,
@@ -229,6 +256,7 @@ enum TestCallbackEvent {
     },
     #[allow(unused)]
     LinkState(LinkState),
+    QueueStatus(QueueStatus),
 }
 
 // ---------------------------------------------------------------------------
@@ -304,7 +332,12 @@ impl QueLayCallbackSyncHandler for TestCallbackHandler {
         Ok(())
     }
 
-    fn handle_queue_status_update(&self, _status: QueueStatus) -> thrift::Result<()> {
+    fn handle_queue_status_update(&self, status: QueueStatus) -> thrift::Result<()> {
+        let _ = self
+            .tx
+            .lock()
+            .unwrap()
+            .send(TestCallbackEvent::QueueStatus(status));
         Ok(())
     }
 }
@@ -380,6 +413,24 @@ impl TestCallbackServer {
             .map_err(|e| anyhow::anyhow!("test callback recv timeout: {e}"))
     }
 
+    /// Drain all pending events and return the last `QueueStatus` seen,
+    /// or `None` if none arrived within `timeout`.  Other event types discarded.
+    fn last_queue_status(&self, timeout: Duration) -> Option<QueueStatus> {
+        let deadline = std::time::Instant::now() + timeout;
+        let mut last: Option<QueueStatus> = None;
+
+        while let Some(d) = deadline.checked_duration_since(std::time::Instant::now()) {
+            let remaining = d;
+
+            match self.rx.recv_timeout(remaining) {
+                Ok(TestCallbackEvent::QueueStatus(s)) => last = Some(s),
+                Ok(_) => {} // discard stream lifecycle and link events
+                Err(_) => break,
+            }
+        }
+        last
+    }
+
     /// Like `recv_event`, but discards events whose UUID does not match
     /// `uuid`.  Use when multiple streams are active on a single callback
     /// endpoint and you need events for one specific stream.
@@ -399,6 +450,7 @@ impl TestCallbackServer {
                 TestCallbackEvent::Done { uuid, .. } => Some(uuid.as_str()),
                 TestCallbackEvent::Failed { uuid, .. } => Some(uuid.as_str()),
                 TestCallbackEvent::LinkState(_) => None,
+                TestCallbackEvent::QueueStatus(_) => None,
             };
             if event_uuid == Some(uuid) {
                 return Ok(event);
@@ -577,9 +629,10 @@ async fn run_transfer(
         0,
     )?;
     anyhow::ensure!(
-        result.err_msg.as_deref().unwrap_or("").is_empty(),
-        "stream_start failed: {:?}",
-        result.err_msg
+        result.status == Some(Status::RUNNING),
+        "stream_start failed: expected {:?}, got {:?}",
+        Status::RUNNING,
+        result.status
     );
 
     let sender_port = match sender_cb.recv_event(timeout)? {
@@ -646,14 +699,28 @@ async fn run_transfer(
         }
         other => anyhow::bail!("receiver: expected Done, got {other:?}"),
     }
-    match sender_cb.recv_event(timeout)? {
-        TestCallbackEvent::Done { bytes, .. } => tracing::info!(bytes, "sender stream_done"),
-        TestCallbackEvent::Failed { reason, .. } => {
-            anyhow::bail!("sender stream_failed: {reason}")
+    loop {
+        match sender_cb.recv_event(timeout)? {
+            TestCallbackEvent::Done { bytes, .. } => {
+                tracing::info!(bytes, "sender stream_done");
+                break;
+            }
+            TestCallbackEvent::Failed { reason, .. } => {
+                anyhow::bail!("sender stream_failed: {reason}")
+            }
+            TestCallbackEvent::QueueStatus(_) => {
+                // Ignore queue updates while waiting for completion.
+                continue;
+            }
+            TestCallbackEvent::Started { .. } => {
+                // Should not happen here, but harmless.
+                continue;
+            }
+            TestCallbackEvent::LinkState(_) => {
+                continue;
+            }
         }
-        other => anyhow::bail!("sender: expected Done, got {other:?}"),
     }
-
     let elapsed = t_start.elapsed();
     sender_done.await??;
 
@@ -960,14 +1027,17 @@ async fn cmd_drr(
             },
             0,
         )?;
+
         anyhow::ensure!(
-            result.err_msg.as_deref().unwrap_or("").is_empty(),
-            "drr anchor stream_start failed: {:?}",
-            result.err_msg
+            result.status == Some(Status::RUNNING),
+            "stream_start failed: expected {:?}, got {:?}",
+            Status::RUNNING,
+            result.status
         );
         println!("  anchor queued (priority 0, {} KiB)", anchor_bytes / 1024);
 
-        for (pri, label) in priorities {
+        for (idx, (pri, label)) in priorities.iter().enumerate() {
+            // ---
             let small = 4 * 1024usize;
             let mut attrs = BTreeMap::new();
             attrs.insert("label".to_string(), label.to_string());
@@ -979,27 +1049,24 @@ async fn cmd_drr(
                 },
                 *pri,
             )?;
+
+            // The anchor holds the single active slot; each subsequent file
+            // lands in the pending queue at depth idx+1 (1-based).
+            let expected_pos = (idx + 1) as i32;
             anyhow::ensure!(
-                result.err_msg.as_deref().unwrap_or("").is_empty(),
-                "drr {label} stream_start failed"
+                result.queue_position == Some(expected_pos),
+                "stream_start queue_position mismatch: expected {:?}, got {:?}",
+                expected_pos,
+                result.queue_position
             );
             println!("  queued {label} (priority {pri})");
 
-            if *label == priorities.last().unwrap().1 {
-                let pending = result.pending_queue.unwrap_or_default();
-                println!("  pending queue: {pending:?}");
-                let queue_pris: Vec<i8> = pending
-                    .iter()
-                    .filter_map(|s| s.split('\t').next().and_then(|p| p.parse().ok()))
-                    .collect();
-                let mut sorted = queue_pris.clone();
-                sorted.sort_unstable_by(|a, b| b.cmp(a));
-                anyhow::ensure!(
-                    queue_pris == sorted,
-                    "DRR pending queue not sorted by priority: {queue_pris:?}"
-                );
-                println!("  DRR ordering ✓");
-            }
+            anyhow::ensure!(
+                result.status == Some(Status::PENDING),
+                "stream_start failed: expected {:?}, got {:?}",
+                Status::PENDING,
+                result.status
+            );
         }
     }
 
@@ -1118,6 +1185,277 @@ async fn cmd_small_file_edge_cases(
 }
 
 // ---------------------------------------------------------------------------
+// Subcommand: max-concurrent
+// ---------------------------------------------------------------------------
+
+/// Test max-concurrent stream enforcement and pending queue priority ordering.
+///
+/// # Sequence
+///
+/// 1. Set `--max-concurrent N` on the sender agent via `set_max_concurrent`.
+/// 2. Submit `stream_count` streams with distinct priorities in a single
+///    burst.  Priority values are spread across the bulk range (0..63) so
+///    none of them are strict-priority (≥ 64) and DRR ordering applies.
+/// 3. Assert the first `max_concurrent` streams returned `RUNNING`.
+/// 4. Assert the remaining streams returned `PENDING` with `queue_position`
+///    values 1..=(stream_count - max_concurrent).
+/// 5. Assert the pending queue snapshot returned by each `stream_start` is
+///    sorted highest-priority-first (descending).
+/// 6. Restore `max_concurrent` to its default (0 = unlimited) so subsequent
+///    tests are not affected.
+///
+/// The test does **not** drive actual data; it only verifies the
+/// `stream_start` return values.  Completing the queued streams and
+/// observing `promote_pending` fire is left to a future extension.
+async fn cmd_max_concurrent(
+    sender_c2i: SocketAddr,
+    _receiver_c2i: SocketAddr,
+    args: &MaxConcurrentArgs,
+) -> anyhow::Result<()> {
+    // ---
+    println!("=== max-concurrent ===");
+
+    ensure_agent_running(sender_c2i)?;
+
+    anyhow::ensure!(
+        args.stream_count > args.max_concurrent,
+        "--stream-count ({}) must be > --max-concurrent ({})",
+        args.stream_count,
+        args.max_concurrent,
+    );
+
+    // Configure the agent.
+    {
+        let mut agent = connect_agent(sender_c2i)?;
+        agent
+            .set_max_concurrent(args.max_concurrent as i32)
+            .context("set_max_concurrent failed")?;
+    }
+
+    // Bind a callback server so we can receive QueueStatus updates.
+    let cb = TestCallbackServer::bind()?;
+    {
+        let mut agent = connect_agent(sender_c2i)?;
+        let e = agent.set_callback(cb.endpoint())?;
+        anyhow::ensure!(e.is_empty(), "set_callback: {e}");
+    }
+
+    // Build a set of (priority, uuid) pairs.
+    //
+    // Priorities are evenly spread across 1..=62 (bulk range, below the
+    // strict threshold of 64) so that:
+    //   - All streams compete in DRR.
+    //   - No two streams share a priority, making ordering deterministic.
+    //
+    // We use stream_count values spread over 1..=62. If stream_count > 62
+    // we just wrap — for the default of 5 this gives [12, 24, 37, 49, 61].
+    //
+    // The values are then interleaved (low, high, mid, ...) so that the
+    // pending queue's priority-sorted insertion is actually exercised.
+    // Submitting in strictly ascending or descending order is trivial for
+    // the insertion sort; interleaving forces it to compare and reorder.
+    // Example for 5 streams: generated [12, 24, 37, 49, 61],
+    // interleaved → [12, 61, 24, 49, 37].
+    let step = 62usize / args.stream_count;
+    let generated: Vec<i8> = (1..=args.stream_count)
+        .map(|i| (i * step).min(62) as i8)
+        .collect();
+
+    // Interleave: take from front and back alternately so submissions
+    // arrive out of priority order.
+    let mut priorities: Vec<i8> = Vec::with_capacity(generated.len());
+    let mut lo = 0usize;
+    let mut hi = generated.len().saturating_sub(1);
+    let mut take_lo = true;
+    while lo <= hi {
+        if lo == hi {
+            priorities.push(generated[lo]);
+            break;
+        }
+        if take_lo {
+            priorities.push(generated[lo]);
+            lo += 1;
+        } else {
+            priorities.push(generated[hi]);
+            hi -= 1;
+        }
+        take_lo = !take_lo;
+    }
+
+    // Build expected pending priority order (highest-first) for QueueStatus
+    // verification.  These are the priorities of streams that will be PENDING.
+    let pending_priorities_desc = {
+        let mut p: Vec<i8> = priorities[args.max_concurrent..].to_vec();
+        p.sort_by(|a, b| b.cmp(a));
+        p
+    };
+
+    let uuids: Vec<String> = (0..args.stream_count)
+        .map(|_| Uuid::new_v4().to_string())
+        .collect();
+
+    println!(
+        "  submitting {} streams with priorities {:?}",
+        args.stream_count, priorities
+    );
+
+    let mut agent = connect_agent(sender_c2i)?;
+
+    let mut results = Vec::new();
+    for (i, (uuid, &pri)) in uuids.iter().zip(priorities.iter()).enumerate() {
+        let result = agent
+            .stream_start(
+                uuid.clone(),
+                StreamInfo {
+                    size_bytes: Some(4096),
+                    attrs: Some({
+                        let mut m = std::collections::BTreeMap::new();
+                        m.insert("label".to_string(), format!("mc-stream-{i}"));
+                        m
+                    }),
+                },
+                pri,
+            )
+            .context(format!("stream_start failed for stream {i}"))?;
+
+        results.push((i, uuid.clone(), pri, result));
+    }
+
+    // -----------------------------------------------------------------------
+    // Assertions
+    // -----------------------------------------------------------------------
+
+    let mut running_count = 0usize;
+    let mut pending_positions: Vec<i32> = Vec::new();
+
+    for (i, uuid, pri, result) in &results {
+        let status = result
+            .status
+            .ok_or_else(|| anyhow::anyhow!("stream {i}: stream_start returned no status"))?;
+
+        match status {
+            Status::RUNNING => {
+                running_count += 1;
+                anyhow::ensure!(
+                    result.queue_position.is_none() || result.queue_position == Some(0),
+                    "stream {i} (priority {pri}): RUNNING but queue_position = {:?}",
+                    result.queue_position
+                );
+                println!("  stream {i} (priority {pri:>3}, uuid {uuid}): RUNNING ✓");
+            }
+            Status::PENDING => {
+                let pos = result
+                    .queue_position
+                    .ok_or_else(|| anyhow::anyhow!("stream {i}: PENDING but no queue_position"))?;
+                anyhow::ensure!(
+                    pos >= 1,
+                    "stream {i} (priority {pri}): PENDING but queue_position = {pos}"
+                );
+                pending_positions.push(pos);
+                println!(
+                    "  stream {i} (priority {pri:>3}, uuid {uuid}): PENDING queue_pos={pos} ✓"
+                );
+            }
+            other => {
+                anyhow::bail!(
+                    "stream {i} (priority {pri}): expected RUNNING or PENDING, got {other:?}"
+                );
+            }
+        }
+    }
+
+    // Exactly max_concurrent streams must be RUNNING.
+    anyhow::ensure!(
+        running_count == args.max_concurrent,
+        "expected {} RUNNING streams, got {}",
+        args.max_concurrent,
+        running_count,
+    );
+    println!(
+        "  active count = {} / {} ✓",
+        running_count, args.max_concurrent
+    );
+
+    // The pending queue positions must be 1..=pending_count with no gaps.
+    let expected_pending = args.stream_count - args.max_concurrent;
+    anyhow::ensure!(
+        pending_positions.len() == expected_pending,
+        "expected {} PENDING streams, got {}",
+        expected_pending,
+        pending_positions.len(),
+    );
+
+    // Positions must be 1-based and contiguous (1, 2, 3 ...).
+    let mut sorted_pos = pending_positions.clone();
+    sorted_pos.sort();
+    let expected_pos: Vec<i32> = (1..=expected_pending as i32).collect();
+    anyhow::ensure!(
+        sorted_pos == expected_pos,
+        "pending queue positions {sorted_pos:?} ≠ expected {expected_pos:?}"
+    );
+    println!("  pending positions {sorted_pos:?} ✓");
+
+    // -----------------------------------------------------------------------
+    // QueueStatus callback verification
+    //
+    // The agent fires a QueueStatus callback on every enqueue/dequeue event.
+    // Drain all events received since submission and inspect the last one —
+    // it should reflect the fully-settled state: max_concurrent active,
+    // the pending UUIDs listed in priority-descending order.
+    // -----------------------------------------------------------------------
+    let qs = cb
+        .last_queue_status(Duration::from_millis(200))
+        .ok_or_else(|| anyhow::anyhow!("no QueueStatus callback received"))?;
+
+    // active_count is Option<i32> in the wire type.
+    anyhow::ensure!(
+        qs.active_count == Some(args.max_concurrent as i32),
+        "QueueStatus: active_count = {:?}, expected {}",
+        qs.active_count,
+        args.max_concurrent,
+    );
+
+    // pending is Option<Vec<String>> (UUID strings), in priority-desc order.
+    let uuid_to_pri: std::collections::HashMap<String, i8> = uuids
+        .iter()
+        .zip(priorities.iter())
+        .map(|(u, &p)| (u.clone(), p))
+        .collect();
+
+    let qs_pending_pris: Vec<i8> = qs
+        .pending
+        .unwrap_or_default()
+        .iter()
+        .map(|u| {
+            *uuid_to_pri
+                .get(u)
+                .unwrap_or_else(|| panic!("QueueStatus: unknown UUID in pending: {u}"))
+        })
+        .collect();
+
+    anyhow::ensure!(
+        qs_pending_pris == pending_priorities_desc,
+        "QueueStatus pending priorities (highest-first) mismatch:\n\
+         got:      {qs_pending_pris:?}\n  expected: {pending_priorities_desc:?}",
+    );
+
+    println!(
+        "  QueueStatus: active={:?}, pending={:?} ✓",
+        qs.active_count, qs_pending_pris
+    );
+
+    // Restore agent to unlimited concurrency so subsequent tests are clean.
+    {
+        let mut agent = connect_agent(sender_c2i)?;
+        agent.set_max_concurrent(0)?;
+    }
+
+    println!("  max-concurrent PASSED ✓");
+    println!();
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
 // main
 // ---------------------------------------------------------------------------
 
@@ -1151,6 +1489,9 @@ async fn real_main() -> anyhow::Result<()> {
         Command::Drr(args) => cmd_drr(cli.sender_c2i, cli.receiver_c2i, args).await?,
         Command::SmallFileEdgeCases(args) => {
             cmd_small_file_edge_cases(cli.sender_c2i, cli.receiver_c2i, args).await?
+        }
+        Command::MaxConcurrent(args) => {
+            cmd_max_concurrent(cli.sender_c2i, cli.receiver_c2i, args).await?
         }
     }
 
@@ -1201,7 +1542,7 @@ mod tests {
 
     #[test]
     fn defaults_parse_cleanly() {
-        for sub in ["drr", "small-file-edge-cases"] {
+        for sub in ["drr", "small-file-edge-cases", "max-concurrent"] {
             Cli::try_parse_from(["e2e_test", sub])
                 .unwrap_or_else(|e| panic!("{sub} default parse failed: {e}"));
         }

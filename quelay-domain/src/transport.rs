@@ -6,8 +6,8 @@ use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::sync::watch;
 use uuid::Uuid;
 
-use super::error::Result;
-use super::priority::Priority;
+use super::Priority;
+use super::Result;
 
 // ---------------------------------------------------------------------------
 // LinkState
