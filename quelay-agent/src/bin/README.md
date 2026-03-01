@@ -173,8 +173,8 @@ Sequence:
 
 `callback.rs` provides a Thrift callback server used by all subcommands.
 
-| Method | Description |
-|:-------|:------------|
+| Method   | Description |
+|:---------|:------------|
 | `bind()` | Binds on an ephemeral port; spawns the Thrift server thread |
 | `recv_event(timeout)` | Block until the next event |
 | `recv_event_for(uuid, timeout)` | Block until an event matching `uuid` arrives; discards others |
@@ -206,7 +206,7 @@ error for very small or very short transfers.
 quelay-agent/src/bin/bw_cap_test/
 ├── mod.rs      CLI, main, stream orchestration
 ├── callback.rs CallbackActor — Thrift callback handler for sender/receiver roles
-├── cic.rs      CIC (Concurrent Integration Controller) — event dispatch, BW assertion
+├── cic.rs      Combat Information Center — event dispatch, BW assertion
 └── tuner.rs    TunerCmd/TunerOutcome — per-stream sender and receiver tasks
 ```
 
@@ -257,10 +257,11 @@ consistently within ±2 % of the cap.  The ±10 % tolerance exists to
 accommodate the start-up and tear-down transients that dominate measurement
 error for very small or very short transfers.
 
-The per-stream results table reports receiver elapsed as 13.16 s against a
-5 s transmit window because the receiver measures from stream open to final
-byte received — it includes the time the sender tuner spent writing data
-before the duration timer fired and the tail of the transfer drained.
+Each sender writes for 5 s at full speed into the spool, then stops. The three
+streams share the 10 Mbit/s cap, so each stream's ~5.5 MiB drains at roughly 1/3 of
+1250 KB/s ≈ 417 KB/s. Three streams × 5.5 MiB ÷ 1250 KB/s ≈ 13.2 s total drain time,
+which matches the observed 13.16 s. The aggregate check — 16.6 MiB ÷ 13.16 s = 1251
+KB/s — is what the ±10 % assertion measures against the 1250 KB/s cap.
 
 ---
 
@@ -314,4 +315,4 @@ stop_agents
 | `run-end-to-end-test priority`  | `e2e-test drr`                                 |
 | `run-link-down-test`            | `e2e-test multi-file --link-outage`            |
 | Rate limiter accuracy           | `bw-cap-test`                                  |
-| `run-air-restart-test`          | Not ported (QUIC reconnect covered by `--link-outage`) |
+| `run-air-restart-test`          | Not applicable — legacy test relies on the file itself as backing store for full replay from byte 0. Quelay operates on streams; replay is bounded by the spool buffer. |
