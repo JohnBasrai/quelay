@@ -1,7 +1,3 @@
-/*
- * Copyright (c) 2026 John Basrai
- * SPDX-License-Identifier: MIT OR Apache-2.0
- */
 // -*- mode: thrift -*-
 // Thrift IDL reference:
 // https://diwakergupta.github.io/thrift-missing-guide/

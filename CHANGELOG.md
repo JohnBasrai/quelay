@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+- `scripts/link-sim-test.sh`: satellite link impairment integration test
+  using Linux `tc netem` on a `veth` pair. Supports `loss`, `delay`, and
+  `both` profiles. Results documented in `quelay-agent/README.md`.
+
 ## [0.1.3] - 2026-02-28
 
 ### Changed
