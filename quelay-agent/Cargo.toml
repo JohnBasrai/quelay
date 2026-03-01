@@ -14,7 +14,7 @@ path = "src/main.rs"
 
 [[bin]]
 name = "e2e-test"
-path = "src/bin/e2e_test.rs"
+path = "src/bin/e2e-test/main.rs"
 
 [[bin]]
 name = "bw-cap-test"
