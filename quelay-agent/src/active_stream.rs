@@ -74,6 +74,8 @@ use quelay_thrift::FailReason;
 
 // ---
 
+#[cfg(feature = "test-hooks")]
+use super::RateCmd;
 use super::{
     // ---
     read_chunk,
@@ -84,7 +86,6 @@ use super::{
     CallbackCmd,
     CallbackTx,
     Chunk,
-    RateCmd,
     RateLimiter,
     WormholeMsg,
     ACK_INTERVAL,
@@ -278,6 +279,7 @@ pub struct UplinkHandle {
     ///
     /// Call `notify_link_down()` when `link_enable(false)` fires so the
     /// [`StreamPump`] rewinds `Q = A` and waits for a fresh write half.
+    #[cfg(feature = "test-hooks")]
     link_down_tx: Option<mpsc::Sender<RateCmd>>,
 }
 
@@ -295,6 +297,7 @@ impl UplinkHandle {
     ///
     /// The timer task rewinds `Q = A` and waits for a fresh write half.
     /// No-op when uncapped.
+    #[cfg(feature = "test-hooks")]
     pub fn notify_link_down(&self) {
         if let Some(tx) = &self.link_down_tx {
             let _ = tx.try_send(RateCmd::LinkDown);
@@ -404,6 +407,7 @@ impl ActiveStream {
             Arc::clone(&spool),
             Arc::clone(&q_atomic),
         );
+        #[cfg(feature = "test-hooks")]
         let link_down_tx = rate_limiter.link_down_tx_clone();
 
         let handle = UplinkHandle {
@@ -412,6 +416,7 @@ impl ActiveStream {
             spool: Arc::clone(&spool),
             info: info.clone(),
             priority,
+            #[cfg(feature = "test-hooks")]
             link_down_tx,
         };
 

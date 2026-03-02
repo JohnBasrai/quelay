@@ -11,6 +11,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - `scripts/link-sim-test.sh`: satellite link impairment integration test
   using Linux `tc netem` on a `veth` pair. Supports `loss`, `delay`, and
   `both` profiles. Results documented in `quelay-agent/README.md`.
+- `test-hooks` Cargo feature gate: `link_enable`, `set_max_concurrent`, and
+  `set_chunk_size_bytes` RPC handlers and their supporting code
+  (`SessionCommand::LinkEnable`, `SessionCommand::SetMaxConcurrent`,
+  `UplinkHandle::notify_link_down`, `link_down_tx`) are now compiled out
+  unless `--features test-hooks` is passed. Production builds are clean by
+  default.
+
+### Changed
+- `scripts/ci-integration-test.sh`: passes `--features test-hooks` when
+  building `quelay-agent` and `e2e-test` so the integration test hooks
+  remain active in CI.
+- Routed `LinkEnable` through `SessionCommand` channel, removing
+  `SessionManagerHandle` which existed solely to call `link_enable()`
+  directly on `Arc<SessionManager>`.
+
+---
 
 ## [0.1.3] - 2026-02-28
 
@@ -24,6 +40,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Added
 - Added full integration test for max-concurrent agent option
+
+---
 
 ## [0.1.2] - 2026-02-26
 
