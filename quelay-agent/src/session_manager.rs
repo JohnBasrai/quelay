@@ -82,6 +82,7 @@ pub(crate) enum SessionCommand {
     /// Update the maximum number of concurrent active uplinks at runtime.
     /// `None` means unlimited (0 from the C2I layer maps to this).
     SetMaxConcurrent(Option<usize>),
+    LinkEnable(bool),
 }
 
 pub(crate) type SessionCommandQueue = mpsc::Sender<SessionCommand>;
@@ -551,6 +552,7 @@ impl SessionManager {
                     remote.send_queue_status(&self.cb_tx).await;
                 }
             }
+            SessionCommand::LinkEnable(enable) => self.link_enable(enable).await,
         }
     }
 
@@ -1016,40 +1018,5 @@ impl SessionManager {
             }
             alive
         });
-    }
-}
-
-// ---------------------------------------------------------------------------
-// SessionManagerHandle
-// ---------------------------------------------------------------------------
-
-/// Cheap clone handle used by `Agent` to submit commands without holding a
-/// lock across await points.
-#[derive(Clone)]
-pub(crate) struct SessionManagerHandle {
-    // ---
-    inner: Arc<SessionManager>,
-}
-
-// ---
-
-impl SessionManagerHandle {
-    // ---
-
-    /// Wrap an `Arc<SessionManager>` for use by `Agent`.
-    pub(crate) fn new(sm: Arc<SessionManager>) -> Self {
-        Self { inner: sm }
-    }
-
-    // ---
-
-    // -----------------------------------------------------------------------
-    // Test / debug — disabled in production builds
-    // -----------------------------------------------------------------------
-
-    /// Simulate a link failure (`enabled = false`) or allow reconnect
-    /// (`enabled = true`).
-    pub(crate) async fn link_enable(&self, enabled: bool) {
-        self.inner.link_enable(enabled).await;
     }
 }

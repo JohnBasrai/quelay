@@ -109,7 +109,6 @@ pub use framing::{
     CHUNK_HEADER_LEN,
     CHUNK_SIZE,
 };
-pub(crate) use session_manager::SessionManagerHandle;
 pub(crate) use thrift_srv::AgentCmd;
 
 // ---------------------------------------------------------------------------
@@ -225,11 +224,9 @@ async fn main() -> anyhow::Result<()> {
     );
     let sm = Arc::new(sm);
 
-    let sm_handle = SessionManagerHandle::new(sm.clone());
-
     tokio::spawn(sm.run(sm_cmd_rx));
 
-    let agent = Agent::new(cmd_rx, sm_cmd_tx, sm_handle);
+    let agent = Agent::new(cmd_rx, sm_cmd_tx);
     tokio::spawn(agent.run());
 
     let rt = tokio::runtime::Handle::current();

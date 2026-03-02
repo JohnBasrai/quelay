@@ -9,7 +9,7 @@ use tokio::sync::mpsc;
 
 // ---
 
-use super::{AgentCmd, SessionCommand, SessionCommandQueue, SessionManagerHandle};
+use super::{AgentCmd, SessionCommand, SessionCommandQueue};
 
 // ---------------------------------------------------------------------------
 // Agent
@@ -18,7 +18,6 @@ use super::{AgentCmd, SessionCommand, SessionCommandQueue, SessionManagerHandle}
 pub struct Agent {
     // ---
     cmd_rx: mpsc::Receiver<AgentCmd>,
-    sm: SessionManagerHandle,
     sm_cmd_tx: SessionCommandQueue,
 }
 
@@ -26,16 +25,8 @@ pub struct Agent {
 
 impl Agent {
     // ---
-    pub fn new(
-        cmd_rx: mpsc::Receiver<AgentCmd>,
-        sm_cmd_tx: SessionCommandQueue,
-        sm: SessionManagerHandle,
-    ) -> Self {
-        Self {
-            cmd_rx,
-            sm_cmd_tx,
-            sm,
-        }
+    pub fn new(cmd_rx: mpsc::Receiver<AgentCmd>, sm_cmd_tx: SessionCommandQueue) -> Self {
+        Self { cmd_rx, sm_cmd_tx }
     }
 
     // ---
@@ -65,7 +56,11 @@ impl Agent {
                 }
 
                 AgentCmd::LinkEnable(enabled) => {
-                    self.sm.link_enable(enabled).await;
+                    // Forward LE to SessionManagerHandle
+                    let _ = self
+                        .sm_cmd_tx
+                        .send(SessionCommand::LinkEnable(enabled))
+                        .await;
                 }
 
                 // RuntimeConfig is updated in-place by AgentHandler before

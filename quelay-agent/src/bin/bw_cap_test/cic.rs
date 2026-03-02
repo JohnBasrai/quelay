@@ -1,6 +1,6 @@
 //! Cambat Information Center (CIC) — message types and dispatch loop.
 //!
-//! CIC is the center nerve center of `bw-cap-test`.  It owns:
+//! CIC is the central nerve center of `bw-cap-test`.  It owns:
 //! - Both agent C2I handles (sender + receiver)
 //! - The master dispatch map `HashMap<(uuid, Role), mpsc::Sender<TunerCmd>>`
 //! - The `Vec<TunerPair>` for coordinated shutdown
