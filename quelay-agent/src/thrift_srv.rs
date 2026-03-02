@@ -41,7 +41,38 @@ use super::{
 // ---
 
 use super::{CallbackCmd, CallbackTx};
+#[cfg(feature = "test-hooks")]
 use crate::config::{DEFAULT_CHUNK_SIZE_BYTES, DEFAULT_MAX_CONCURRENT};
+
+// ---------------------------------------------------------------------------
+// test_hook! macro
+// ---------------------------------------------------------------------------
+
+/// Gate a test/debug RPC handler body behind the `test-hooks` feature.
+///
+/// Usage:
+/// ```ignore
+/// fn handle_foo(&self, ...) -> thrift::Result<()> {
+///     test_hook!({
+///         // body only compiled and executed when test-hooks is enabled
+///         self.send_cmd(AgentCmd::Foo)
+///     })
+/// }
+/// ```
+///
+/// When `test-hooks` is disabled the macro expands to `Ok(())` and the
+/// body is excluded entirely from the production binary.
+macro_rules! test_hook {
+    ($expr:expr) => {{
+        #[cfg(feature = "test-hooks")]
+        return $expr;
+        #[cfg(not(feature = "test-hooks"))]
+        {
+            tracing::warn!("test-hooks feature is disabled; call ignored");
+            Ok(())
+        }
+    }};
+}
 
 // ---------------------------------------------------------------------------
 // RuntimeConfig
@@ -146,10 +177,12 @@ pub enum AgentCmd {
 
     /// Test/debug only — enable or disable the QUIC link.
     /// Must not be exposed in production builds.
+    #[cfg(feature = "test-hooks")]
     LinkEnable(bool),
 
     /// Test/debug only — update the max-concurrent limit in the scheduler.
     /// Must not be exposed in production builds.
+    #[cfg(feature = "test-hooks")]
     SetMaxConcurrent(usize),
 }
 
@@ -338,55 +371,58 @@ impl QueLayAgentSyncHandler for AgentHandler {
     // Test / debug handlers — disabled in production builds
     // -----------------------------------------------------------------------
 
-    fn handle_link_enable(&self, enabled: bool) -> thrift::Result<()> {
+    fn handle_link_enable(&self, _enabled: bool) -> thrift::Result<()> {
         // ---
-
-        tracing::info!(enabled, "link_enable (test/debug)");
-        self.send_cmd(AgentCmd::LinkEnable(enabled))
+        test_hook!({
+            tracing::info!(enabled = _enabled, "link_enable (test/debug)");
+            self.send_cmd(AgentCmd::LinkEnable(_enabled))
+        })
     }
 
     // ---
 
-    fn handle_set_max_concurrent(&self, n: i32) -> thrift::Result<()> {
+    fn handle_set_max_concurrent(&self, _n: i32) -> thrift::Result<()> {
         // ---
+        test_hook!({
+            let n = _n as usize;
+            tracing::warn!(n, "set_max_concurrent (test/debug)");
 
-        let n = n as usize;
-        tracing::warn!(n, "set_max_concurrent (test/debug)");
+            {
+                let mut cfg = self.lock_runtime_cfg()?;
+                cfg.max_concurrent = if n == 0 { DEFAULT_MAX_CONCURRENT } else { n };
+            }
 
-        {
-            let mut cfg = self.lock_runtime_cfg()?;
-            cfg.max_concurrent = if n == 0 { DEFAULT_MAX_CONCURRENT } else { n };
-        }
-
-        self.send_cmd(AgentCmd::SetMaxConcurrent(n))
+            self.send_cmd(AgentCmd::SetMaxConcurrent(n))
+        })
     }
 
     // ---
 
-    fn handle_set_chunk_size_bytes(&self, n: i32) -> thrift::Result<()> {
+    fn handle_set_chunk_size_bytes(&self, _n: i32) -> thrift::Result<()> {
         // ---
+        test_hook!({
+            let requested = _n as usize;
+            tracing::debug!(requested, "set_chunk_size_bytes (test/debug)");
 
-        let requested = n as usize;
-        tracing::debug!(requested, "set_chunk_size_bytes (test/debug)");
+            let effective = if requested == 0 {
+                DEFAULT_CHUNK_SIZE_BYTES
+            } else {
+                requested
+            };
 
-        let effective = if requested == 0 {
-            DEFAULT_CHUNK_SIZE_BYTES
-        } else {
-            requested
-        };
+            if effective > 65_535 {
+                return Err(thrift::Error::Application(thrift::ApplicationError::new(
+                    thrift::ApplicationErrorKind::InvalidTransform,
+                    format!("chunk_size_bytes {effective} exceeds u16 max (65535)"),
+                )));
+            }
 
-        if effective > 65_535 {
-            return Err(thrift::Error::Application(thrift::ApplicationError::new(
-                thrift::ApplicationErrorKind::InvalidTransform,
-                format!("chunk_size_bytes {effective} exceeds u16 max (65535)"),
-            )));
-        }
+            {
+                let mut cfg = self.lock_runtime_cfg()?;
+                cfg.chunk_size_bytes = effective;
+            }
 
-        {
-            let mut cfg = self.lock_runtime_cfg()?;
-            cfg.chunk_size_bytes = effective;
-        }
-
-        Ok(())
+            Ok(())
+        })
     }
 }

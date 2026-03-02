@@ -765,6 +765,7 @@ impl RateLimiter {
 
     /// Return a clone of `cmd_tx` so `UplinkHandle` can send `LinkDown`.
     /// Returns `None` in uncapped mode.
+    #[cfg(feature = "test-hooks")]
     pub fn link_down_tx_clone(&self) -> Option<mpsc::Sender<RateCmd>> {
         self.cmd_tx.clone()
     }

@@ -44,7 +44,7 @@ echo "==> Building workspace..."
 cd "$WORKSPACE"
 rm -f "$CERT_SRC" "$CERT_FILE"
 
-cargo build --bin quelay-agent --bin e2e-test
+cargo build --features test-hooks --bin quelay-agent --bin e2e-test
 
 AGENT_BIN="$TARGET_DIR/debug/quelay-agent"
 E2E_BIN="$TARGET_DIR/debug/e2e-test"

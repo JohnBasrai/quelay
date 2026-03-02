@@ -81,7 +81,10 @@ pub(crate) enum SessionCommand {
     },
     /// Update the maximum number of concurrent active uplinks at runtime.
     /// `None` means unlimited (0 from the C2I layer maps to this).
+    #[cfg(feature = "test-hooks")]
     SetMaxConcurrent(Option<usize>),
+
+    #[cfg(feature = "test-hooks")]
     LinkEnable(bool),
 }
 
@@ -536,6 +539,7 @@ impl SessionManager {
                 }
             }
 
+            #[cfg(feature = "test-hooks")]
             SessionCommand::SetMaxConcurrent(new_limit) => {
                 tracing::debug!(?new_limit, "set_max_concurrent: updating session manager");
                 let mut guard = self.remote.lock().await;
@@ -552,6 +556,7 @@ impl SessionManager {
                     remote.send_queue_status(&self.cb_tx).await;
                 }
             }
+            #[cfg(feature = "test-hooks")]
             SessionCommand::LinkEnable(enable) => self.link_enable(enable).await,
         }
     }
@@ -781,6 +786,7 @@ impl SessionManager {
     ///
     /// When `true`: no-op — `restore_active` calls `link_up` after the
     /// reconnect loop delivers fresh streams.
+    #[cfg(feature = "test-hooks")]
     async fn link_enable(&self, enabled: bool) {
         // ---
         tracing::info!(enabled, "link_enable");

@@ -55,8 +55,9 @@ impl Agent {
                         .await;
                 }
 
+                #[cfg(feature = "test-hooks")]
                 AgentCmd::LinkEnable(enabled) => {
-                    // Forward LE to SessionManagerHandle
+                    // Forward to SessionManager via command channel
                     let _ = self
                         .sm_cmd_tx
                         .send(SessionCommand::LinkEnable(enabled))
@@ -67,6 +68,7 @@ impl Agent {
                 // this command is sent.  The session manager reads the new
                 // value on the next stream_start; no further action needed
                 // here beyond the log line.
+                #[cfg(feature = "test-hooks")]
                 AgentCmd::SetMaxConcurrent(n) => {
                     tracing::info!(n, "set_max_concurrent (test/debug)");
                     // n == 0 means "restore default / unlimited"; propagate as None.
