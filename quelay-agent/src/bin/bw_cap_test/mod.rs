@@ -46,8 +46,23 @@ mod tuner;
 // ---------------------------------------------------------------------------
 
 pub use callback::{CallbackActor, Role};
-pub use cic::{assert_aggregate_bw, Cic, CicConfig, CicHandle, CicMsg, TunerPair};
-pub use tuner::{spawn_receiver, spawn_sender, TunerCmd, TunerOutcome, TunerResult};
+pub use cic::{
+    // ---
+    assert_aggregate_bw,
+    Cic,
+    CicConfig,
+    CicHandle,
+    CicMsg,
+    TunerPair,
+};
+pub use tuner::{
+    // ---
+    spawn_receiver,
+    spawn_sender,
+    TunerCmd,
+    TunerOutcome,
+    TunerResult,
+};
 use uuid::Uuid;
 
 // ---------------------------------------------------------------------------
@@ -187,19 +202,14 @@ async fn real_main() -> anyhow::Result<()> {
     ensure_agent_running(cli.receiver_c2i)?;
 
     // --- query BW cap from sender agent ---
-    let cap_mbps = query_cap(cli.sender_c2i).context("query_cap failed")?;
-    tracing::info!(
-        "  - BW cap: {}",
-        cap_mbps
-            .map(|c| format!("{c} Mbit/s"))
-            .unwrap_or_else(|| "uncapped".into()),
-    );
+    let cap_bps = query_cap(cli.sender_c2i).context("query_cap failed")?;
+    tracing::info!("  - BW cap: {}", bw_cap_display(cap_bps));
 
     // --- size each payload as if it is the sole stream on the link ---
-    let payload_bytes = cap_mbps
-        .map(|c| {
-            let bps = c as f64 * 1_000_000.0 / 8.0;
-            (bps * cli.duration_secs as f64 * PAYLOAD_HEADROOM) as usize
+    let payload_bytes = cap_bps
+        .map(|cap_bps| {
+            let bytes_ps = cap_bps as f64 / 8.0;
+            (bytes_ps * cli.duration_secs as f64 * PAYLOAD_HEADROOM) as usize
         })
         .unwrap_or(FALLBACK_PAYLOAD_BYTES);
 
@@ -336,7 +346,7 @@ async fn real_main() -> anyhow::Result<()> {
     }
 
     // --- aggregate BW assertion ---
-    match cap_mbps {
+    match cap_bps {
         Some(cap) => assert_aggregate_bw(&results, cap, wall_elapsed, BW_TOLERANCE)?,
         None => tracing::info!("  BW assertion skipped (no cap configured)"),
     }
@@ -408,11 +418,17 @@ fn ensure_agent_running(addr: SocketAddr) -> anyhow::Result<()> {
     }
 }
 
-fn query_cap(addr: SocketAddr) -> anyhow::Result<Option<u32>> {
+fn query_cap(addr: SocketAddr) -> anyhow::Result<Option<u64>> {
     // ---
     let mut agent = connect_agent(addr)?;
-    let v = agent.get_bandwidth_cap_mbps()?;
-    Ok(if v <= 0 { None } else { Some(v as u32) })
+
+    let cap_bps = agent.get_bandwidth_cap_bps()?;
+
+    Ok(if cap_bps <= 0 {
+        None
+    } else {
+        Some(cap_bps as u64)
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -425,6 +441,19 @@ fn generate_payload(n: usize, seed: u64) -> Vec<u8> {
     let mut buf = vec![0u8; n];
     rng.fill_bytes(&mut buf);
     buf
+}
+
+/// Format the bandwidth cap as a human-readable string for logging.
+fn bw_cap_display(bw_cap_bps: Option<u64>) -> String {
+    // ---
+    match bw_cap_bps {
+        None => "uncapped".to_string(),
+        Some(bps) if bps >= 1_000_000_000 => {
+            format!("{:.1} Gbps", bps as f64 / 1_000_000_000.0)
+        }
+        Some(bps) if bps >= 1_000_000 => format!("{:.1} Mbps", bps as f64 / 1_000_000.0),
+        Some(bps) => format!("{:.1} Kbps", bps as f64 / 1_000.0),
+    }
 }
 
 // ---------------------------------------------------------------------------

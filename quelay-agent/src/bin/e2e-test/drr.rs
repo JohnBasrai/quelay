@@ -25,7 +25,7 @@ pub async fn cmd_drr(
 
     ensure_agent_running(sender_c2i)?;
 
-    let cap_mbps = query_cap(sender_c2i).context("query_cap(sender_c2i) failed")?;
+    let cap_bps = query_cap(sender_c2i).context("query_cap(sender_c2i) failed")?;
 
     {
         let mut agent = connect_agent(sender_c2i).context("connect_agent(sender_c2i) failed")?;
@@ -34,8 +34,8 @@ pub async fn cmd_drr(
             .context("set_max_concurrent(1) failed")?;
     }
 
-    let anchor_bytes = cap_mbps
-        .map(|c| c as usize * 1_000_000 / 8 * 3)
+    let anchor_bytes = cap_bps
+        .map(|c| c as usize / 8 * 3)
         .unwrap_or(4 * 1024 * 1024);
 
     let priorities: Vec<(i8, &str)> = vec![(10, "low"), (30, "high"), (20, "med")];
@@ -48,7 +48,7 @@ pub async fn cmd_drr(
 
     let anchor_cb = TestCallbackServer::bind()?;
     let receiver_cb = TestCallbackServer::bind()?;
-    let timeout = transfer_timeout(anchor_bytes, cap_mbps);
+    let timeout = transfer_timeout(anchor_bytes, cap_bps);
 
     {
         let mut sender_agent = connect_agent(sender_c2i)?;

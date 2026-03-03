@@ -52,14 +52,15 @@ pub struct Config {
     #[arg(long, default_value = "127.0.0.1:9090")]
     pub agent_endpoint: SocketAddr,
 
-    /// Uplink bandwidth cap in Mbit/s.
+    /// Uplink bandwidth cap in bits/sec.
     ///
-    /// Applied by the rate limiter on every QUIC write.
-    /// Set to 0 (default) to disable rate limiting entirely.
+    /// `None` means uncapped (no rate limiting).
     ///
-    /// Example: `--bw-cap-mbps 10` caps at 10 Mbit/s (1.25 MB/s).
-    #[arg(long, default_value_t = 0)]
-    pub bw_cap_mbps: u64,
+    /// Set via `--bw-cap-bps` on the command line using a value and unit,
+    /// e.g. `--bw-cap-bps 10Mbps`, `--bw-cap-bps 500Kbps`, `--bw-cap-bps
+    /// 1.5Gbps`.
+    #[arg(long, value_parser = parse_bandwidth)]
+    pub bw_cap_bps: Option<u64>,
 
     /// Chunk payload size in bytes written to the QUIC stream.
     ///
@@ -99,25 +100,46 @@ pub struct Config {
     pub max_pending: usize,
 }
 
+/// Parse a bandwidth string of the form `<value><unit>` into bits/sec.
+///
+/// - Accepted units (case-insensitive): `Kbps`, `Mbps`, `Gbps`.
+/// - The value may be fractional, e.g. `1.5Mbps` or `500Kbps`.
+/// - Whitespace between value and unit is permitted: `10 Mbps`.
+///
+/// Returns an error string if the value or unit is invalid.
+fn parse_bandwidth(s: &str) -> Result<u64, String> {
+    // ---
+
+    let s = s.trim();
+    let (num, unit) = if let Some(pos) = s.find(|c: char| c.is_alphabetic()) {
+        (&s[..pos].trim(), &s[pos..].trim())
+    } else {
+        return Err(format!("missing unit in '{s}' — use Kbps, Mbps, Gbps"));
+    };
+
+    let value: f64 = num.parse().map_err(|_| format!("invalid number '{num}'"))?;
+
+    let multiplier = match unit.to_ascii_lowercase().as_str() {
+        "kbps" => 1_000_u64,
+        "mbps" => 1_000_000_u64,
+        "gbps" => 1_000_000_000_u64,
+        _ => return Err(format!("unknown unit '{unit}' — use Kbps, Mbps, Gbps")),
+    };
+    if value == 0.0 {
+        Err(format!("bandwidth must be greater than zero, got '{s}'"))
+    } else {
+        Ok((value * multiplier as f64) as u64)
+    }
+}
+
 // ---
 
 impl Config {
     // ---
 
-    /// Convert `bw_cap_mbps` to **bits-per-second**, or `None` if uncapped.
-    ///
-    /// The returned value is in bits/s and is passed directly to the rate
-    /// limiter, which divides by 8 internally to derive its byte budget.
-    pub fn bw_cap_bps(&self) -> Option<u64> {
-        if self.bw_cap_mbps == 0 {
-            None
-        } else {
-            Some(self.bw_cap_mbps * 1_000_000)
-        }
-    }
-
     /// Validate config fields that clap cannot express as type constraints.
     pub fn validate(&self) -> anyhow::Result<()> {
+        // ---
         if self.chunk_size_bytes == 0 || self.chunk_size_bytes > 65_535 {
             anyhow::bail!(
                 "--chunk-size-bytes must be 1..=65535, got {}",
@@ -130,34 +152,17 @@ impl Config {
         Ok(())
     }
 
-    /// Maximum concurrent active streams, or `None` if unlimited.
-    pub fn max_concurrent(&self) -> Option<usize> {
+    /// Format the bandwidth cap as a human-readable string for logging.
+    pub fn bw_cap_display(&self) -> String {
         // ---
-        if self.max_concurrent == 0 {
-            None
-        } else {
-            Some(self.max_concurrent)
+        match self.bw_cap_bps {
+            None => "uncapped".to_string(),
+            Some(bps) if bps >= 1_000_000_000 => {
+                format!("{:.1} Gbps", bps as f64 / 1_000_000_000.0)
+            }
+            Some(bps) if bps >= 1_000_000 => format!("{:.1} Mbps", bps as f64 / 1_000_000.0),
+            Some(bps) => format!("{:.1} Kbps", bps as f64 / 1_000.0),
         }
-    }
-
-    /// Maximum depth of the pending queue.
-    pub fn max_pending(&self) -> usize {
-        // ---
-        self.max_pending
-    }
-
-    /// Chunk payload size in bytes.
-    #[allow(dead_code)]
-    pub fn chunk_size_bytes(&self) -> usize {
-        // ---
-        self.chunk_size_bytes
-    }
-
-    /// In-memory spool capacity per uplink stream in bytes.
-    #[allow(dead_code)]
-    pub fn spool_capacity_bytes(&self) -> usize {
-        // ---
-        self.spool_capacity_bytes
     }
 }
 
@@ -192,4 +197,181 @@ pub enum Mode {
         #[arg(long)]
         cert: PathBuf,
     },
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+#[allow(clippy::expect_used)]
+#[allow(clippy::needless_borrow)]
+mod tests {
+    // ---
+    use super::*;
+
+    // ------------------------------------------------------------
+    // Helpers
+    // ------------------------------------------------------------
+
+    fn parse_ok(args: &[&str]) -> Config {
+        Config::try_parse_from(args).expect("expected parse success")
+    }
+
+    fn parse_err(args: &[&str]) {
+        assert!(Config::try_parse_from(args).is_err());
+    }
+
+    // ------------------------------------------------------------
+    // Bandwidth parsing (positive)
+    // ------------------------------------------------------------
+
+    #[test]
+    fn bw_cap_parses_basic_units() {
+        // ---
+        let cfg = parse_ok(&["quelay-agent", "--bw-cap-bps", "10Mbps", "server"]);
+        assert_eq!(cfg.bw_cap_bps, Some(10_000_000));
+
+        let cfg = parse_ok(&["quelay-agent", "--bw-cap-bps", "500Kbps", "server"]);
+        assert_eq!(cfg.bw_cap_bps, Some(500_000));
+
+        let cfg = parse_ok(&["quelay-agent", "--bw-cap-bps", "1.5Gbps", "server"]);
+        assert_eq!(cfg.bw_cap_bps, Some(1_500_000_000));
+    }
+
+    #[test]
+    fn bw_cap_parses_case_and_whitespace() {
+        // ---
+        let cfg = parse_ok(&["quelay-agent", "--bw-cap-bps", "10 mbps", "server"]);
+        assert_eq!(cfg.bw_cap_bps, Some(10_000_000));
+
+        let cfg = parse_ok(&["quelay-agent", "--bw-cap-bps", "10MBPS", "server"]);
+        assert_eq!(cfg.bw_cap_bps, Some(10_000_000));
+    }
+
+    // ------------------------------------------------------------
+    // Bandwidth parsing (negative)
+    // ------------------------------------------------------------
+
+    #[test]
+    fn bw_cap_rejects_missing_unit() {
+        // ---
+        parse_err(&["quelay-agent", "--bw-cap-bps", "10", "server"]);
+    }
+
+    #[test]
+    fn bw_cap_rejects_invalid_number() {
+        // ---
+
+        parse_err(&["quelay-agent", "--bw-cap-bps", "abcMbps", "server"]);
+    }
+
+    #[test]
+    fn bw_cap_rejects_unknown_unit() {
+        // ---
+
+        parse_err(&["quelay-agent", "--bw-cap-bps", "10Foo", "server"]);
+    }
+
+    #[test]
+    fn bw_cap_rejects_zero() {
+        // ---
+
+        parse_err(&["quelay-agent", "--bw-cap-bps", "0Mbps", "server"]);
+    }
+
+    // ------------------------------------------------------------
+    // Validate()
+    // ------------------------------------------------------------
+
+    #[test]
+    fn validate_rejects_invalid_chunk_size() {
+        // ---
+
+        let mut cfg = parse_ok(&["quelay-agent", "server"]);
+        cfg.chunk_size_bytes = 0;
+        assert!(cfg.validate().is_err());
+
+        cfg.chunk_size_bytes = 70_000;
+        assert!(cfg.validate().is_err());
+    }
+
+    #[test]
+    fn validate_rejects_zero_spool_capacity() {
+        // ---
+
+        let mut cfg = parse_ok(&["quelay-agent", "server"]);
+        cfg.spool_capacity_bytes = 0;
+        assert!(cfg.validate().is_err());
+    }
+
+    #[test]
+    fn validate_accepts_valid_config() {
+        // ---
+
+        let cfg = parse_ok(&["quelay-agent", "server"]);
+        assert!(cfg.validate().is_ok());
+    }
+
+    // ------------------------------------------------------------
+    // bw_cap_display()
+    // ------------------------------------------------------------
+
+    #[test]
+    fn bw_cap_display_uncapped() {
+        // ---
+
+        let cfg = parse_ok(&["quelay-agent", "server"]);
+        assert_eq!(cfg.bw_cap_display(), "uncapped");
+    }
+
+    #[test]
+    fn bw_cap_display_thresholds() {
+        // ---
+
+        let mut cfg = parse_ok(&["quelay-agent", "server"]);
+
+        cfg.bw_cap_bps = Some(500_000);
+        assert_eq!(cfg.bw_cap_display(), "500.0 Kbps");
+
+        cfg.bw_cap_bps = Some(1_000_000);
+        assert_eq!(cfg.bw_cap_display(), "1.0 Mbps");
+
+        cfg.bw_cap_bps = Some(1_500_000_000);
+        assert_eq!(cfg.bw_cap_display(), "1.5 Gbps");
+    }
+
+    // ------------------------------------------------------------
+    // Subcommand parsing
+    // ------------------------------------------------------------
+
+    #[test]
+    fn server_mode_parses_defaults() {
+        // ---
+
+        let cfg = parse_ok(&["quelay-agent", "server"]);
+        assert!(matches!(cfg.mode, crate::Mode::Server { .. }));
+    }
+
+    #[test]
+    fn client_mode_requires_peer_and_cert() {
+        // ---
+
+        parse_err(&["quelay-agent", "client", "--peer", "127.0.0.1:5000"]);
+
+        parse_err(&["quelay-agent", "client", "--cert", "server.der"]);
+    }
+
+    #[test]
+    fn client_mode_parses_valid() {
+        // ---
+
+        let cfg = parse_ok(&[
+            "quelay-agent",
+            "client",
+            "--peer",
+            "127.0.0.1:5000",
+            "--cert",
+            "server.der",
+        ]);
+
+        assert!(matches!(cfg.mode, crate::Mode::Client { .. }));
+    }
 }

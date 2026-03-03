@@ -213,7 +213,7 @@ fn print_transfer_report(
     label: &str,
     bytes: usize,
     elapsed: Duration,
-    cap_mbps: Option<u32>,
+    cap_bps: Option<u64>,
     progress_msgs: (usize, usize),
 ) {
     // ---
@@ -227,13 +227,14 @@ fn print_transfer_report(
 
     println!("\n    ============================================================");
     println!("    ---\t{label}");
-    println!("    ---\t   Payload Size  : {:.3} MB", bytes as f32 * 1e-6);
+    println!("    ---\t   Payload Size  : {}", bytes_display(bytes));
     println!("    ---\t   Elapsed time  : {elapsed_s:.3} seconds");
     println!("    ---\t   Actual BW     : {kbps:.1} kBps - {kbits_s:.1} kbps");
 
-    if let Some(cap) = cap_mbps {
-        let cap_kbps = cap as f64 * 1_000.0 / 8.0;
-        let cap_kbits = cap as f64 * 1_000.0;
+    if let Some(cap) = cap_bps {
+        // ---
+        let cap_kbits = cap as f64 / 1_000.0; // bits/sec → kbps
+        let cap_kbps = cap as f64 / 8_000.0; // bits/sec → KB/s
         let utilize = kbps / cap_kbps * 100.0;
         println!("    ---\t   BW Cap        : {cap_kbits:.0} kbps");
         println!("    ---\t   BW Utilization: {utilize:.1}%");
@@ -246,11 +247,11 @@ fn print_transfer_report(
 // Helpers
 // ---------------------------------------------------------------------------
 
-fn transfer_timeout(bytes: usize, cap_mbps: Option<u32>) -> Duration {
+fn transfer_timeout(bytes: usize, cap_bps: Option<u64>) -> Duration {
     // ---
-    let secs = match cap_mbps {
+    let secs = match cap_bps {
         Some(cap) => {
-            let bytes_per_sec = cap as f64 * 1_000_000.0 / 8.0;
+            let bytes_per_sec = cap as f64 / 8.0;
             let expected = bytes as f64 / bytes_per_sec;
             ((expected * TIMEOUT_HEADROOM) as u64).max(TIMEOUT_MIN_SECS)
         }
@@ -261,12 +262,19 @@ fn transfer_timeout(bytes: usize, cap_mbps: Option<u32>) -> Duration {
 
 /// Query the sender agent's BW cap. Returns None if uncapped (0).
 ///
-/// Thrift has no u32; the IDL field is i32. We treat any value <= 0 as uncapped.
-fn query_cap(sender_c2i: SocketAddr) -> anyhow::Result<Option<u32>> {
+/// Thrift has no u64; the IDL field is i64. We treat any value <= 0 as uncapped.
+fn query_cap(sender_c2i: SocketAddr) -> anyhow::Result<Option<u64>> {
     // ---
     let mut agent = connect_agent(sender_c2i).context("connect_agent(sender_c2i) failed")?;
-    let v = agent.get_bandwidth_cap_mbps()?;
-    Ok(if v <= 0 { None } else { Some(v as u32) })
+    let cap_bps = agent.get_bandwidth_cap_bps()?;
+
+    tracing::debug!(cap_bps, "e2e-test:main.rs:query_cap");
+
+    Ok(if cap_bps <= 0 {
+        None
+    } else {
+        Some(cap_bps as u64)
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -304,7 +312,7 @@ async fn run_transfer(
     payload: Vec<u8>,
     uuid: &str,
     inject: LinkInject,
-    cap_mbps: Option<u32>,
+    cap_bps: Option<u64>,
     timeout: Duration,
 ) -> anyhow::Result<TransferStats> {
     // ---
@@ -440,7 +448,7 @@ async fn run_transfer(
         &format!("{uuid} complete"),
         bytes,
         elapsed,
-        cap_mbps,
+        cap_bps,
         (sender_cb.progress_count(), receiver_cb.progress_count()),
     );
 
@@ -450,34 +458,33 @@ async fn run_transfer(
         rate_bytes_per_sec: bytes as f64 / elapsed.as_secs_f64(),
         elapsed,
     })
-}
+} // run_transfer
 
 // ---------------------------------------------------------------------------
 // BW validation
 // ---------------------------------------------------------------------------
 
-fn assert_bw_within_tolerance(stats: &TransferStats, cap_mbps: u32) -> anyhow::Result<()> {
+fn assert_bw_within_tolerance(stats: &TransferStats, cap_bps: u64) -> anyhow::Result<()> {
     // ---
-
-    let cap_bps = cap_mbps as f64 * 1_000_000.0 / 8.0;
-    let low = cap_bps * BW_TOLERANCE_LOW;
-    let high = cap_bps * BW_TOLERANCE_HIGH;
+    let cap_bytes_per_sec = cap_bps as f64 / 8.0;
+    let low = cap_bytes_per_sec * BW_TOLERANCE_LOW;
+    let high = cap_bytes_per_sec * BW_TOLERANCE_HIGH;
 
     anyhow::ensure!(
         stats.rate_bytes_per_sec >= low && stats.rate_bytes_per_sec <= high,
         "BW out of ±10% tolerance: realized {:.1} KB/s, cap {:.1} KB/s \
          (expected [{:.1}, {:.1}])",
         stats.rate_bytes_per_sec / 1_000.0,
-        cap_bps / 1_000.0,
+        cap_bytes_per_sec / 1_000.0,
         low / 1_000.0,
         high / 1_000.0,
     );
 
     println!(
         "  BW utilization {:.1}%  ✓  (realized {:.1} KB/s, cap {:.1} KB/s elapsed:{:.3?})",
-        stats.rate_bytes_per_sec / cap_bps * 100.0,
+        stats.rate_bytes_per_sec / cap_bytes_per_sec * 100.0,
         stats.rate_bytes_per_sec / 1_000.0,
-        cap_bps / 1_000.0,
+        cap_bytes_per_sec / 1_000.0,
         stats.elapsed
     );
     Ok(())
@@ -488,12 +495,12 @@ async fn run_single_transfer(
     receiver_c2i: SocketAddr,
     bytes: usize,
     label: &str,
-    cap_mbps: Option<u32>,
+    cap_bps: Option<u64>,
 ) -> anyhow::Result<()> {
     println!();
     println!("  ┌── [{label}]  {} B  ({} KiB) ───┐", bytes, bytes / 1024);
     let payload = tokio::task::spawn_blocking(move || generate_test_data(bytes)).await?;
-    let timeout = transfer_timeout(bytes, cap_mbps);
+    let timeout = transfer_timeout(bytes, cap_bps);
     let uuid = Uuid::new_v4().to_string();
 
     let stats = run_transfer(
@@ -502,7 +509,7 @@ async fn run_single_transfer(
         payload,
         &uuid,
         LinkInject::None,
-        cap_mbps,
+        cap_bps,
         timeout,
     )
     .await?;
@@ -515,7 +522,7 @@ async fn run_single_transfer(
     );
     println!("  [{label}] sha256 ✓");
 
-    if let Some(cap) = cap_mbps {
+    if let Some(cap) = cap_bps {
         if bytes >= MIN_BW_TEST_BYTES {
             assert_bw_within_tolerance(&stats, cap)?;
         } else {
@@ -534,23 +541,23 @@ async fn run_multi_file_link_outage(
     sender_c2i: SocketAddr,
     receiver_c2i: SocketAddr,
     file_sizes: &[usize],
-    cap_mbps: Option<u32>,
+    cap_bps: Option<u64>,
 ) -> anyhow::Result<()> {
     // ---
 
-    let rate_bps = cap_mbps.map(|c| c as f64 * 1_000_000.0 / 8.0);
+    let rate_bytes_ps = cap_bps.map(|c| c as f64 / 8.0);
 
-    let link_down_secs = rate_bps
+    let link_down_secs = rate_bytes_ps
         .map(|r| SPOOL_DROP_AFTER_BYTES as f64 * SPOOL_FILL_FRACTION / r)
         .unwrap_or(1.0);
 
-    let post_bytes = rate_bps
+    let post_bytes = rate_bytes_ps
         .map(|r| (r * link_down_secs * 1.5) as usize)
         .unwrap_or(512 * 1024);
     let total_bytes = SPOOL_DROP_AFTER_BYTES + post_bytes;
     let timeout = Duration::from_secs(
-        ((total_bytes as f64 / rate_bps.unwrap_or(10e6) * TIMEOUT_HEADROOM + link_down_secs * 2.0)
-            as u64)
+        ((total_bytes as f64 / rate_bytes_ps.unwrap_or(10e6) * TIMEOUT_HEADROOM
+            + link_down_secs * 2.0) as u64)
             .max(60),
     );
 
@@ -572,7 +579,7 @@ async fn run_multi_file_link_outage(
             link_down_secs,
             sender_c2i,
         },
-        cap_mbps,
+        cap_bps,
         timeout,
     )
     .await?;
@@ -584,14 +591,7 @@ async fn run_multi_file_link_outage(
     println!("  link-outage file-1 sha256 ✓");
 
     let sz2 = file_sizes.get(1).copied().unwrap_or(64 * 1024);
-    run_single_transfer(
-        sender_c2i,
-        receiver_c2i,
-        sz2,
-        "link-outage-file-2",
-        cap_mbps,
-    )
-    .await?;
+    run_single_transfer(sender_c2i, receiver_c2i, sz2, "link-outage-file-2", cap_bps).await?;
 
     Ok(())
 }
@@ -654,6 +654,29 @@ async fn real_main() -> anyhow::Result<()> {
     }
 
     Ok(())
+}
+
+/// Formats a byte count using binary (IEC) units (B, KiB, MiB, GiB).
+///
+/// Values < 1024 are shown in bytes. Larger values use base-1024
+/// units with one decimal place. Intended for human-readable output.
+fn bytes_display(bytes: usize) -> String {
+    // ---
+    const KIB: f64 = 1024.0;
+    const MIB: f64 = 1024.0 * 1024.0;
+    const GIB: f64 = 1024.0 * 1024.0 * 1024.0;
+
+    let b = bytes as f64;
+
+    if b >= GIB {
+        format!("{:.1} GiB", b / GIB)
+    } else if b >= MIB {
+        format!("{:.1} MiB", b / MIB)
+    } else if b >= KIB {
+        format!("{:.1} KiB", b / KIB)
+    } else {
+        format!("{bytes} B")
+    }
 }
 
 // ---------------------------------------------------------------------------

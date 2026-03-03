@@ -10,7 +10,7 @@ namespace cpp quelay
 // ---------------------------------------------------------------------------
 
 /// IDL version — bump when any interface changes.
-const string idl_version  = "2026-Feb-20"
+const string idl_version  = "2026-Mar-02"
 const i8     priority_min = 0
 const i8     priority_max = 127
 
@@ -190,12 +190,12 @@ service QueLayAgent {
     /// Ongoing state changes are delivered via `QueLayCallback::link_status_update`.
     LinkState get_link_state(),
 
-    /// Returns the agent's current uplink BW cap in Mbit/s.
+    /// Returns the agent's configured uplink bandwidth cap in bits/sec.
     /// Returns 0 if the agent is uncapped.
     ///
     /// Used by the integration test binary to derive transfer timing without
     /// duplicating the cap value on the test command line.
-    i32 get_bandwidth_cap_mbps(),
+    i64 get_bandwidth_cap_bps(),
 
     // -----------------------------------------------------------------------
     // Test / debug methods — disabled in production builds

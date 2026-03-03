@@ -60,7 +60,7 @@ mod thrift_srv;
 
 use agent::Agent;
 use callback::{spawn_ping_timer, CallbackAgent};
-use config::{Config, Mode};
+pub(crate) use config::{Config, Mode};
 
 use session_manager::{
     // ---
@@ -142,7 +142,7 @@ async fn main() -> anyhow::Result<()> {
     debug!(
         version = env!("CARGO_PKG_VERSION"),
         idl_version = IDL_VERSION,
-        bw_cap_mbps = cfg.bw_cap_mbps,
+        bw_cap = cfg.bw_cap_display(),
         chunk_size_bytes = cfg.chunk_size_bytes,
         spool_capacity_bytes = cfg.spool_capacity_bytes,
         max_concurrent = cfg.max_concurrent,
@@ -153,10 +153,11 @@ async fn main() -> anyhow::Result<()> {
     // Build the shared runtime config from startup CLI values.
     // AgentHandler writes to it; session manager reads it when starting streams.
     let runtime_cfg = Arc::new(std::sync::Mutex::new(RuntimeConfig::new(
-        cfg.bw_cap_mbps,
+        cfg.bw_cap_bps.unwrap_or(0),
         cfg.chunk_size_bytes,
         cfg.max_concurrent,
     )));
+    tracing::debug!(bw_cap_bps = cfg.bw_cap_bps, "main.rs: bw_cap_bps:");
 
     let link_state = Arc::new(Mutex::new(LinkState::Connecting));
     let (cmd_tx, cmd_rx) = mpsc::channel(64);
@@ -217,10 +218,10 @@ async fn main() -> anyhow::Result<()> {
         transport_cfg,
         link_state.clone(),
         cb_tx.clone(),
-        cfg.bw_cap_bps(),
+        cfg.bw_cap_bps,
         SessionManagerConfig {
-            max_pending: cfg.max_pending(),
-            max_concurrent: cfg.max_concurrent(),
+            max_pending: cfg.max_pending,
+            max_concurrent: cfg.max_concurrent,
         },
     );
     let sm = Arc::new(sm);
