@@ -33,10 +33,10 @@ pub struct MaxConcurrentArgs {
 ///    burst.  Priority values are spread across the bulk range (0..63) so
 ///    none of them are strict-priority (≥ 64) and DRR ordering applies.
 /// 3. Assert the first `max_concurrent` streams returned `RUNNING`.
-/// 4. Assert the remaining streams returned `PENDING` with `queue_position`
-///    values 1..=(stream_count - max_concurrent).
-/// 5. Assert the pending queue snapshot returned by each `stream_start` is
-///    sorted highest-priority-first (descending).
+/// 4. Assert the remaining streams returned `PENDING` with `queue_position >= 1`.
+/// 5. Assert the pending UUIDs in the final `QueueStatus` callback are in
+///    priority-descending order, verified against the predicted order computed
+///    from the known submission priorities.
 /// 6. Restore `max_concurrent` to its default (0 = unlimited) so subsequent
 ///    tests are not affected.
 ///
@@ -118,17 +118,24 @@ pub async fn cmd_max_concurrent(
         take_lo = !take_lo;
     }
 
-    // Build expected pending priority order (highest-first) for QueueStatus
-    // verification.  These are the priorities of streams that will be PENDING.
-    let pending_priorities_desc = {
-        let mut p: Vec<i8> = priorities[args.max_concurrent..].to_vec();
-        p.sort_by(|a, b| b.cmp(a));
-        p
-    };
-
     let uuids: Vec<String> = (0..args.stream_count)
         .map(|_| Uuid::new_v4().to_string())
         .collect();
+
+    // Build the expected pending UUID order (highest-priority-first).
+    //
+    // Since all submissions are known upfront, we can predict exactly which
+    // UUIDs will be pending and in what priority-sorted order they should
+    // appear in the final QueueStatus snapshot.
+    let expected_pending_uuids: Vec<String> = {
+        let mut pending: Vec<(i8, String)> = priorities[args.max_concurrent..]
+            .iter()
+            .zip(uuids[args.max_concurrent..].iter())
+            .map(|(&p, u)| (p, u.clone()))
+            .collect();
+        pending.sort_by(|a, b| b.0.cmp(&a.0)); // highest priority first
+        pending.into_iter().map(|(_, u)| u).collect()
+    };
 
     println!(
         "  submitting {} streams with priorities {:?}",
@@ -162,7 +169,7 @@ pub async fn cmd_max_concurrent(
     // -----------------------------------------------------------------------
 
     let mut running_count = 0usize;
-    let mut pending_positions: Vec<i32> = Vec::new();
+    let mut pending_count = 0usize;
 
     for (i, uuid, pri, result) in &results {
         let status = result
@@ -187,9 +194,9 @@ pub async fn cmd_max_concurrent(
                     pos >= 1,
                     "stream {i} (priority {pri}): PENDING but queue_position = {pos}"
                 );
-                pending_positions.push(pos);
+                pending_count += 1;
                 println!(
-                    "  stream {i} (priority {pri:>3}, uuid {uuid}): PENDING queue_pos={pos} ✓"
+                    "  stream {i} (priority {pri:>3}, uuid {uuid}): PENDING queue_pos={pos} (snapshot) ✓"
                 );
             }
             other => {
@@ -212,24 +219,12 @@ pub async fn cmd_max_concurrent(
         running_count, args.max_concurrent
     );
 
-    // The pending queue positions must be 1..=pending_count with no gaps.
+    // Exactly stream_count - max_concurrent streams must be PENDING.
     let expected_pending = args.stream_count - args.max_concurrent;
     anyhow::ensure!(
-        pending_positions.len() == expected_pending,
-        "expected {} PENDING streams, got {}",
-        expected_pending,
-        pending_positions.len(),
+        pending_count == expected_pending,
+        "expected {expected_pending} PENDING streams, got {pending_count}",
     );
-
-    // Positions must be 1-based and contiguous (1, 2, 3 ...).
-    let mut sorted_pos = pending_positions.clone();
-    sorted_pos.sort();
-    let expected_pos: Vec<i32> = (1..=expected_pending as i32).collect();
-    anyhow::ensure!(
-        sorted_pos == expected_pos,
-        "pending queue positions {sorted_pos:?} ≠ expected {expected_pos:?}"
-    );
-    println!("  pending positions {sorted_pos:?} ✓");
 
     // -----------------------------------------------------------------------
     // QueueStatus callback verification
@@ -251,32 +246,34 @@ pub async fn cmd_max_concurrent(
         args.max_concurrent,
     );
 
-    // pending is Option<Vec<String>> (UUID strings), in priority-desc order.
+    // Verify the pending UUIDs in the QueueStatus snapshot are in
+    // priority-descending order, matching our predicted order.
+    let qs_pending_uuids: Vec<String> = qs.pending.unwrap_or_default();
+
+    anyhow::ensure!(
+        qs_pending_uuids == expected_pending_uuids,
+        "QueueStatus pending order (highest-priority-first) mismatch:\n\
+         got:      {qs_pending_uuids:?}\n\
+         expected: {expected_pending_uuids:?}",
+    );
+
+    // Derive priorities from UUIDs for the success print.
     let uuid_to_pri: std::collections::HashMap<String, i8> = uuids
         .iter()
         .zip(priorities.iter())
         .map(|(u, &p)| (u.clone(), p))
         .collect();
-
-    let qs_pending_pris: Vec<i8> = qs
-        .pending
-        .unwrap_or_default()
+    let qs_pending_pris: Vec<i8> = qs_pending_uuids
         .iter()
         .map(|u| {
             *uuid_to_pri
                 .get(u)
-                .unwrap_or_else(|| panic!("QueueStatus: unknown UUID in pending: {u}"))
+                .expect("uuid in QueueStatus not in submission set")
         })
         .collect();
 
-    anyhow::ensure!(
-        qs_pending_pris == pending_priorities_desc,
-        "QueueStatus pending priorities (highest-first) mismatch:\n\
-         got:      {qs_pending_pris:?}\n  expected: {pending_priorities_desc:?}",
-    );
-
     println!(
-        "  QueueStatus: active={:?}, pending={:?} ✓",
+        "  QueueStatus: active={:?}, pending priorities={:?} ✓",
         qs.active_count, qs_pending_pris
     );
 

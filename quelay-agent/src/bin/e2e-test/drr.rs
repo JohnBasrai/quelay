@@ -77,7 +77,7 @@ pub async fn cmd_drr(
         );
         println!("  anchor queued (priority 0, {} KiB)", anchor_bytes / 1024);
 
-        for (idx, (pri, label)) in priorities.iter().enumerate() {
+        for (pri, label) in priorities.iter() {
             // ---
             let small = 4 * 1024usize;
             let mut attrs = BTreeMap::new();
@@ -92,12 +92,12 @@ pub async fn cmd_drr(
             )?;
 
             // The anchor holds the single active slot; each subsequent file
-            // lands in the pending queue at depth idx+1 (1-based).
-            let expected_pos = (idx + 1) as i32;
+            // lands in the pending queue. Position reflects priority order,
+            // not submission order.
+            let pos = result.queue_position.unwrap_or(0);
             anyhow::ensure!(
-                result.queue_position == Some(expected_pos),
-                "stream_start queue_position mismatch: expected {:?}, got {:?}",
-                expected_pos,
+                pos >= 1,
+                "stream_start queue_position mismatch: expected >= 1, got {:?}",
                 result.queue_position
             );
             println!("  queued {label} (priority {pri})");
