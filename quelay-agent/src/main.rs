@@ -60,7 +60,7 @@ mod thrift_srv;
 
 use agent::Agent;
 use callback::{spawn_ping_timer, CallbackAgent};
-use config::{Config, Mode};
+pub(crate) use config::{Config, Mode};
 
 use session_manager::{
     // ---

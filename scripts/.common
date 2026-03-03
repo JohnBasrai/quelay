@@ -30,7 +30,7 @@ start_agents() {
     echo  "start_agents concurrent_streams:$concurrent_streams"
 
     echo ""
-    echo "==> Starting agents at ${cap_bps} Mbit/s..."
+    echo "==> Starting agents at ${cap_bps}"
 
     rm -f "$CERT_SRC" "$CERT_FILE"
 

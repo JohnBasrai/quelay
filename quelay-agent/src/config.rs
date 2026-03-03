@@ -198,3 +198,180 @@ pub enum Mode {
         cert: PathBuf,
     },
 }
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+#[allow(clippy::expect_used)]
+#[allow(clippy::needless_borrow)]
+mod tests {
+    // ---
+    use super::*;
+
+    // ------------------------------------------------------------
+    // Helpers
+    // ------------------------------------------------------------
+
+    fn parse_ok(args: &[&str]) -> Config {
+        Config::try_parse_from(args).expect("expected parse success")
+    }
+
+    fn parse_err(args: &[&str]) {
+        assert!(Config::try_parse_from(args).is_err());
+    }
+
+    // ------------------------------------------------------------
+    // Bandwidth parsing (positive)
+    // ------------------------------------------------------------
+
+    #[test]
+    fn bw_cap_parses_basic_units() {
+        // ---
+        let cfg = parse_ok(&["quelay-agent", "--bw-cap-bps", "10Mbps", "server"]);
+        assert_eq!(cfg.bw_cap_bps, Some(10_000_000));
+
+        let cfg = parse_ok(&["quelay-agent", "--bw-cap-bps", "500Kbps", "server"]);
+        assert_eq!(cfg.bw_cap_bps, Some(500_000));
+
+        let cfg = parse_ok(&["quelay-agent", "--bw-cap-bps", "1.5Gbps", "server"]);
+        assert_eq!(cfg.bw_cap_bps, Some(1_500_000_000));
+    }
+
+    #[test]
+    fn bw_cap_parses_case_and_whitespace() {
+        // ---
+        let cfg = parse_ok(&["quelay-agent", "--bw-cap-bps", "10 mbps", "server"]);
+        assert_eq!(cfg.bw_cap_bps, Some(10_000_000));
+
+        let cfg = parse_ok(&["quelay-agent", "--bw-cap-bps", "10MBPS", "server"]);
+        assert_eq!(cfg.bw_cap_bps, Some(10_000_000));
+    }
+
+    // ------------------------------------------------------------
+    // Bandwidth parsing (negative)
+    // ------------------------------------------------------------
+
+    #[test]
+    fn bw_cap_rejects_missing_unit() {
+        // ---
+        parse_err(&["quelay-agent", "--bw-cap-bps", "10", "server"]);
+    }
+
+    #[test]
+    fn bw_cap_rejects_invalid_number() {
+        // ---
+
+        parse_err(&["quelay-agent", "--bw-cap-bps", "abcMbps", "server"]);
+    }
+
+    #[test]
+    fn bw_cap_rejects_unknown_unit() {
+        // ---
+
+        parse_err(&["quelay-agent", "--bw-cap-bps", "10Foo", "server"]);
+    }
+
+    #[test]
+    fn bw_cap_rejects_zero() {
+        // ---
+
+        parse_err(&["quelay-agent", "--bw-cap-bps", "0Mbps", "server"]);
+    }
+
+    // ------------------------------------------------------------
+    // Validate()
+    // ------------------------------------------------------------
+
+    #[test]
+    fn validate_rejects_invalid_chunk_size() {
+        // ---
+
+        let mut cfg = parse_ok(&["quelay-agent", "server"]);
+        cfg.chunk_size_bytes = 0;
+        assert!(cfg.validate().is_err());
+
+        cfg.chunk_size_bytes = 70_000;
+        assert!(cfg.validate().is_err());
+    }
+
+    #[test]
+    fn validate_rejects_zero_spool_capacity() {
+        // ---
+
+        let mut cfg = parse_ok(&["quelay-agent", "server"]);
+        cfg.spool_capacity_bytes = 0;
+        assert!(cfg.validate().is_err());
+    }
+
+    #[test]
+    fn validate_accepts_valid_config() {
+        // ---
+
+        let cfg = parse_ok(&["quelay-agent", "server"]);
+        assert!(cfg.validate().is_ok());
+    }
+
+    // ------------------------------------------------------------
+    // bw_cap_display()
+    // ------------------------------------------------------------
+
+    #[test]
+    fn bw_cap_display_uncapped() {
+        // ---
+
+        let cfg = parse_ok(&["quelay-agent", "server"]);
+        assert_eq!(cfg.bw_cap_display(), "uncapped");
+    }
+
+    #[test]
+    fn bw_cap_display_thresholds() {
+        // ---
+
+        let mut cfg = parse_ok(&["quelay-agent", "server"]);
+
+        cfg.bw_cap_bps = Some(500_000);
+        assert_eq!(cfg.bw_cap_display(), "500.0 Kbps");
+
+        cfg.bw_cap_bps = Some(1_000_000);
+        assert_eq!(cfg.bw_cap_display(), "1.0 Mbps");
+
+        cfg.bw_cap_bps = Some(1_500_000_000);
+        assert_eq!(cfg.bw_cap_display(), "1.5 Gbps");
+    }
+
+    // ------------------------------------------------------------
+    // Subcommand parsing
+    // ------------------------------------------------------------
+
+    #[test]
+    fn server_mode_parses_defaults() {
+        // ---
+
+        let cfg = parse_ok(&["quelay-agent", "server"]);
+        assert!(matches!(cfg.mode, crate::Mode::Server { .. }));
+    }
+
+    #[test]
+    fn client_mode_requires_peer_and_cert() {
+        // ---
+
+        parse_err(&["quelay-agent", "client", "--peer", "127.0.0.1:5000"]);
+
+        parse_err(&["quelay-agent", "client", "--cert", "server.der"]);
+    }
+
+    #[test]
+    fn client_mode_parses_valid() {
+        // ---
+
+        let cfg = parse_ok(&[
+            "quelay-agent",
+            "client",
+            "--peer",
+            "127.0.0.1:5000",
+            "--cert",
+            "server.der",
+        ]);
+
+        assert!(matches!(cfg.mode, crate::Mode::Client { .. }));
+    }
+}

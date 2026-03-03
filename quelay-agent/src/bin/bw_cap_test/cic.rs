@@ -334,7 +334,7 @@ impl Cic {
 /// limiter actually shaped.
 pub fn assert_aggregate_bw(
     results: &[TunerResult],
-    cap_mbps: u32,
+    cap_bits_ps: u64,
     wall_elapsed: Duration,
     tolerance: f64,
 ) -> anyhow::Result<()> {
@@ -345,25 +345,25 @@ pub fn assert_aggregate_bw(
         .map(|r| r.bytes)
         .sum();
 
-    let cap_bps = cap_mbps as f64 * 1_000_000.0 / 8.0;
-    let realized_bps = total_bytes as f64 / wall_elapsed.as_secs_f64();
-    let low = cap_bps * (1.0 - tolerance);
-    let high = cap_bps * (1.0 + tolerance);
+    let cap_bytes_ps = cap_bits_ps as f64 / 8.0;
+    let realized_bytes_ps = total_bytes as f64 / wall_elapsed.as_secs_f64();
+    let low = cap_bytes_ps * (1.0 - tolerance);
+    let high = cap_bytes_ps * (1.0 + tolerance);
 
     println!(
         "\n  Aggregate BW: {:.1} KB/s  cap: {:.1} KB/s  ({:.1}%)",
-        realized_bps / 1_000.0,
-        cap_bps / 1_000.0,
-        realized_bps / cap_bps * 100.0,
+        realized_bytes_ps / 1_000.0,
+        cap_bytes_ps / 1_000.0,
+        realized_bytes_ps / cap_bytes_ps * 100.0,
     );
 
     anyhow::ensure!(
-        realized_bps >= low && realized_bps <= high,
+        realized_bytes_ps >= low && realized_bytes_ps <= high,
         "Aggregate BW outside ±{:.0}% tolerance: \
          realized {:.1} KB/s, cap {:.1} KB/s (expected [{:.1}, {:.1}])",
         tolerance * 100.0,
-        realized_bps / 1_000.0,
-        cap_bps / 1_000.0,
+        realized_bytes_ps / 1_000.0,
+        cap_bytes_ps / 1_000.0,
         low / 1_000.0,
         high / 1_000.0,
     );
