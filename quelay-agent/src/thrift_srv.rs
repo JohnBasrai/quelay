@@ -97,10 +97,10 @@ pub struct RuntimeConfig {
     // ---
     /// Configured uplink BW cap in Mbit/s (0 = uncapped).
     ///
-    /// Read-only at runtime — `get_bandwidth_cap_mbps` reports this value.
+    /// Read-only at runtime — `get_bandwidth_cap_bps` reports this value.
     /// Changing BW cap live is not supported; restart the agent with a new
-    /// `--bw-cap-mbps` to change it.
-    pub bw_cap_mbps: u64,
+    /// `--bw-cap-bps` to change it.
+    pub bw_cap_bps: u64,
 
     /// Chunk payload size in bytes for new uplink streams.
     ///
@@ -119,9 +119,9 @@ pub struct RuntimeConfig {
 
 impl RuntimeConfig {
     // ---
-    pub fn new(bw_cap_mbps: u64, chunk_size_bytes: usize, max_concurrent: usize) -> Self {
+    pub fn new(bw_cap_bps: u64, chunk_size_bytes: usize, max_concurrent: usize) -> Self {
         Self {
-            bw_cap_mbps,
+            bw_cap_bps,
             chunk_size_bytes,
             max_concurrent,
         }
@@ -356,15 +356,15 @@ impl QueLayAgentSyncHandler for AgentHandler {
 
     // ---
 
-    fn handle_get_bandwidth_cap_mbps(&self) -> thrift::Result<i32> {
+    fn handle_get_bandwidth_cap_bps(&self) -> thrift::Result<i64> {
         // ---
 
         let guard = self.lock_runtime_cfg()?;
-        let cap = guard.bw_cap_mbps;
+        let cap = guard.bw_cap_bps;
 
-        tracing::debug!(cap, "get_bandwidth_cap_mbps");
+        tracing::debug!(cap = cap as f64, "get_bandwidth_cap_bps");
 
-        Ok(cap as i32)
+        Ok(cap as i64)
     }
 
     // -----------------------------------------------------------------------

@@ -21,7 +21,7 @@ pub struct MultiFileArgs {
 
     /// Transfer a single file of N MiB.
     #[arg(long, conflicts_with_all = ["large", "small", "duration_secs"])]
-    size_mb: Option<usize>,
+    size_mb: Option<f32>,
 
     /// Derive file size from agent BW cap × N seconds.
     #[arg(long, conflicts_with_all = ["large", "small", "size_mb"])]
@@ -61,7 +61,7 @@ pub async fn cmd_multi_file(
     ensure_agent_running(sender_c2i)?;
     ensure_agent_running(receiver_c2i)?;
 
-    let cap_mbps = query_cap(sender_c2i).context("query_cap(sender_c2i) failed")?;
+    let cap_bps = query_cap(sender_c2i).context("query_cap(sender_c2i) failed")?;
 
     let file_sizes: Vec<usize> = if args.large {
         vec![
@@ -72,21 +72,22 @@ pub async fn cmd_multi_file(
     } else if args.small {
         vec![9_000, 1_024, 512, 1]
     } else if let Some(mb) = args.size_mb {
-        std::iter::repeat_n(mb * 1024 * 1024, args.count).collect()
+        let count = (mb * 1024_f32 * 1024_f32) as usize;
+        std::iter::repeat_n(count, args.count).collect()
     } else if let Some(secs) = args.duration_secs {
-        let bytes = cap_mbps
-            .map(|c| c as usize * 1_000_000 / 8 * secs as usize)
+        let bytes = cap_bps
+            .map(|c| c as usize / 8 * secs as usize)
             .unwrap_or(32 * 1024 * 1024);
         std::iter::repeat_n(bytes, args.count).collect()
     } else {
-        let bytes = cap_mbps
-            .map(|c| c as usize * 1_000_000 / 8 * 10)
+        let bytes = cap_bps
+            .map(|c| c as usize / 8 * 10)
             .unwrap_or(32 * 1024 * 1024);
         std::iter::repeat_n(bytes, args.count).collect::<Vec<usize>>()
     };
 
     if args.link_outage {
-        run_multi_file_link_outage(sender_c2i, receiver_c2i, &file_sizes, cap_mbps).await?;
+        run_multi_file_link_outage(sender_c2i, receiver_c2i, &file_sizes, cap_bps).await?;
     } else if args.link_fail {
         run_multi_file_link_fail(sender_c2i, receiver_c2i).await?;
     } else {
@@ -96,7 +97,7 @@ pub async fn cmd_multi_file(
                 receiver_c2i,
                 sz,
                 &format!("multi-file-{i}"),
-                cap_mbps,
+                cap_bps,
             )
             .await?;
 
@@ -106,7 +107,7 @@ pub async fn cmd_multi_file(
                     sender_c2i,
                     sz,
                     &format!("multi-file-{i}-reverse"),
-                    cap_mbps,
+                    cap_bps,
                 )
                 .await?;
             }

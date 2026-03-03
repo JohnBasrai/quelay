@@ -18,7 +18,7 @@
 #   --loss-percent N     Loss % [default: 2]               valid for: loss, both
 #   --delay N            One-way delay ms [default: 500]   valid for: delay, both
 #   --jitter N           Delay jitter ±ms [default: 50]    valid for: delay, both
-#   --quelay-cap-mbps N  Quelay agent BW cap [default: 10] valid for: all
+#   --quelay-cap-bps N   Quelay agent BW cap [default: 10Mbps] valid for: all
 #   --help               Show this help and exit
 
 set -euo pipefail
@@ -223,7 +223,7 @@ while [[ $# -gt 0 ]]; do
             [[ "$PROFILE" == "delay" || "$PROFILE" == "both" ]] \
                 || die "--jitter is not valid for profile '$PROFILE'"
             OPT_JITTER="$2"; shift 2 ;;
-        --quelay-cap-mbps)
+        --quelay-cap-bps)
             OPT_QUELAY_CAP="$2"; shift 2 ;;
         --help|-h) usage ;;
         *) die "Unknown option: $1" ;;
@@ -311,7 +311,7 @@ echo "==> Starting QUIC server agent on $VETH1_IP:${QUIC_PORT} (C2I :${QUIC_SERV
 cd "$REPO_ROOT"
 "$AGENT_BIN" \
     --agent-endpoint "${VETH1_IP}:${QUIC_SERVER_C2I_PORT}" \
-    --bw-cap-mbps "${OPT_QUELAY_CAP}" \
+    --bw-cap-bps "${OPT_QUELAY_CAP}Mbps" \
     server --bind "${VETH1_IP}:${QUIC_PORT}" \
     &> /tmp/quelay-server.log &
 QUIC_SERVER_PID=$!
@@ -322,7 +322,7 @@ wait_for_cert
 echo "==> Starting QUIC client agent on $VETH0_IP (C2I :${QUIC_CLIENT_C2I_PORT})"
 "$AGENT_BIN" \
     --agent-endpoint "${VETH0_IP}:${QUIC_CLIENT_C2I_PORT}" \
-    --bw-cap-mbps "${OPT_QUELAY_CAP}" \
+    --bw-cap-bps "${OPT_QUELAY_CAP}Mbps" \
     client \
         --peer "${VETH1_IP}:${QUIC_PORT}" \
         --cert "$CERT_PATH" \

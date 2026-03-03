@@ -53,7 +53,7 @@ E2E_BIN="$TARGET_DIR/debug/e2e-test"
 # Phase A — 100 Mbit/s
 #   Large file throughput and rate limiter accuracy at a high rate.
 # ===========================================================================
-start_agents 100
+start_agents "100 Mbps"
 
 ############################################################
 ##   Testing 3 large files at 100 Mbit/s
@@ -73,7 +73,7 @@ stop_agents
 # Phase B — 10 Mbit/s
 #   Lower cap gives link-outage and spool-fill timing deterministic windows.
 # ===========================================================================
-start_agents 10
+start_agents 10Mbps
 
 ############################################################
 ##   Testing small boundary-condition files
@@ -115,7 +115,7 @@ start_agents 10
 
 stop_agents
 
-start_agents 10 2
+start_agents "10 Mbps" 2
 "$E2E_BIN" \
     --sender-c2i "$AGENT1_C2I" \
     --receiver-c2i "$AGENT2_C2I" \

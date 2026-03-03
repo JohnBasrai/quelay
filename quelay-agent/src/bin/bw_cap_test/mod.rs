@@ -411,7 +411,7 @@ fn ensure_agent_running(addr: SocketAddr) -> anyhow::Result<()> {
 fn query_cap(addr: SocketAddr) -> anyhow::Result<Option<u32>> {
     // ---
     let mut agent = connect_agent(addr)?;
-    let v = agent.get_bandwidth_cap_mbps()?;
+    let v = agent.get_bandwidth_cap_bps()?;
     Ok(if v <= 0 { None } else { Some(v as u32) })
 }
 

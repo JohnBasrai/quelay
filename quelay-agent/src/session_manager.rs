@@ -260,7 +260,7 @@ impl RemoteState {
 
 pub(crate) struct SessionManagerConfig {
     pub max_pending: usize,
-    pub max_concurrent: Option<usize>,
+    pub max_concurrent: usize,
 }
 
 pub(crate) struct SessionManager {
@@ -322,7 +322,14 @@ impl SessionManager {
         // Depth of 64 matches the AgentCmd channel — enough to absorb bursts
         // from the Thrift thread pool without back-pressuring callers.
         let (cmd_tx, cmd_rx) = mpsc::channel(64);
-        let remote = RemoteState::new(session, config.max_concurrent, config.max_pending);
+
+        let max_concurrent = if config.max_concurrent == 0 {
+            None
+        } else {
+            Some(config.max_concurrent)
+        };
+
+        let remote = RemoteState::new(session, max_concurrent, config.max_pending);
 
         (
             Self {

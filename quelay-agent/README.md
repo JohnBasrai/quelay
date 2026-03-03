@@ -56,14 +56,14 @@ Options:
           example clients and other local C2I consumers connect here
           [default: 127.0.0.1:9090]
 
-      --bw-cap-mbps <BW_CAP_MBPS>
-          Uplink bandwidth cap in Mbit/s.
-          
-          Enforced by the rate limiter on every QUIC write. Set to 0
-          (default) to disable rate limiting entirely.
-          
-          Example: `--bw-cap-mbps 10` caps at 10 Mbit/s (1.25 MB/s).
-          [default: 0]
+      --bw-cap-bps <BW_CAP_BPS>
+          Uplink bandwidth cap in bits/sec.
+
+          `None` means uncapped (no rate limiting).
+
+          Set via `--bw-cap-bps` on the command line using a value and unit,
+          e.g. `--bw-cap-bps 10Mbps`, `--bw-cap-bps 500Kbps`, `--bw-cap-bps 1.5Gbps`.
+
 
       --chunk-size-bytes <CHUNK_SIZE_BYTES>
           Chunk payload size in bytes written to the QUIC stream.
