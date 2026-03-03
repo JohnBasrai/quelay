@@ -213,7 +213,7 @@ impl RemoteState {
             .position(|e| e.priority < pri)
             .unwrap_or(self.pending.len());
         self.pending.insert(pos, pending_stream);
-        self.pending.len() // 1-based depth: how many entries are now queued
+        pos + 1
     }
 
     // ---
