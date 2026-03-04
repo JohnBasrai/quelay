@@ -118,9 +118,9 @@ namespaces, `veth` pairs, or `sudo` required.
 │                                             │
 │  ┌────────────┐   quic-net   ┌───────────┐  │
 │  │agent-client│◄────────────►│agent-serv │  │
-│  └─────┬──────┘    Pumba     └─────┬─────┘  │
-│        │          impairs          │        │
-│ c2i-net│                   c2i-net │        │
+│  └─────┬──────┘    Pumba     └┬────┬─────┘  │
+│       ↑│          impairs     │↑   │        │
+│       ↓│   c2i-net            │↓   │        │
 │        └──────────┬───────────┘    │        │
 │               ┌───┴───┐            │        │
 │               │ e2e   │────────────┘        │
