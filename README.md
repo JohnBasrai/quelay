@@ -16,7 +16,7 @@ your option.
 | `quelay-quic`    | QUIC transport via `quinn` |
 | `quelay-thrift`  | Apache Thrift C2I service stubs |
 | `quelay-agent`   | Deployable relay daemon — data pump, `SessionManager`, rate limiter, reconnect |
-| `quelay-example` | Demonstrating clients |
+| `quelay-example` | Demonstrating clients and Docker healthcheck probe |
 
 ---
 
@@ -48,7 +48,9 @@ timer task that wakes on a computed interval (clamped to 5–100 ms), drains up
 to a byte budget from an mpsc queue per tick, and discards unused budget. The
 operator configures a hard ceiling (e.g. 2 Mbit/s); QUIC's own congestion
 control operates below that ceiling and handles packet-loss backoff
-transparently.
+transparently. The rate limiter samples `wire_bytes_sent()` each tick and
+deducts retransmit overhead so the cap is enforced at the wire level, not just
+the payload level.
 
 **DRR scheduler** — Deficit Round Robin distributes the available budget
 fairly across active bulk streams. C2I messages use a strict-priority
@@ -104,28 +106,48 @@ cargo test --workspace
 
 ## Network Impairment Testing
 
-`scripts/link-sim-test.sh` runs two `quelay-agent` instances connected via a
-`veth` pair with `tc netem` impairment applied, then verifies 100 MiB
-bidirectional transfer integrity via SHA-256.
+`scripts/link-sim-test.sh` runs the full link simulation test suite using
+Docker Compose. Two `quelay-agent` containers communicate over an isolated
+`quic-net` bridge; network impairment is applied by
+[Pumba](https://github.com/alexei-led/pumba) on that bridge. No host kernel
+namespaces, `veth` pairs, or `sudo` required.
+
+```
+┌─────────────────────────────────────────────┐
+│  Docker Compose                             │
+│                                             │
+│  ┌────────────┐   quic-net   ┌───────────┐  │
+│  │agent-client│◄────────────►│agent-serv │  │
+│  └─────┬──────┘    Pumba     └─────┬─────┘  │
+│        │          impairs          │        │
+│ c2i-net│                   c2i-net │        │
+│        └──────────┬───────────┘    │        │
+│               ┌───┴───┐            │        │
+│               │ e2e   │────────────┘        │
+│               └───────┘                     │
+└─────────────────────────────────────────────┘
+```
+
 ```bash
-# 2% packet loss (GEO satellite default)
+# 5% packet loss
 ./scripts/link-sim-test.sh loss
 
-# 500ms delay ±50ms jitter
+# 600ms delay ±100ms jitter
 ./scripts/link-sim-test.sh delay
 
-# Both combined
-./scripts/link-sim-test.sh both --loss-percent 5 --delay 300 --quelay-cap-mbps 5
+# Loss + delay combined
+./scripts/link-sim-test.sh both --loss-percent 5 --delay-ms 300
+
+# Link bandwidth cap at 2mbit (agent cap must be ≤ link cap)
+./scripts/link-sim-test.sh rate --rate 2mbit --bw-cap 1Mbps --size-mb 2
+
+# Baseline — no impairment
+./scripts/link-sim-test.sh clean
 ```
 
-Requires Linux (`tc netem`, `veth`). The script self-escalates via `sudo`.
-See [`quelay-agent/README.md`](quelay-agent/README.md#network-impairment-testing)
-for results and full option reference.
-
-```bash
-# 5 % packet loss, 200 ms delay on the test interface
-tc qdisc add dev eth0 root netem loss 5% delay 200ms 50ms
-```
+Requires Docker with Compose v2. See
+[`quelay-agent/README.md`](quelay-agent/README.md#network-impairment-testing)
+for the full option reference.
 
 ---
 
