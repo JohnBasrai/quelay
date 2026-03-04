@@ -31,7 +31,7 @@ without requiring those to be re-exported through the public API.
 
 ```
 quelay-agent/src/bin/e2e-test/
-├── main.rs                  CLI, Cli/Command, run_transfer, shared helpers
+├── main.rs                  CLI, Cli/Command, TestContext, run_transfer, shared helpers
 ├── callback.rs              TestCallbackEvent, TestCallbackHandler,
 │                            TestCallbackServer (incl. last_queue_status)
 ├── drr.rs                   cmd_drr, DrrArgs
@@ -48,6 +48,8 @@ e2e-test [OPTIONS] <SUBCOMMAND>
 OPTIONS:
     --sender-c2i    ADDR    C2I address of the sending agent   [default: 127.0.0.1:9090]
     --receiver-c2i  ADDR    C2I address of the receiving agent [default: 127.0.0.1:9091]
+    --callback-ip   IP      IP the callback listener binds on and advertises to agents
+                            Override when agents run in containers [default: 127.0.0.1]
     --debug                 Run with RUST_LOG=debug
 
 SUBCOMMANDS:
@@ -63,7 +65,7 @@ SUBCOMMANDS:
 
 Covers large file throughput, small boundary-condition files, bidirectional
 transfers, and link outage recovery.  All timing is derived from the agent's
-configured BW cap (queried via `get_bandwidth_cap_mbps()`).
+configured BW cap (queried via `get_bandwidth_cap_bps()`).
 
 ```
 multi-file [OPTIONS]
@@ -173,9 +175,9 @@ Sequence:
 
 `callback.rs` provides a Thrift callback server used by all subcommands.
 
-| Method   | Description |
-|:---------|:------------|
-| `bind()` | Binds on an ephemeral port; spawns the Thrift server thread |
+| Method | Description |
+|:-------|:------------|
+| `bind(advertise_ip)` | Binds on an ephemeral port on `0.0.0.0`; advertises `advertise_ip:port` to agents. Use the container's own IP when agents run in Docker. |
 | `recv_event(timeout)` | Block until the next event |
 | `recv_event_for(uuid, timeout)` | Block until an event matching `uuid` arrives; discards others |
 | `last_queue_status(timeout)` | Drain events for `timeout`; return the last `QueueStatus` seen |
@@ -231,7 +233,7 @@ rate limiter is continuously under load for the full measurement window.  After
 all tuners exit, `assert_aggregate_bw` computes total bytes / wall-clock time
 and checks it against the cap within the tolerance.
 
-The BW cap is queried from the sender agent at startup (`get_bandwidth_cap_mbps`).
+The BW cap is queried from the sender agent at startup (`get_bandwidth_cap_bps`).
 
 ### Observed performance
 
@@ -251,11 +253,6 @@ Results from a representative `bw-cap-test` run: 3 concurrent streams at a
   Aggregate BW: 1251.4 KB/s  cap: 1250.0 KB/s  (100.1%)
   Aggregate BW within ±10% ✓
 ```
-
-In practice, observed utilization for transfers larger than ~4 KiB is
-consistently within ±2 % of the cap.  The ±10 % tolerance exists to
-accommodate the start-up and tear-down transients that dominate measurement
-error for very small or very short transfers.
 
 Each sender writes for 5 s at full speed into the spool, then stops. The three
 streams share the 10 Mbit/s cap, so each stream's ~5.5 MiB drains at roughly 1/3 of

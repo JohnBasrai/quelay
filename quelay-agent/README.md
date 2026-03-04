@@ -39,7 +39,7 @@ each level as needed.
 ### Top level `quelay-agent` usage message
 
 ```
-cargo run -q --bin quelay-agent -- --help
+quelay-agent --help
 Quelay relay daemon
 
 Usage: quelay-agent [OPTIONS] <COMMAND>
@@ -63,7 +63,6 @@ Options:
 
           Set via `--bw-cap-bps` on the command line using a value and unit,
           e.g. `--bw-cap-bps 10Mbps`, `--bw-cap-bps 500Kbps`, `--bw-cap-bps 1.5Gbps`.
-
 
       --chunk-size-bytes <CHUNK_SIZE_BYTES>
           Chunk payload size in bytes written to the QUIC stream.
@@ -93,6 +92,13 @@ Options:
           `set_max_concurrent`.
           [default: 0]
 
+      --max-pending <MAX_PENDING>
+          Maximum number of streams allowed in the pending queue (default: 100).
+          
+          When the pending queue is full, `stream_start` returns
+          `queue_position == -1` and an error message.
+          [default: 100]
+
   -h, --help
           Print help (see a summary with '-h')
 ```
@@ -100,14 +106,14 @@ Options:
 ### `quelay-agent` server usage message
 
 ```
-cargo run -q --bin quelay-agent -- server --help
+quelay-agent server --help
 Listen for an incoming QUIC connection (satellite ground station or server role
 for this session)
 
 Usage: quelay-agent server [OPTIONS]
 
 Options:
-      --bind <BIND>  UDP address to bind the QUIC endpoint on 
+      --bind <BIND>  UDP address to bind the QUIC endpoint on
                      [default: 0.0.0.0:5000]
   -h, --help         Print help
 ```
@@ -115,7 +121,7 @@ Options:
 ### `quelay-agent` client usage message
 
 ```
-cargo run -q --bin quelay-agent -- client --help
+quelay-agent client --help
 Connect to a remote Quelay agent (example: 192.168.1.10:5000)
 
 Usage: quelay-agent client [OPTIONS] --peer <PEER> --cert <CERT>
@@ -123,14 +129,12 @@ Usage: quelay-agent client [OPTIONS] --peer <PEER> --cert <CERT>
 Options:
       --peer <PEER>                UDP address of the remote agent's QUIC endpoint
       --server-name <SERVER_NAME>  TLS server name — must match the name used
-                                   when the server generated its cert (default: "quelay")
+                                   when the server generated its cert
                                    [default: quelay]
-
       --cert <CERT>                Path to the server's self-signed cert DER
                                    file. The server writes this at startup; copy
                                    it to the client before launching
-
-  -h, --help                       Print this help messsage
+  -h, --help                       Print help
 ```
 
 ## TLS / certificate pinning
@@ -151,7 +155,7 @@ agent.rs           — Agent: owns SessionManagerHandle, async command loop
 thrift_srv.rs      — AgentHandler: sync Thrift handler, enqueues AgentCmds
 session_manager.rs — SessionManager: reconnection loop, pending queue, accept loop
 active_stream.rs   — Uplink/downlink data pumps, SpoolBuffer (three-pointer A/Q/T)
-rate_limiter.rs    — Timer-task-based BW cap; link_down / link_up without reconstruction
+rate_limiter.rs    — Timer-task-based BW cap; wire_bytes_sent sampling for retransmit accounting
 framing.rs         — 8-byte stream-open header, 10-byte chunk header, read/write helpers
 callback.rs        — CallbackAgent: async Thrift callback push path
 bin/e2e_test/      — Quelay integration test binary
@@ -199,6 +203,7 @@ Defined in `quelay-thrift/idl/quelay.thrift`. The generated service trait is
 | `stream_start(uuid, info, priority)` | Enqueues a `StreamStart` command; returns queue position. |
 | `set_callback(endpoint)`             | Registers the callback endpoint for async status pushes. Returns an error string if a callback is already registered — only one active callback is supported; a second call is rejected. |
 | `get_link_state`                     | Returns the current `LinkState` snapshot. |
+| `get_bandwidth_cap_bps`              | Returns the configured uplink cap in bits/sec; 0 if uncapped. |
 
 
 ## SessionManager
@@ -224,40 +229,62 @@ design details.
 
 ## Network Impairment Testing
 
-`scripts/link-sim-test.sh` sets up an isolated `veth` pair, applies `tc netem`
-impairment, starts two `quelay-agent` instances, and runs `e2e-test multi-file
---bidirectional`. Pass/fail is SHA-256 only — no throughput assertion.
-
-The netem link BW is always 2× the Quelay cap to leave headroom for QUIC
-retransmissions. After the QUIC handshake both agents are symmetric;
-QUIC server/client refers only to startup role.
+`scripts/link-sim-test.sh` runs the link simulation test suite using Docker
+Compose. Two `quelay-agent` containers communicate over an isolated `quic-net`
+bridge; network impairment is applied by Pumba on that bridge. No host kernel
+namespaces, `veth` pairs, or `sudo` required.
 
 ### Usage
-```
-./scripts/link-sim-test.sh <PROFILE> [OPTIONS]
 
-PROFILES:
+```
+./scripts/link-sim-test.sh <profile> [options]
+
+Profiles:
   loss    Packet loss only
-  delay   Delay + jitter only
-  both    Packet loss + delay + jitter
+  delay   Latency / jitter only
+  rate    Bandwidth cap only (via pumba rate)
+  both    Loss + delay combined
+  clean   No impairment (baseline sanity check)
 
-OPTIONS:
-  --loss-percent N     Loss % [default: 2]               valid for: loss, both
-  --delay N            One-way delay ms [default: 500]   valid for: delay, both
-  --jitter N           Delay jitter ±ms [default: 50]    valid for: delay, both
-  --quelay-cap-mbps N  Quelay agent BW cap [default: 10] valid for: all
-  --size-mb N          Transfer file size in MiB [default: 100]
-  --duration-secs N    Derive file size from BW cap × N seconds
+Options:
+  --loss-percent  N    Packet loss % for 'loss' / 'both' profiles  (default: 5)
+  --delay-ms      N    Base delay ms for 'delay' / 'both' profiles (default: 600)
+  --jitter-ms     N    Jitter ms for 'delay' / 'both' profiles     (default: 100)
+  --rate          STR  Bandwidth for 'rate' profile, e.g. 2mbit    (default: 2mbit)
+  --bw-cap        STR  Quelay daemon BW cap, e.g. 10Mbps           (default: 10Mbps)
+  --size-mb       N    Payload size per stream in MiB              (default: 100)
+  --e2e-args      STR  Override entire e2e command after binary    (default: see below)
+  --no-build           Skip --build flag (use cached images)
+  -h, --help           Show this help
 ```
 
-### Results (debug build, 10 Mbit/s cap)
+### Examples
 
-Both profiles show QUIC absorbing all impairment transparently — the token
-bucket rate limiter remains the binding constraint in all cases.
+```bash
+# 5% packet loss, 10 MiB payload
+./scripts/link-sim-test.sh loss --size-mb 10
 
-| Profile | Loss | Delay | Elapsed (s) | BW Util |
-|:--------|:-----|:------|:------------|:--------|
-| `loss`  | 2%   | —     | 83.7        | 100.2%  |
-| `both`  | 2%   | 500ms ±50ms | 83.7  | 100.2%  |
+# 600ms delay ±100ms jitter
+./scripts/link-sim-test.sh delay --size-mb 10
 
-All transfers: 4 × 100 MiB bidirectional, SHA-256 ✓, 10 Mbit/s cap.
+# Loss + delay combined
+./scripts/link-sim-test.sh both --loss-percent 5 --delay-ms 300 --size-mb 10
+
+# 2mbit link cap, agent capped at 1Mbps, 2 MiB payload
+./scripts/link-sim-test.sh rate --rate 2mbit --bw-cap 1Mbps --size-mb 2
+
+# Baseline — no impairment
+./scripts/link-sim-test.sh clean --size-mb 10
+```
+
+### Results (debug build, 10 Mbit/s agent cap, `both` profile)
+
+5% packet loss + 600ms ±100ms jitter. All transfers: 4 × 10 MiB bidirectional,
+SHA-256 ✓.
+
+| Profile | Loss | Delay        | Elapsed (s) | BW Util |
+|:--------|:-----|:-------------|:------------|:--------|
+| `both`  | 5%   | 600ms ±100ms | ~8.2        | ~102%   |
+
+QUIC absorbs all impairment transparently — the token bucket rate limiter
+remains the binding constraint.

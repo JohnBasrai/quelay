@@ -63,9 +63,12 @@ use crate::config::{DEFAULT_CHUNK_SIZE_BYTES, DEFAULT_MAX_CONCURRENT};
 /// When `test-hooks` is disabled the macro expands to `Ok(())` and the
 /// body is excluded entirely from the production binary.
 macro_rules! test_hook {
-    ($expr:expr) => {{
+    ($expr:expr, $method_name: literal) => {{
         #[cfg(feature = "test-hooks")]
-        return $expr;
+        {
+            tracing::debug!("{} - OK", $method_name);
+            return $expr;
+        }
         #[cfg(not(feature = "test-hooks"))]
         {
             tracing::warn!("test-hooks feature is disabled; call ignored");
@@ -342,9 +345,9 @@ impl QueLayAgentSyncHandler for AgentHandler {
 
     fn handle_get_link_state(&self) -> thrift::Result<WireLinkState> {
         // ---
+        tracing::debug!("handle_get_link_state");
 
         let state = self.rt.block_on(async { *self.link_state.lock().await });
-        tracing::debug!(?state, "get_link_state");
 
         Ok(match state {
             LinkState::Connecting => WireLinkState::CONNECTING,
@@ -358,6 +361,7 @@ impl QueLayAgentSyncHandler for AgentHandler {
 
     fn handle_get_bandwidth_cap_bps(&self) -> thrift::Result<i64> {
         // ---
+        tracing::debug!("handle_get_bandwidth_cap_bps");
 
         let guard = self.lock_runtime_cfg()?;
         let cap = guard.bw_cap_bps;
@@ -373,56 +377,70 @@ impl QueLayAgentSyncHandler for AgentHandler {
 
     fn handle_link_enable(&self, _enabled: bool) -> thrift::Result<()> {
         // ---
-        test_hook!({
-            tracing::info!(enabled = _enabled, "link_enable (test/debug)");
-            self.send_cmd(AgentCmd::LinkEnable(_enabled))
-        })
+        tracing::debug!("handle_link_enable");
+
+        test_hook!(
+            {
+                tracing::info!(enabled = _enabled, "link_enable (test/debug)");
+                self.send_cmd(AgentCmd::LinkEnable(_enabled))
+            },
+            "handle_link_enable"
+        )
     }
 
     // ---
 
     fn handle_set_max_concurrent(&self, _n: i32) -> thrift::Result<()> {
         // ---
-        test_hook!({
-            let n = _n as usize;
-            tracing::warn!(n, "set_max_concurrent (test/debug)");
+        tracing::debug!("handle_set_max_concurrent");
 
+        test_hook!(
             {
-                let mut cfg = self.lock_runtime_cfg()?;
-                cfg.max_concurrent = if n == 0 { DEFAULT_MAX_CONCURRENT } else { n };
-            }
+                let n = _n as usize;
+                tracing::warn!(n, "set_max_concurrent (test/debug)");
 
-            self.send_cmd(AgentCmd::SetMaxConcurrent(n))
-        })
+                {
+                    let mut cfg = self.lock_runtime_cfg()?;
+                    cfg.max_concurrent = if n == 0 { DEFAULT_MAX_CONCURRENT } else { n };
+                }
+
+                self.send_cmd(AgentCmd::SetMaxConcurrent(n))
+            },
+            "handle_set_max_concurrent"
+        )
     }
 
     // ---
 
     fn handle_set_chunk_size_bytes(&self, _n: i32) -> thrift::Result<()> {
         // ---
-        test_hook!({
-            let requested = _n as usize;
-            tracing::debug!(requested, "set_chunk_size_bytes (test/debug)");
+        tracing::debug!("handle_set_chunk_size_bytes");
 
-            let effective = if requested == 0 {
-                DEFAULT_CHUNK_SIZE_BYTES
-            } else {
-                requested
-            };
-
-            if effective > 65_535 {
-                return Err(thrift::Error::Application(thrift::ApplicationError::new(
-                    thrift::ApplicationErrorKind::InvalidTransform,
-                    format!("chunk_size_bytes {effective} exceeds u16 max (65535)"),
-                )));
-            }
-
+        test_hook!(
             {
-                let mut cfg = self.lock_runtime_cfg()?;
-                cfg.chunk_size_bytes = effective;
-            }
+                let requested = _n as usize;
+                tracing::debug!(requested, "set_chunk_size_bytes (test/debug)");
 
-            Ok(())
-        })
+                let effective = if requested == 0 {
+                    DEFAULT_CHUNK_SIZE_BYTES
+                } else {
+                    requested
+                };
+
+                if effective > 65_535 {
+                    return Err(thrift::Error::Application(thrift::ApplicationError::new(
+                        thrift::ApplicationErrorKind::InvalidTransform,
+                        format!("chunk_size_bytes {effective} exceeds u16 max (65535)"),
+                    )));
+                }
+
+                {
+                    let mut cfg = self.lock_runtime_cfg()?;
+                    cfg.chunk_size_bytes = effective;
+                }
+                Ok(())
+            },
+            "handle_set_chunk_size_bytes"
+        )
     }
 }

@@ -165,7 +165,7 @@ async fn main() -> anyhow::Result<()> {
     let cb_tx = CallbackAgent::spawn()?;
     spawn_ping_timer(cb_tx.clone(), std::time::Duration::from_secs(60));
 
-    let (initial_session, transport_cfg) = match &cfg.mode {
+    let (initial_session, transport_cfg, mode) = match &cfg.mode {
         Mode::Server { bind } => {
             debug!("server mode: binding QUIC on {bind}");
 
@@ -187,7 +187,11 @@ async fn main() -> anyhow::Result<()> {
             debug!("server mode: client connected");
 
             let tcfg = TransportConfig::Server { sess_rx };
-            (Arc::new(session) as quelay_domain::QueLaySessionPtr, tcfg)
+            (
+                Arc::new(session) as quelay_domain::QueLaySessionPtr,
+                tcfg,
+                "server",
+            )
         }
 
         Mode::Client {
@@ -209,7 +213,11 @@ async fn main() -> anyhow::Result<()> {
                 server_name: server_name.clone(),
                 cert_der,
             };
-            (Arc::new(session) as quelay_domain::QueLaySessionPtr, tcfg)
+            (
+                Arc::new(session) as quelay_domain::QueLaySessionPtr,
+                tcfg,
+                "client",
+            )
         }
     };
 
@@ -248,12 +256,16 @@ async fn main() -> anyhow::Result<()> {
             10,
         );
         if let Err(e) = server.listen(&agent_endpoint) {
-            tracing::error!("Thrift server error: {e}");
+            tracing::error!("Thrift server error: {e:?}");
         }
     });
 
-    tokio::signal::ctrl_c().await?;
-    info!("shutting down");
-
-    Ok(())
-}
+    use tokio::signal::unix::{signal, SignalKind};
+    let mut sigterm = signal(SignalKind::terminate())?;
+    tokio::select! {
+        _ = tokio::signal::ctrl_c() => {},
+        _ = sigterm.recv() => {},
+    }
+    info!(mode, "agent: shutting down...");
+    std::process::exit(0);
+} // main

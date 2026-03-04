@@ -126,6 +126,25 @@ pub trait QueLaySession: Send + Sync {
     /// Use [`watch::Receiver::changed()`] to await each transition.
     fn link_state_rx(&self) -> watch::Receiver<LinkState>;
 
+    /// Cumulative UDP bytes transmitted on the wire since this session was
+    /// established, **including retransmits**.
+    ///
+    /// The [`AggregateRateLimiter`] samples this each tick and deducts the
+    /// retransmit overhead (wire delta minus payload delta) from its carry-over
+    /// budget, enforcing a true wire-level bandwidth cap rather than a
+    /// payload-only cap.
+    ///
+    /// This counter resets to zero each time a new session is established
+    /// (reconnect).  Callers must reset their sampling baseline via
+    /// [`AggregateRateLimiter::reset_wire_baseline`] immediately after
+    /// installing a new session.
+    ///
+    /// Transport implementations that do not track wire-level retransmits
+    /// (e.g. mock or loopback transports used in unit tests) should return `0`.
+    /// Returning `0` disables the retransmit-overhead deduction, which is
+    /// correct for lossless transports.
+    fn wire_bytes_sent(&self) -> u64;
+
     /// Close the session gracefully, finishing all open streams.
     async fn close(&self) -> Result<()>;
 }

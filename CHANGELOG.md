@@ -7,24 +7,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+---
+
+## [0.2.0] - 2026-02-20
+
+### Breaking Changes
+- CLI: `--bw-cap-mbps` replaced by `--bw-cap-bps` accepting human-readable
+  units (e.g. `10Mbps`, `500Kbps`, `1.5Gbps`)
+- IDL: `get_bandwidth_cap_mbps` (i32) renamed to `get_bandwidth_cap_bps` (i64)
+
 ### Added
-- `scripts/link-sim-test.sh`: satellite link impairment integration test
-  using Linux `tc netem` on a `veth` pair. Supports `loss`, `delay`, and
-  `both` profiles. Results documented in `quelay-agent/README.md`.
 - `test-hooks` Cargo feature gate: `link_enable`, `set_max_concurrent`, and
-  `set_chunk_size_bytes` RPC handlers and their supporting code
-  (`SessionCommand::LinkEnable`, `SessionCommand::SetMaxConcurrent`,
-  `UplinkHandle::notify_link_down`, `link_down_tx`) are now compiled out
-  unless `--features test-hooks` is passed. Production builds are clean by
-  default.
+  `set_chunk_size_bytes` RPC handlers are now compiled out unless
+  `--features test-hooks` is passed. Production builds are clean by default.
+- `scripts/ci-integration-test.sh`: passes `--features test-hooks` when
+  building `quelay-agent` and `e2e-test`.
+- `quelay-example` gains `--healthcheck` mode for Docker health probes.
 
 ### Changed
-- `scripts/ci-integration-test.sh`: passes `--features test-hooks` when
-  building `quelay-agent` and `e2e-test` so the integration test hooks
-  remain active in CI.
+- Agents now run in Docker containers; link simulation uses Pumba on the
+  quic-net bridge, replacing the veth/tc netem approach.
+- `AggregateRateLimiter` deducts actual wire bytes (including QUIC retransmits)
+  from the rate budget each tick via `wire_bytes_sent()` on `QueLaySession`.
+- `TestCallbackServer::bind` now takes an `advertise_ip` for cross-container
+  callback reachability.
+- Progress callbacks print live percent-done (or byte count) to stdout,
+  gated to ~1 update/second.
+- BW tolerance check now also requires a minimum elapsed time (500ms) in
+  addition to minimum transfer size.
+- Agent handles SIGTERM for clean container shutdown.
 - Routed `LinkEnable` through `SessionCommand` channel, removing
-  `SessionManagerHandle` which existed solely to call `link_enable()`
-  directly on `Arc<SessionManager>`.
+  `SessionManagerHandle`.
 
 ---
 

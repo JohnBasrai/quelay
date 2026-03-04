@@ -68,7 +68,7 @@ use uuid::Uuid;
 
 // ---
 
-use quelay_domain::{DrrScheduler, Priority, QueLayStreamPtr};
+use quelay_domain::{DrrScheduler, Priority, QueLaySessionPtr, QueLayStreamPtr};
 
 // ---
 
@@ -210,6 +210,10 @@ struct AggregateTimerTask {
     streams: Arc<Mutex<HashMap<Uuid, StreamEntry>>>,
     budget_bytes: usize,
     interval: Duration,
+    /// Live session handle for sampling `wire_bytes_sent` each tick.
+    session: Arc<Mutex<Option<QueLaySessionPtr>>>,
+    /// Baseline sampled at session install; subtracted to get per-tick delta.
+    wire_baseline: Arc<AtomicU64>,
 }
 
 impl AggregateTimerTask {
@@ -320,8 +324,38 @@ impl AggregateTimerTask {
                 }
             }
 
-            // 4) Reduce carryover only by delivered bytes.
-            available_budget = available_budget.saturating_sub(delivered);
+            // 4) Deduct actual wire bytes sent this tick (payload + retransmits
+            // + QUIC headers).  This is the ground-truth rate-limiter signal.
+            //
+            // wire_delta = bytes that left the NIC since last tick.
+            // undelivered = budget allocated to schedulder but not accepted by
+            //               pumps (channel full) — add back so we don't
+            //               double-penalize.
+            {
+                let baseline = self.wire_baseline.load(Ordering::Acquire);
+                let wire_now = self
+                    .session
+                    .lock()
+                    .await
+                    .as_ref()
+                    .map(|s| s.wire_bytes_sent())
+                    .unwrap_or(0);
+                let wire_delta = wire_now.saturating_sub(baseline);
+                self.wire_baseline.store(wire_now, Ordering::Release);
+
+                let undelivered = available_budget.saturating_sub(delivered);
+                available_budget = available_budget
+                    .saturating_sub(wire_delta)
+                    .saturating_add(undelivered);
+
+                tracing::debug!(
+                    wire_delta,
+                    delivered,
+                    undelivered,
+                    available_budget,
+                    "ARL tick: budget after wire deduction"
+                );
+            }
 
             // 5) Clean up streams whose pumps are gone so the scheduler doesn't
             // keep allocating to closed channels.
@@ -365,6 +399,13 @@ pub struct AggregateRateLimiter {
     streams: Arc<Mutex<HashMap<Uuid, StreamEntry>>>,
     /// Stored for uncapped detection by callers; `None` = uncapped.
     params: Option<RateParams>,
+    /// Shared session handle — updated by `SessionManager` on each reconnect.
+    /// The timer task reads `wire_bytes_sent` from here each tick.
+    session: Arc<Mutex<Option<QueLaySessionPtr>>>,
+    /// Wire-bytes baseline for the current session.  Reset whenever a new
+    /// session is installed so the per-tick delta is always relative to the
+    /// current connection only.
+    wire_baseline: Arc<AtomicU64>,
 }
 
 impl AggregateRateLimiter {
@@ -376,12 +417,15 @@ impl AggregateRateLimiter {
     ///   [`register`] returns `(None, backlog)` so callers can detect
     ///   uncapped mode and skip pump construction.
     /// - `rate_bps = Some(n)`: spawns the aggregate timer task.
-    pub fn new(rate_bps: Option<u64>) -> Self {
+    pub fn new(rate_bps: Option<u64>, initial_session: QueLaySessionPtr) -> Self {
         // ---
         use super::CHUNK_SIZE;
 
         let scheduler = Arc::new(Mutex::new(DrrScheduler::new()));
         let streams: Arc<Mutex<HashMap<Uuid, StreamEntry>>> = Arc::new(Mutex::new(HashMap::new()));
+        let session: Arc<Mutex<Option<QueLaySessionPtr>>> =
+            Arc::new(Mutex::new(Some(initial_session)));
+        let wire_baseline = Arc::new(AtomicU64::new(0));
 
         let params = rate_bps.map(|bps| RateParams::from_rate_bps(bps, CHUNK_SIZE));
 
@@ -392,6 +436,8 @@ impl AggregateRateLimiter {
                     streams: Arc::clone(&streams),
                     budget_bytes: p.budget_bytes,
                     interval: p.interval,
+                    session: Arc::clone(&session),
+                    wire_baseline: Arc::clone(&wire_baseline),
                 }
                 .run(),
             );
@@ -401,7 +447,24 @@ impl AggregateRateLimiter {
             scheduler,
             streams,
             params,
+            session,
+            wire_baseline,
         }
+    }
+
+    // ---
+
+    /// Install a new session after reconnect and reset the wire-bytes baseline.
+    ///
+    /// Must be called from `SessionManager` immediately after
+    /// `remote.session = Some(new_session)` so the timer task's next tick
+    /// computes a delta relative to the new connection only.
+    pub async fn set_session(&self, new_session: QueLaySessionPtr) {
+        // ---
+        let baseline = new_session.wire_bytes_sent();
+        *self.session.lock().await = Some(new_session);
+        self.wire_baseline.store(baseline, Ordering::Release);
+        tracing::debug!(baseline, "ARL: new session installed, wire baseline reset");
     }
 
     // ---

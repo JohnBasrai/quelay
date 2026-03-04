@@ -50,16 +50,30 @@ Validates end-to-end handshake and C2I reachability in ~1 second.
 
 ### Network impairment tests (manual)
 
-Quelay relies on QUIC for packet-loss recovery, reordering, and deduplication.
-To test under realistic satellite conditions, use Linux `tc netem` on the
-interface between two agent instances:
+`scripts/link-sim-test.sh` runs the link simulation suite using Docker Compose.
+Two `quelay-agent` containers communicate over an isolated `quic-net` bridge;
+[Pumba](https://github.com/alexei-led/pumba) applies network impairment on that
+bridge. No host kernel namespaces, `veth` pairs, or `sudo` required.
 
 ```bash
-tc qdisc add dev eth0 root netem loss 5% delay 200ms 50ms
+# 5% packet loss, 10 MiB payload
+./scripts/link-sim-test.sh loss --size-mb 10
+
+# 600ms delay ±100ms jitter
+./scripts/link-sim-test.sh delay --size-mb 10
+
+# Loss + delay combined
+./scripts/link-sim-test.sh both --size-mb 10
+
+# 2mbit link cap (agent cap must be ≤ link cap)
+./scripts/link-sim-test.sh rate --rate 2mbit --bw-cap 1Mbps --size-mb 2
+
+# Baseline — no impairment
+./scripts/link-sim-test.sh clean --size-mb 10
 ```
 
-No code changes are needed — `quelay-quic` implements `QueLayTransport` and
-is the only transport used in production.
+Requires Docker with Compose v2. Run `./scripts/link-sim-test.sh --help` for
+the full option reference.
 
 ## Before Submitting a PR
 
@@ -103,8 +117,9 @@ on a specific area):
 | 9  | `e2e_test multi-file --count 2 --link-outage` | `quelay-agent/bin` | ✅ passing |
 | 10 | `e2e_test drr`                            | `quelay-agent/bin` | ✅ passing |
 | 11 | `e2e_test small-file-edge-cases`          | `quelay-agent/bin` | ✅ passing |
+| 12 | `e2e_test max-concurrent`                 | `quelay-agent/bin` | ✅ passing |
 
-`e2e_test` lives in `quelay-agent/src/bin/e2e_test.rs`. Run it via the CI
+`e2e_test` lives in `quelay-agent/src/bin/e2e_test/`. Run it via the CI
 script (which handles agent lifecycle) or point it at already-running agents.
 See `quelay-agent/src/bin/README.md` for the full subcommand reference and
 legacy test mapping.

@@ -43,15 +43,11 @@ pub struct MaxConcurrentArgs {
 /// The test does **not** drive actual data; it only verifies the
 /// `stream_start` return values.  Completing the queued streams and
 /// observing `promote_pending` fire is left to a future extension.
-pub async fn cmd_max_concurrent(
-    sender_c2i: SocketAddr,
-    _receiver_c2i: SocketAddr,
-    args: &MaxConcurrentArgs,
-) -> anyhow::Result<()> {
+pub async fn cmd_max_concurrent(ctx: &TestContext, args: &MaxConcurrentArgs) -> anyhow::Result<()> {
     // ---
     println!("=== max-concurrent ===");
 
-    ensure_agent_running(sender_c2i)?;
+    ensure_agent_running(ctx.sender_c2i)?;
 
     anyhow::ensure!(
         args.stream_count > args.max_concurrent,
@@ -62,16 +58,16 @@ pub async fn cmd_max_concurrent(
 
     // Configure the agent.
     {
-        let mut agent = connect_agent(sender_c2i)?;
+        let mut agent = connect_agent(ctx.sender_c2i)?;
         agent
             .set_max_concurrent(args.max_concurrent as i32)
             .context("set_max_concurrent failed")?;
     }
 
     // Bind a callback server so we can receive QueueStatus updates.
-    let cb = TestCallbackServer::bind()?;
+    let cb = TestCallbackServer::bind(ctx.callback_ip)?;
     {
-        let mut agent = connect_agent(sender_c2i)?;
+        let mut agent = connect_agent(ctx.sender_c2i)?;
         let e = agent.set_callback(cb.endpoint())?;
         anyhow::ensure!(e.is_empty(), "set_callback: {e}");
     }
@@ -142,7 +138,7 @@ pub async fn cmd_max_concurrent(
         args.stream_count, priorities
     );
 
-    let mut agent = connect_agent(sender_c2i)?;
+    let mut agent = connect_agent(ctx.sender_c2i)?;
 
     let mut results = Vec::new();
     for (i, (uuid, &pri)) in uuids.iter().zip(priorities.iter()).enumerate() {
@@ -279,7 +275,7 @@ pub async fn cmd_max_concurrent(
 
     // Restore agent to unlimited concurrency so subsequent tests are clean.
     {
-        let mut agent = connect_agent(sender_c2i)?;
+        let mut agent = connect_agent(ctx.sender_c2i)?;
         agent.set_max_concurrent(0)?;
     }
 

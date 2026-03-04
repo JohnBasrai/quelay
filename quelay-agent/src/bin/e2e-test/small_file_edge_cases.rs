@@ -3,7 +3,6 @@
 // ---------------------------------------------------------------------------
 
 use clap::Args;
-use std::net::SocketAddr;
 
 use crate::*;
 
@@ -16,22 +15,21 @@ pub struct SmallFileEdgeCasesArgs {
 }
 
 pub async fn cmd_small_file_edge_cases(
-    sender_c2i: SocketAddr,
-    receiver_c2i: SocketAddr,
+    ctx: &TestContext,
     args: &SmallFileEdgeCasesArgs,
 ) -> anyhow::Result<()> {
     // ---
 
     println!("=== small-file-edge-cases ===");
 
-    ensure_agent_running(sender_c2i)?;
-    ensure_agent_running(receiver_c2i)?;
+    ensure_agent_running(ctx.sender_c2i)?;
+    ensure_agent_running(ctx.receiver_c2i)?;
 
-    let cap_mbps = query_cap(sender_c2i).context("query_cap(sender_c2i) failed")?;
+    let cap_mbps = query_cap(ctx.sender_c2i).context("query_cap(sender_c2i) failed")?;
 
     {
-        let mut s = connect_agent(sender_c2i)?;
-        let mut r = connect_agent(receiver_c2i)?;
+        let mut s = connect_agent(ctx.sender_c2i)?;
+        let mut r = connect_agent(ctx.receiver_c2i)?;
         s.set_chunk_size_bytes(1024)?;
         r.set_chunk_size_bytes(1024)?;
     }
@@ -45,22 +43,20 @@ pub async fn cmd_small_file_edge_cases(
 
     for (sz, label) in &sizes {
         println!("  [{label}]");
-        run_single_transfer(sender_c2i, receiver_c2i, *sz, label, cap_mbps).await?;
+        run_single_transfer(ctx, *sz, label, cap_mbps).await?;
         if args.bidirectional {
-            run_single_transfer(
-                receiver_c2i,
-                sender_c2i,
-                *sz,
-                &format!("{label} (reverse)"),
-                cap_mbps,
-            )
-            .await?;
+            let reverse_ctx = TestContext {
+                sender_c2i: ctx.receiver_c2i,
+                receiver_c2i: ctx.sender_c2i,
+                callback_ip: ctx.callback_ip,
+            };
+            run_single_transfer(&reverse_ctx, *sz, &format!("{label} (reverse)"), cap_mbps).await?;
         }
     }
 
     {
-        let mut s = connect_agent(sender_c2i)?;
-        let mut r = connect_agent(receiver_c2i)?;
+        let mut s = connect_agent(ctx.sender_c2i)?;
+        let mut r = connect_agent(ctx.receiver_c2i)?;
         s.set_chunk_size_bytes(0)?; // 0 = restore default
         r.set_chunk_size_bytes(0)?;
     }

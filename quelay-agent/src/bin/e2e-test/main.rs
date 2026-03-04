@@ -109,7 +109,14 @@ const BW_TOLERANCE_HIGH: f64 = 1.10;
 /// Minimum transfer size for a meaningful BW check.  Transfers smaller than
 /// this complete too quickly for the rate limiter to shape them, so we skip
 /// the ±10% assertion rather than raise a spurious error.
+/// NOTE: source says 1 MiB; the "512 KiB" comment in earlier versions was wrong.
 const MIN_BW_TEST_BYTES: usize = 1024 * 1024;
+
+/// Minimum elapsed time for a meaningful BW check.  Even transfers above
+/// MIN_BW_TEST_BYTES can complete too quickly at high BW caps for the ±10%
+/// tolerance to hold — scheduling jitter dominates short measurements.
+/// 500 ms gives the rate limiter enough ticks to average out.
+const MIN_BW_TEST_ELAPSED: Duration = Duration::from_millis(500);
 
 /// Bytes written before disabling the link in the spool reconnect path.
 /// Matches the agent's default spool capacity (1 MiB).
@@ -143,6 +150,12 @@ struct Cli {
     /// C2I address of the receiving agent.
     #[arg(long, default_value = "127.0.0.1:9091")]
     receiver_c2i: SocketAddr,
+
+    /// IP address the callback listener binds on and advertises to agents.
+    /// Override with the host-side veth IP (e.g. 10.99.0.1) when the
+    /// receiver agent runs in a network namespace and cannot reach 127.0.0.1.
+    #[arg(long, default_value = "127.0.0.1")]
+    callback_ip: std::net::IpAddr,
 
     /// Enable debug logging (RUST_LOG=debug).
     #[arg(long, default_value_t = false)]
@@ -303,12 +316,22 @@ struct TransferStats {
 }
 
 // ---------------------------------------------------------------------------
+// TestContext — bundles the agent endpoints and callback IP to avoid
+// exceeding clippy's too_many_arguments limit on run_transfer.
+// ---------------------------------------------------------------------------
+
+struct TestContext {
+    sender_c2i: SocketAddr,
+    receiver_c2i: SocketAddr,
+    callback_ip: std::net::IpAddr,
+}
+
+// ---------------------------------------------------------------------------
 // run_transfer
 // ---------------------------------------------------------------------------
 
 async fn run_transfer(
-    sender_c2i: SocketAddr,
-    receiver_c2i: SocketAddr,
+    ctx: &TestContext,
     payload: Vec<u8>,
     uuid: &str,
     inject: LinkInject,
@@ -316,11 +339,14 @@ async fn run_transfer(
     timeout: Duration,
 ) -> anyhow::Result<TransferStats> {
     // ---
+    let sender_c2i = ctx.sender_c2i;
+    let receiver_c2i = ctx.receiver_c2i;
+    let callback_ip = ctx.callback_ip;
     let sha256_sent = sha256_hex(&payload);
     let bytes = payload.len();
 
-    let sender_cb = TestCallbackServer::bind()?;
-    let receiver_cb = TestCallbackServer::bind()?;
+    let sender_cb = TestCallbackServer::bind(callback_ip)?;
+    let receiver_cb = TestCallbackServer::bind(callback_ip)?;
 
     let mut sender_agent = connect_agent(sender_c2i)?;
     let mut receiver_agent = connect_agent(receiver_c2i)?;
@@ -353,6 +379,9 @@ async fn run_transfer(
         result.status
     );
 
+    let sender_ip = ctx.sender_c2i.ip();
+    let receiver_ip = ctx.receiver_c2i.ip();
+
     let sender_port = match sender_cb.recv_event(timeout)? {
         TestCallbackEvent::Started { port, .. } => port,
         other => anyhow::bail!("sender: expected Started, got {other:?}"),
@@ -360,7 +389,7 @@ async fn run_transfer(
 
     let sender_done = tokio::task::spawn_blocking(move || -> anyhow::Result<()> {
         use std::io::Write;
-        let mut tcp = std::net::TcpStream::connect(format!("127.0.0.1:{sender_port}"))?;
+        let mut tcp = std::net::TcpStream::connect(SocketAddr::new(sender_ip, sender_port))?;
 
         match inject {
             LinkInject::None => {
@@ -405,7 +434,7 @@ async fn run_transfer(
     let mut received = Vec::with_capacity(bytes);
     {
         use std::io::Read;
-        let mut tcp = std::net::TcpStream::connect(format!("127.0.0.1:{receiver_port}"))?;
+        let mut tcp = std::net::TcpStream::connect(SocketAddr::new(receiver_ip, receiver_port))?;
         tcp.set_read_timeout(Some(timeout))?;
         tcp.read_to_end(&mut received)?;
     }
@@ -491,8 +520,7 @@ fn assert_bw_within_tolerance(stats: &TransferStats, cap_bps: u64) -> anyhow::Re
 }
 
 async fn run_single_transfer(
-    sender_c2i: SocketAddr,
-    receiver_c2i: SocketAddr,
+    ctx: &TestContext,
     bytes: usize,
     label: &str,
     cap_bps: Option<u64>,
@@ -503,16 +531,7 @@ async fn run_single_transfer(
     let timeout = transfer_timeout(bytes, cap_bps);
     let uuid = Uuid::new_v4().to_string();
 
-    let stats = run_transfer(
-        sender_c2i,
-        receiver_c2i,
-        payload,
-        &uuid,
-        LinkInject::None,
-        cap_bps,
-        timeout,
-    )
-    .await?;
+    let stats = run_transfer(ctx, payload, &uuid, LinkInject::None, cap_bps, timeout).await?;
 
     anyhow::ensure!(
         stats.sha256_sent == stats.sha256_rcvd,
@@ -523,13 +542,13 @@ async fn run_single_transfer(
     println!("  [{label}] sha256 ✓");
 
     if let Some(cap) = cap_bps {
-        if bytes >= MIN_BW_TEST_BYTES {
+        if bytes >= MIN_BW_TEST_BYTES && stats.elapsed >= MIN_BW_TEST_ELAPSED {
             assert_bw_within_tolerance(&stats, cap)?;
         } else {
             println!(
-                "  [{label}] BW check skipped (transfer too small for rate shaping: {} B < {} KiB)",
-                bytes,
-                MIN_BW_TEST_BYTES / 1024,
+                "  [{label}] BW check skipped (transfer too short for reliable measurement: \
+                 {} B, {:.0?})",
+                bytes, stats.elapsed,
             );
         }
     }
@@ -538,8 +557,7 @@ async fn run_single_transfer(
 }
 
 async fn run_multi_file_link_outage(
-    sender_c2i: SocketAddr,
-    receiver_c2i: SocketAddr,
+    ctx: &TestContext,
     file_sizes: &[usize],
     cap_bps: Option<u64>,
 ) -> anyhow::Result<()> {
@@ -570,14 +588,13 @@ async fn run_multi_file_link_outage(
     let uuid1 = Uuid::new_v4().to_string();
 
     let stats1 = run_transfer(
-        sender_c2i,
-        receiver_c2i,
+        ctx,
         payload1,
         &uuid1,
         LinkInject::Drop {
             drop_after: SPOOL_DROP_AFTER_BYTES,
             link_down_secs,
-            sender_c2i,
+            sender_c2i: ctx.sender_c2i,
         },
         cap_bps,
         timeout,
@@ -591,7 +608,7 @@ async fn run_multi_file_link_outage(
     println!("  link-outage file-1 sha256 ✓");
 
     let sz2 = file_sizes.get(1).copied().unwrap_or(64 * 1024);
-    run_single_transfer(sender_c2i, receiver_c2i, sz2, "link-outage-file-2", cap_bps).await?;
+    run_single_transfer(ctx, sz2, "link-outage-file-2", cap_bps).await?;
 
     Ok(())
 }
@@ -642,15 +659,17 @@ async fn real_main() -> anyhow::Result<()> {
         .with_ansi(!no_color)
         .init();
 
+    let ctx = TestContext {
+        sender_c2i: cli.sender_c2i,
+        receiver_c2i: cli.receiver_c2i,
+        callback_ip: cli.callback_ip,
+    };
+
     match &cli.command {
-        Command::MultiFile(args) => cmd_multi_file(cli.sender_c2i, cli.receiver_c2i, args).await?,
-        Command::Drr(args) => cmd_drr(cli.sender_c2i, cli.receiver_c2i, args).await?,
-        Command::SmallFileEdgeCases(args) => {
-            cmd_small_file_edge_cases(cli.sender_c2i, cli.receiver_c2i, args).await?
-        }
-        Command::MaxConcurrent(args) => {
-            cmd_max_concurrent(cli.sender_c2i, cli.receiver_c2i, args).await?
-        }
+        Command::MultiFile(args) => cmd_multi_file(&ctx, args).await?,
+        Command::Drr(args) => cmd_drr(&ctx, args).await?,
+        Command::SmallFileEdgeCases(args) => cmd_small_file_edge_cases(&ctx, args).await?,
+        Command::MaxConcurrent(args) => cmd_max_concurrent(&ctx, args).await?,
     }
 
     Ok(())

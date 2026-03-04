@@ -49,19 +49,15 @@ pub struct MultiFileArgs {
 
 // ---
 
-pub async fn cmd_multi_file(
-    sender_c2i: SocketAddr,
-    receiver_c2i: SocketAddr,
-    args: &MultiFileArgs,
-) -> anyhow::Result<()> {
+pub async fn cmd_multi_file(ctx: &TestContext, args: &MultiFileArgs) -> anyhow::Result<()> {
     // ---
 
     println!("=== multi-file ===");
 
-    ensure_agent_running(sender_c2i)?;
-    ensure_agent_running(receiver_c2i)?;
+    ensure_agent_running(ctx.sender_c2i)?;
+    ensure_agent_running(ctx.receiver_c2i)?;
 
-    let cap_bps = query_cap(sender_c2i).context("query_cap(sender_c2i) failed")?;
+    let cap_bps = query_cap(ctx.sender_c2i).context("query_cap(sender_c2i) failed")?;
 
     let file_sizes: Vec<usize> = if args.large {
         vec![
@@ -87,24 +83,21 @@ pub async fn cmd_multi_file(
     };
 
     if args.link_outage {
-        run_multi_file_link_outage(sender_c2i, receiver_c2i, &file_sizes, cap_bps).await?;
+        run_multi_file_link_outage(ctx, &file_sizes, cap_bps).await?;
     } else if args.link_fail {
-        run_multi_file_link_fail(sender_c2i, receiver_c2i).await?;
+        run_multi_file_link_fail(ctx.sender_c2i, ctx.receiver_c2i).await?;
     } else {
         for (i, &sz) in file_sizes.iter().enumerate() {
-            run_single_transfer(
-                sender_c2i,
-                receiver_c2i,
-                sz,
-                &format!("multi-file-{i}"),
-                cap_bps,
-            )
-            .await?;
+            run_single_transfer(ctx, sz, &format!("multi-file-{i}"), cap_bps).await?;
 
             if args.bidirectional {
+                let reverse_ctx = TestContext {
+                    sender_c2i: ctx.receiver_c2i,
+                    receiver_c2i: ctx.sender_c2i,
+                    callback_ip: ctx.callback_ip,
+                };
                 run_single_transfer(
-                    receiver_c2i,
-                    sender_c2i,
+                    &reverse_ctx,
                     sz,
                     &format!("multi-file-{i}-reverse"),
                     cap_bps,

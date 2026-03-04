@@ -374,10 +374,10 @@ impl ActiveStream {
             session_cmd_tx,
         } = ctx;
 
-        let listener = TcpListener::bind("127.0.0.1:0").await?;
+        let listener = TcpListener::bind("0.0.0.0:0").await?;
         let port = listener.local_addr()?.port();
 
-        tracing::debug!(%uuid, port, "uplink: ephemeral TCP port open, firing stream_started");
+        tracing::info!(%uuid, port, "uplink: ephemeral TCP port open, firing stream_started");
 
         cb_tx
             .send(CallbackCmd::StreamStarted {
@@ -482,7 +482,7 @@ impl ActiveStream {
     ) -> anyhow::Result<DownlinkHandle> {
         // ---
 
-        let listener = TcpListener::bind("127.0.0.1:0").await?;
+        let listener = TcpListener::bind("0.0.0.0:0").await?;
         let port = listener.local_addr()?.port();
 
         tracing::debug!(%uuid, port, "downlink: ephemeral TCP port open, firing stream_started");
