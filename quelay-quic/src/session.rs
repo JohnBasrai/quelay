@@ -118,6 +118,14 @@ impl QueLaySession for QuicSession {
 
     // ---
 
+    /// Returns cumulative UDP bytes sent on the wire for this connection,
+    /// including all QUIC retransmits.  Resets to zero on each new connection.
+    fn wire_bytes_sent(&self) -> u64 {
+        self.conn.stats().udp_tx.bytes
+    }
+
+    // ---
+
     async fn close(&self) -> Result<()> {
         // ---
         self.set_link_state(LinkState::Failed);

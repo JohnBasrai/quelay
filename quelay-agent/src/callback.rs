@@ -185,10 +185,11 @@ impl CallbackAgent {
 
             match cmd {
                 CallbackCmd::Register(endpoint) => {
+                    tracing::info!(endpoint, "connecting callback");
                     client = None; // drop existing connection first
                     match connect(&endpoint) {
                         Ok(c) => {
-                            tracing::debug!(%endpoint, "callback socket connected");
+                            tracing::info!(%endpoint, "callback socket connected");
                             client = Some(c);
                         }
                         Err(e) => {

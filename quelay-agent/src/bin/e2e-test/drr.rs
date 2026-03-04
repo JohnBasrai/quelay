@@ -14,21 +14,18 @@ pub struct DrrArgs {
     file_count: usize,
 }
 
-pub async fn cmd_drr(
-    sender_c2i: SocketAddr,
-    receiver_c2i: SocketAddr,
-    args: &DrrArgs,
-) -> anyhow::Result<()> {
+pub async fn cmd_drr(ctx: &TestContext, args: &DrrArgs) -> anyhow::Result<()> {
     // ---
 
     println!("=== drr ===");
 
-    ensure_agent_running(sender_c2i)?;
+    ensure_agent_running(ctx.sender_c2i)?;
 
-    let cap_bps = query_cap(sender_c2i).context("query_cap(sender_c2i) failed")?;
+    let cap_bps = query_cap(ctx.sender_c2i).context("query_cap(sender_c2i) failed")?;
 
     {
-        let mut agent = connect_agent(sender_c2i).context("connect_agent(sender_c2i) failed")?;
+        let mut agent =
+            connect_agent(ctx.sender_c2i).context("connect_agent(sender_c2i) failed")?;
         agent
             .set_max_concurrent(1)
             .context("set_max_concurrent(1) failed")?;
@@ -46,13 +43,13 @@ pub async fn cmd_drr(
     let anchor_uuid = Uuid::new_v4().to_string();
     let anchor_sha256 = sha256_hex(&anchor_payload);
 
-    let anchor_cb = TestCallbackServer::bind()?;
-    let receiver_cb = TestCallbackServer::bind()?;
+    let anchor_cb = TestCallbackServer::bind(ctx.callback_ip)?;
+    let receiver_cb = TestCallbackServer::bind(ctx.callback_ip)?;
     let timeout = transfer_timeout(anchor_bytes, cap_bps);
 
     {
-        let mut sender_agent = connect_agent(sender_c2i)?;
-        let mut receiver_agent = connect_agent(receiver_c2i)?;
+        let mut sender_agent = connect_agent(ctx.sender_c2i)?;
+        let mut receiver_agent = connect_agent(ctx.receiver_c2i)?;
         let e = sender_agent.set_callback(anchor_cb.endpoint())?;
         anyhow::ensure!(e.is_empty(), "drr set_callback (sender): {e}");
         let e = receiver_agent.set_callback(receiver_cb.endpoint())?;
@@ -111,6 +108,9 @@ pub async fn cmd_drr(
         }
     }
 
+    let sender_ip = ctx.sender_c2i.ip();
+    let receiver_ip = ctx.receiver_c2i.ip();
+
     let anchor_port = match anchor_cb.recv_event_for(&anchor_uuid, timeout)? {
         TestCallbackEvent::Started { port, .. } => port,
         other => anyhow::bail!("drr anchor: expected Started, got {other:?}"),
@@ -118,7 +118,7 @@ pub async fn cmd_drr(
 
     let write_task = tokio::task::spawn_blocking(move || -> anyhow::Result<()> {
         use std::io::Write;
-        let mut tcp = std::net::TcpStream::connect(format!("127.0.0.1:{anchor_port}"))?;
+        let mut tcp = std::net::TcpStream::connect(SocketAddr::new(sender_ip, anchor_port))?;
         tcp.write_all(&anchor_payload)?;
         Ok(())
     });
@@ -130,7 +130,7 @@ pub async fn cmd_drr(
     let mut received = Vec::with_capacity(anchor_bytes);
     {
         use std::io::Read;
-        let mut tcp = std::net::TcpStream::connect(format!("127.0.0.1:{receiver_port}"))?;
+        let mut tcp = std::net::TcpStream::connect(SocketAddr::new(receiver_ip, receiver_port))?;
         tcp.set_read_timeout(Some(timeout))?;
         tcp.read_to_end(&mut received)?;
     }
@@ -157,7 +157,8 @@ pub async fn cmd_drr(
     println!("  drr anchor sha256 ✓");
 
     {
-        let mut agent = connect_agent(sender_c2i).context("connect_agent(sender_c2i) failed")?;
+        let mut agent =
+            connect_agent(ctx.sender_c2i).context("connect_agent(sender_c2i) failed")?;
         agent.set_max_concurrent(0)?; // 0 = restore default
     }
 

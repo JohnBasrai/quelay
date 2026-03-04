@@ -329,6 +329,7 @@ impl SessionManager {
             Some(config.max_concurrent)
         };
 
+        let initial_session = Arc::clone(&session);
         let remote = RemoteState::new(session, max_concurrent, config.max_pending);
 
         (
@@ -337,7 +338,7 @@ impl SessionManager {
                 transport_cfg: Mutex::new(transport_cfg),
                 link_state,
                 cb_tx,
-                arl: Arc::new(AggregateRateLimiter::new(bw_cap_bps)),
+                arl: Arc::new(AggregateRateLimiter::new(bw_cap_bps, initial_session)),
                 session_restored: Arc::new(Notify::new()),
                 cmd_tx: cmd_tx.clone(),
             },
@@ -496,7 +497,24 @@ impl SessionManager {
                                 "session restored — restoring active streams and draining pending queue"
                             );
                             Self::restore_active(remote).await;
-                            Self::drain_pending(remote, self.cb_tx.clone(), Arc::clone(&self.arl), self.cmd_tx.clone()).await;
+                            Self::drain_pending(
+                                remote,
+                                self.cb_tx.clone(),
+                                Arc::clone(&self.arl),
+                                self.cmd_tx.clone()).await;
+
+                            // Install the new session in the ARL so the timer
+                            // task samples wire_bytes_sent from the new
+                            // connection and resets its retransmit baseline.
+                            if let Some(s) = remote.session.as_ref() {
+                                self.arl.set_session(Arc::clone(s)).await;
+                            } else {
+                                tracing::error!(
+                                    "set_session: remote.session is \
+                                     None immediately after install — \
+                                     skipping ARL baseline reset");
+                            }
+
                             // Re-arm the accept loop on the new session.
                             self.session_restored.notify_one();
                         }

@@ -36,6 +36,7 @@ pub enum TestCallbackEvent {
 pub struct TestCallbackHandler {
     tx: Mutex<mpsc::Sender<TestCallbackEvent>>,
     progress_count: Arc<AtomicUsize>,
+    last_dot: Mutex<std::time::Instant>,
 }
 
 impl QueLayCallbackSyncHandler for TestCallbackHandler {
@@ -62,9 +63,22 @@ impl QueLayCallbackSyncHandler for TestCallbackHandler {
     fn handle_stream_progress(
         &self,
         _uuid: String,
-        _progress: quelay_thrift::ProgressInfo,
+        progress: quelay_thrift::ProgressInfo,
     ) -> thrift::Result<()> {
+        // ---
+
         self.progress_count.fetch_add(1, Ordering::Relaxed);
+
+        let mut last = self.last_dot.lock().unwrap();
+        if last.elapsed() >= std::time::Duration::from_secs(1) {
+            match progress.percent_done {
+                Some(pct) => print!("\r  {pct:.1}%   "),
+                None => print!("\r  {} bytes   ", progress.bytes_transferred.unwrap_or(0)),
+            }
+            let _ = std::io::Write::flush(&mut std::io::stdout());
+            *last = std::time::Instant::now();
+        }
+
         Ok(())
     }
 
@@ -125,9 +139,10 @@ pub struct TestCallbackServer {
 impl TestCallbackServer {
     // ---
 
-    pub fn bind() -> anyhow::Result<Self> {
-        let listener = std::net::TcpListener::bind("127.0.0.1:0")?;
-        let addr = listener.local_addr()?;
+    pub fn bind(advertise_ip: std::net::IpAddr) -> anyhow::Result<Self> {
+        let listener = std::net::TcpListener::bind("0.0.0.0:0")?;
+        let port = listener.local_addr()?.port();
+        let addr = std::net::SocketAddr::new(advertise_ip, port);
         let addr_str = addr.to_string();
         let (tx, rx) = mpsc::channel();
         let progress_count = Arc::new(AtomicUsize::new(0));
@@ -135,6 +150,7 @@ impl TestCallbackServer {
         let handler = TestCallbackHandler {
             tx: Mutex::new(tx),
             progress_count: Arc::clone(&progress_count),
+            last_dot: Mutex::new(std::time::Instant::now()),
         };
         let processor = QueLayCallbackSyncProcessor::new(handler);
         let (ready_tx, ready_rx) = mpsc::channel::<()>();

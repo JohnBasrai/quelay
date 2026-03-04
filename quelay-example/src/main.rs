@@ -12,6 +12,10 @@
 //!   cargo run -p quelay-example -- --agent-endpoint 127.0.0.1:9090
 //!   cargo run -p quelay-example -- --agent-endpoint 127.0.0.1:9090 \
 //!                                  --receiver-endpoint 127.0.0.1:9091
+//!
+//! Healthcheck (Docker / CI):
+//!   quelay-example --agent-endpoint 127.0.0.1:9090 --healthcheck
+//!   Calls get_version(), prints nothing on success, exits 0/1.
 
 use std::net::SocketAddr;
 
@@ -55,6 +59,12 @@ struct Config {
     /// a single end-to-end transfer demo runs between the two agents.
     #[arg(long)]
     receiver_endpoint: Option<SocketAddr>,
+
+    /// Healthcheck mode: call get_version() on --agent-endpoint and exit.
+    /// Exit 0 on success, 1 on any error.  No demo output is produced.
+    /// Requires --agent-endpoint.
+    #[arg(long, requires = "agent_endpoint")]
+    healthcheck: bool,
 }
 
 // ---------------------------------------------------------------------------
@@ -65,6 +75,13 @@ struct Config {
 async fn main() -> anyhow::Result<()> {
     // ---
     let cfg = Config::parse();
+
+    // Healthcheck: run smoke_check only, suppress all other output.
+    if cfg.healthcheck {
+        let addr = cfg.agent_endpoint.expect("clap requires agent_endpoint");
+        smoke_check(addr)?;
+        return Ok(());
+    }
 
     let no_color = std::env::var("EMACS").is_ok()
         || std::env::var("NO_COLOR").is_ok()

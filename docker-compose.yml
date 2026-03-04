@@ -1,0 +1,151 @@
+# Copyright (c) 2026 John Basrai
+# SPDX-License-Identifier: MIT OR Apache-2.0
+#
+# Usage (via scripts/link-sim-test.sh — do not invoke directly):
+#
+#   QUELAY_CAP=10Mbps   BW cap on the QUIC path (default: 10Mbps)
+#   PUMBA_ARGS          netem subcommand + args, e.g. "loss --percent 5"
+#   SIZE_MB             payload size per stream for e2e (default: 100)
+#
+# Networks
+# --------
+#   quic-net  isolated bridge between agent-server <-> agent-client only.
+#             Pumba applies tc netem impairment here. QUIC traffic only.
+#
+#   c2i-net   bridge shared by both agents, e2e, and (via port mapping) host.
+#             Carries Thrift C2I, callback TCP, and ephemeral spool ports.
+#             No impairment applied here.
+
+networks:
+  quic-net:
+    driver: bridge
+    internal: true      # no external routing; QUIC isolation
+  c2i-net:
+    driver: bridge
+
+volumes:
+  cert-vol:             # DER cert written by agent-server, read by agent-client
+
+services:
+
+  # --------------------------------------------------------------------------
+  # agent-server  (QUIC server / receiving side)
+  # --------------------------------------------------------------------------
+  agent-server:
+    container_name: quelay-agent-server
+    build:
+      context: .
+      target: agent
+    networks:
+      - quic-net
+      - c2i-net
+    ports:
+      - "9191:9191"     # C2I reachable from host and from e2e container
+    volumes:
+      - cert-vol:/app   # WORKDIR=/app; 'server' writes quelay-server.der here
+    environment:
+      RUST_LOG: ${RUST_LOG:-info}
+    command:
+      - --agent-endpoint
+      - "0.0.0.0:9191"
+      - --bw-cap-bps
+      - "${QUELAY_CAP:-10Mbps}"
+      - server
+      - --bind
+      - "0.0.0.0:4433" 
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/agent-healthcheck.sh", "9191"]
+      interval: 2s
+      timeout: 2s
+      retries: 15
+      start_period: 5s
+
+  # --------------------------------------------------------------------------
+  # agent-client  (QUIC client / sending side)
+  # --------------------------------------------------------------------------
+  agent-client:
+    container_name: quelay-agent-client
+    build:
+      context: .
+      target: agent
+    networks:
+      - quic-net
+      - c2i-net
+    ports:
+      - "9190:9190"     # C2I reachable from host and from e2e container
+    volumes:
+      - cert-vol:/app   # reads /app/quelay-server.der written by server
+    environment:
+      RUST_LOG: ${RUST_LOG:-info}
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        # Wait for agent-server to write the cert to the shared volume.
+        until [ -f /app/quelay-server.der ]; do sleep 0.2; done
+        PEER_IP=$$(getent hosts agent-server | awk '{print $$1}')
+        exec quelay-agent \
+          --agent-endpoint 0.0.0.0:9190 \
+          --bw-cap-bps "$${QUELAY_CAP:-10Mbps}" \
+          client \
+          --peer "$$PEER_IP:4433" \
+          --cert /app/quelay-server.der
+    depends_on:
+      agent-server:
+        condition: service_started  # must not be service_healthy — server blocks on QUIC
+                                    # handshake before opening Thrift port, so healthy
+                                    # requires the client to already be running.
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/agent-healthcheck.sh", "9190"]
+      interval: 2s
+      timeout: 2s
+      retries: 15
+      start_period: 5s
+
+  # --------------------------------------------------------------------------
+  # pumba — applies tc netem to agent-client's quic-net interface
+  #
+  # Impairs egress from agent-client (the sending/uplink side).
+  # PUMBA_ARGS examples:
+  #   loss --percent 5
+  #   delay --time 600 --jitter 100
+  #   rate --rate 2mbit
+  #   loss --percent 3 delay --time 400 --jitter 80
+  # --------------------------------------------------------------------------
+  pumba:
+    image: ghcr.io/alexei-led/pumba:latest
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    command: >
+      netem
+        --tc-image ghcr.io/alexei-led/pumba-alpine-nettools:latest
+        --interface eth0
+        --duration 24h
+        ${PUMBA_ARGS}
+        quelay-agent-client
+    depends_on:
+      agent-client:
+        condition: service_healthy
+
+  # --------------------------------------------------------------------------
+  # e2e — runs the integration test suite against both agents
+  #
+  # --callback-ip must be a routable IP (not a hostname) because the clap arg
+  # is typed as std::net::IpAddr.  We resolve the container's own c2i-net IP
+  # at startup with `hostname -i` via a shell wrapper.
+  # --------------------------------------------------------------------------
+  e2e:
+    build:
+      context: .
+      target: e2e
+    networks:
+      - c2i-net
+    environment:
+      RUST_LOG: ${RUST_LOG:-info}
+      E2E_ARGS: ${E2E_ARGS:-multi-file --size-mb 100 --bidirectional}
+    depends_on:
+      agent-client:
+        condition: service_healthy
+      agent-server:
+        condition: service_healthy
+      pumba:
+        condition: service_started
