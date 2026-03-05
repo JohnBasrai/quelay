@@ -89,6 +89,34 @@ impl QueLayStream for Box<dyn QueLayStream> {
     }
 }
 
+// ---------------------------------------------------------------------------
+// ConnStats
+// ---------------------------------------------------------------------------
+
+/// Cumulative QUIC connection statistics for one session.
+///
+/// All counters reset to zero when a new session is established (reconnect).
+/// Take a snapshot before and after a transfer and subtract to get
+/// per-transfer deltas.
+///
+/// Transport implementations that do not track these counters (e.g. mock or
+/// loopback transports) should return a zeroed `ConnStats`.  Zero values
+/// disable the corresponding reporting in callers.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct ConnStats {
+    // ---
+    /// Total packets sent, including retransmits.
+    pub sent_packets: u64,
+
+    /// Packets declared lost by QUIC loss detection.
+    pub lost_packets: u64,
+
+    /// Number of congestion events (ECN CE marks or loss-based triggers).
+    pub congestion_events: u64,
+}
+
+// ---
+
 /// Convenience type alias for a heap-allocated [`QueLaySession`].
 ///
 /// `Arc` (rather than `Box`) allows the accept loop and reconnect loop to
@@ -144,6 +172,16 @@ pub trait QueLaySession: Send + Sync {
     /// Returning `0` disables the retransmit-overhead deduction, which is
     /// correct for lossless transports.
     fn wire_bytes_sent(&self) -> u64;
+
+    /// Snapshot of cumulative QUIC connection statistics.
+    ///
+    /// All counters reset to zero on each new session (reconnect).
+    /// Callers wanting per-transfer deltas should snapshot before and after
+    /// the transfer and subtract.
+    ///
+    /// Transport implementations that do not track these counters should
+    /// return `ConnStats::default()`.
+    fn conn_stats(&self) -> ConnStats;
 
     /// Close the session gracefully, finishing all open streams.
     async fn close(&self) -> Result<()>;

@@ -151,7 +151,7 @@ a different name.
 ```
 main.rs            — CLI parsing, QUIC setup, wires the two halves together
 config.rs          — Clap structs (Config, Mode)
-agent.rs           — Agent: owns SessionManagerHandle, async command loop
+agent.rs           — Agent: owns SessionManager, async command loop
 thrift_srv.rs      — AgentHandler: sync Thrift handler, enqueues AgentCmds
 session_manager.rs — SessionManager: reconnection loop, pending queue, accept loop
 active_stream.rs   — Uplink/downlink data pumps, SpoolBuffer (three-pointer A/Q/T)
@@ -200,7 +200,7 @@ Defined in `quelay-thrift/idl/quelay.thrift`. The generated service trait is
 | Method | Behaviour |
 |:-------|:----------|
 | `get_version`                        | Returns the IDL version string from `quelay-thrift`. |
-| `stream_start(uuid, info, priority)` | Enqueues a `StreamStart` command; returns queue position. |
+| `stream_start(uuid, info, priority)` | Start or enqueue a stream. Returns `Running` if fewer than `--max-concurrent` streams are active; `Pending` with queue position if at the limit; `QueueFull` if the pending queue is full. |
 | `set_callback(endpoint)`             | Registers the callback endpoint for async status pushes. Returns an error string if a callback is already registered — only one active callback is supported; a second call is rejected. |
 | `get_link_state`                     | Returns the current `LinkState` snapshot. |
 | `get_bandwidth_cap_bps`              | Returns the configured uplink cap in bits/sec; 0 if uncapped. |
@@ -216,6 +216,10 @@ Stream lifecycle management flows through the session layer:
 
 - `stream_start` opens a live QUIC stream immediately when the session is up,
   or queues the request in `pending` when the link is down.
+- `stream_start` opens a live QUIC stream immediately when the session is up
+  and fewer than `--max-concurrent` streams are active. If at the concurrency
+  limit, the request is added to the pending queue. If the session is down,
+  the request is queued and replayed on reconnect.
 - On reconnect, `restore_active` delivers fresh QUIC streams to all in-flight
   uplink pumps; `drain_pending` re-issues queued streams in arrival order.
 - The inbound `accept_loop` sibling task dispatches on the stream-open opcode:

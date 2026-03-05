@@ -26,6 +26,7 @@ pub use priority::Priority;
 // --- transport
 pub use transport::{
     // ---
+    ConnStats,
     LinkState,
     QueLaySession,
     QueLaySessionPtr,

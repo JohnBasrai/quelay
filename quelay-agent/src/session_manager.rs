@@ -63,6 +63,10 @@ use crate::{
     WireStreamStartStatus,
 };
 
+use quelay_domain::ConnStats as DomainConnStats;
+#[allow(unused_imports)]
+use quelay_domain::QueLaySession as _;
+
 // ---------------------------------------------------------------------------
 // SessionCommand
 // ---------------------------------------------------------------------------
@@ -78,6 +82,10 @@ pub(crate) enum SessionCommand {
     },
     StreamFinished {
         uuid: String,
+    },
+    /// Request a snapshot of QUIC connection statistics.
+    GetConnStats {
+        reply_tx: oneshot::Sender<DomainConnStats>,
     },
     /// Update the maximum number of concurrent active uplinks at runtime.
     /// `None` means unlimited (0 from the C2I layer maps to this).
@@ -562,6 +570,18 @@ impl SessionManager {
                     .await;
                     remote.send_queue_status(&self.cb_tx).await;
                 }
+            }
+
+            SessionCommand::GetConnStats { reply_tx } => {
+                let stats = self
+                    .remote
+                    .lock()
+                    .await
+                    .as_ref()
+                    .and_then(|r| r.session.as_ref())
+                    .map(|s| s.conn_stats())
+                    .unwrap_or_default();
+                let _ = reply_tx.send(stats);
             }
 
             #[cfg(feature = "test-hooks")]

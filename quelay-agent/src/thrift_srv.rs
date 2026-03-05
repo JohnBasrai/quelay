@@ -23,6 +23,7 @@ use uuid::Uuid;
 
 use quelay_domain::{
     // ---
+    ConnStats as DomainConnStats,
     LinkState,
     Priority,
     StreamInfo as DomainStreamInfo,
@@ -37,6 +38,8 @@ use super::{
     WireStreamStartStatus,
     IDL_VERSION,
 };
+
+use quelay_thrift::ConnStats as WireConnStats;
 
 // ---
 
@@ -176,6 +179,11 @@ pub enum AgentCmd {
         info: DomainStreamInfo,
         priority: Priority,
         reply_tx: oneshot::Sender<StreamStartResponse>,
+    },
+
+    /// Request a snapshot of QUIC connection statistics.
+    GetConnStats {
+        reply_tx: oneshot::Sender<DomainConnStats>,
     },
 
     /// Test/debug only — enable or disable the QUIC link.
@@ -369,6 +377,25 @@ impl QueLayAgentSyncHandler for AgentHandler {
         tracing::debug!(cap = cap as f64, "get_bandwidth_cap_bps");
 
         Ok(cap as i64)
+    }
+
+    // ---
+
+    fn handle_get_conn_stats(&self) -> thrift::Result<WireConnStats> {
+        // ---
+        tracing::debug!("handle_get_conn_stats");
+
+        let (reply_tx, reply_rx) = oneshot::channel::<DomainConnStats>();
+        self.send_cmd(AgentCmd::GetConnStats { reply_tx })?;
+
+        let stats = self.rt.block_on(reply_rx).map_err(|_| {
+            thrift::Error::Application(thrift::ApplicationError::new(
+                thrift::ApplicationErrorKind::InternalError,
+                "get_conn_stats: session manager dropped reply channel",
+            ))
+        })?;
+
+        Ok(WireConnStats::from(stats))
     }
 
     // -----------------------------------------------------------------------
