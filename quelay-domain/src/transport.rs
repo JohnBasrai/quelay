@@ -113,6 +113,15 @@ pub struct ConnStats {
 
     /// Number of congestion events (ECN CE marks or loss-based triggers).
     pub congestion_events: u64,
+
+    /// Current best estimate of round-trip time in milliseconds.
+    pub rtt_ms: u64,
+
+    /// Current congestion window in bytes.
+    pub cwnd: u64,
+
+    /// Bytes declared lost by QUIC loss detection.
+    pub lost_bytes: u64,
 }
 
 // ---

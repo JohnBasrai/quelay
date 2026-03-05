@@ -133,12 +133,18 @@ const BW_TOLERANCE: f64 = 0.10;
 struct Cli {
     // ---
     /// C2I address of the sending agent (air side).
+    ///
+    /// Accepts hostnames (`agent-client:9190`) or numeric IPs.
+    /// Resolved at connect time.
     #[arg(long, default_value = "127.0.0.1:9090")]
-    sender_c2i: SocketAddr,
+    sender_c2i: String,
 
     /// C2I address of the receiving agent (ground side).
+    ///
+    /// Accepts hostnames (`agent-server:9191`) or numeric IPs.
+    /// Resolved at connect time.
     #[arg(long, default_value = "127.0.0.1:9091")]
-    receiver_c2i: SocketAddr,
+    receiver_c2i: String,
 
     /// Number of concurrent streams to run.
     #[arg(long, default_value_t = 3)]
@@ -198,11 +204,11 @@ async fn real_main() -> anyhow::Result<()> {
         cli.receiver_c2i,
     );
 
-    ensure_agent_running(cli.sender_c2i)?;
-    ensure_agent_running(cli.receiver_c2i)?;
+    ensure_agent_running(&cli.sender_c2i)?;
+    ensure_agent_running(&cli.receiver_c2i)?;
 
     // --- query BW cap from sender agent ---
-    let cap_bps = query_cap(cli.sender_c2i).context("query_cap failed")?;
+    let cap_bps = query_cap(&cli.sender_c2i).context("query_cap failed")?;
     tracing::info!("  - BW cap: {}", bw_cap_display(cap_bps));
 
     // --- size each payload as if it is the sole stream on the link ---
@@ -228,9 +234,11 @@ async fn real_main() -> anyhow::Result<()> {
     }
 
     // --- build CIC ---
+    let sender_addr = resolve_addr(&cli.sender_c2i)?;
+    let receiver_addr = resolve_addr(&cli.receiver_c2i)?;
     let (mut cic, cic_tx) = Cic::new(CicConfig {
-        sender_c2i: cli.sender_c2i,
-        receiver_c2i: cli.receiver_c2i,
+        sender_c2i: sender_addr,
+        receiver_c2i: receiver_addr,
         duration: Duration::from_secs(cli.duration_secs),
         kill_headroom: Duration::from_secs(KILL_HEADROOM_SECS),
     });
@@ -240,8 +248,8 @@ async fn real_main() -> anyhow::Result<()> {
     let receiver_cb_addr = bind_callback_server(Role::Receiver, cic_tx.clone())?;
 
     {
-        let mut s = connect_agent(cli.sender_c2i)?;
-        let mut r = connect_agent(cli.receiver_c2i)?;
+        let mut s = connect_agent(&cli.sender_c2i)?;
+        let mut r = connect_agent(&cli.receiver_c2i)?;
         let e = s.set_callback(sender_cb_addr.to_string())?;
         anyhow::ensure!(e.is_empty(), "set_callback (sender): {e}");
         let e = r.set_callback(receiver_cb_addr.to_string())?;
@@ -252,7 +260,7 @@ async fn real_main() -> anyhow::Result<()> {
     // Only the sender agent is driven via stream_start; the receiver agent
     // sets up its downlink automatically when the QUIC session accepts the
     // incoming stream from the sender.
-    let mut sender_agent = connect_agent(cli.sender_c2i)?;
+    let mut sender_agent = connect_agent(&cli.sender_c2i)?;
 
     tracing::info!("bw_cap_test: starting {} stream pairs...", cli.count);
 
@@ -396,13 +404,26 @@ fn bind_callback_server(role: Role, cic_tx: mpsc::Sender<CicMsg>) -> anyhow::Res
 }
 
 // ---------------------------------------------------------------------------
+// Address resolution
+// ---------------------------------------------------------------------------
+
+fn resolve_addr(host_port: &str) -> anyhow::Result<SocketAddr> {
+    use std::net::ToSocketAddrs;
+    host_port
+        .to_socket_addrs()
+        .map_err(|e| anyhow::anyhow!("DNS resolution failed for '{host_port}': {e}"))?
+        .next()
+        .ok_or_else(|| anyhow::anyhow!("no addresses found for '{host_port}'"))
+}
+
+// ---------------------------------------------------------------------------
 // Agent C2I helpers
 // ---------------------------------------------------------------------------
 
-fn connect_agent(addr: SocketAddr) -> anyhow::Result<impl TQueLayAgentSyncClient> {
+fn connect_agent(addr: &str) -> anyhow::Result<impl TQueLayAgentSyncClient> {
     // ---
     let mut ch = TTcpChannel::new();
-    ch.open(addr.to_string())?;
+    ch.open(addr)?;
     let (rx, tx) = ch.split()?;
     Ok(QueLayAgentSyncClient::new(
         TBinaryInputProtocol::new(TBufferedReadTransport::new(rx), true),
@@ -410,15 +431,16 @@ fn connect_agent(addr: SocketAddr) -> anyhow::Result<impl TQueLayAgentSyncClient
     ))
 }
 
-fn ensure_agent_running(addr: SocketAddr) -> anyhow::Result<()> {
+fn ensure_agent_running(addr: &str) -> anyhow::Result<()> {
     // ---
-    match std::net::TcpStream::connect_timeout(&addr, Duration::from_millis(300)) {
+    let sock_addr = resolve_addr(addr)?;
+    match std::net::TcpStream::connect_timeout(&sock_addr, Duration::from_millis(300)) {
         Ok(_) => Ok(()),
         Err(_) => anyhow::bail!("agent not reachable at {addr} (is it running?)"),
     }
 }
 
-fn query_cap(addr: SocketAddr) -> anyhow::Result<Option<u64>> {
+fn query_cap(addr: &str) -> anyhow::Result<Option<u64>> {
     // ---
     let mut agent = connect_agent(addr)?;
 
@@ -483,6 +505,7 @@ mod tests {
     #[test]
     fn custom_args_parse() {
         // ---
+        // Numeric IPs still work; hostnames also accepted (resolved at connect time)
         Cli::try_parse_from([
             "bw-cap-test",
             "--sender-c2i",
@@ -495,5 +518,14 @@ mod tests {
             "5",
         ])
         .expect("custom args parse failed");
+
+        Cli::try_parse_from([
+            "bw-cap-test",
+            "--sender-c2i",
+            "agent-client:9190",
+            "--receiver-c2i",
+            "agent-server:9191",
+        ])
+        .expect("hostname args parse failed");
     }
 }

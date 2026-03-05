@@ -1,0 +1,22 @@
+# Copyright (c) 2026 John Basrai
+# SPDX-License-Identifier: MIT OR Apache-2.0
+#
+# LOS-250ms — Line-of-Sight link profile
+#
+# Models a clean airborne data link with moderate latency.
+# Asymmetric: narrow uplink (air→ground), wide downlink (ground→air).
+
+[link]
+uplink_rate_bps   = 500000    # 500 kbps
+downlink_rate_bps = 11000000  # 11 Mbps
+delay_rtt_ms      = 250       # 250 ms RTT
+jitter_ms         = 10        # ±10 ms
+delay_corr        = 10        # 10% correlation
+
+[loss]
+drop           = 0
+drop_corr      = 0
+corrupt        = 0
+corrupt_corr   = 0
+duplicate      = 0
+duplicate_corr = 0

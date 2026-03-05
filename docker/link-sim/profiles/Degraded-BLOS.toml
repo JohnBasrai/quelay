@@ -1,0 +1,23 @@
+# Copyright (c) 2026 John Basrai
+# SPDX-License-Identifier: MIT OR Apache-2.0
+#
+# Degraded-BLOS — severely degraded Beyond Line-of-Sight profile
+#
+# Models a stressed satellite link with packet loss, corruption,
+# and duplicates. Used to stress-test protocol resilience under
+# worst-case BLOS conditions.
+
+[link]
+uplink_rate_bps   = 100000   # 100 kbps
+downlink_rate_bps = 150000   # 150 kbps
+delay_rtt_ms      = 750      # 750 ms RTT
+jitter_ms         = 50       # ±50 ms
+delay_corr        = 1        # 1% correlation
+
+[loss]
+drop           = 5
+drop_corr      = 1
+corrupt        = 1
+corrupt_corr   = 1
+duplicate      = 3
+duplicate_corr = 1

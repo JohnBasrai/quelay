@@ -10,13 +10,13 @@ your option.
 
 ## Crates
 
-| Crate            | Description |
-|:-----------------|:------------|
+| Crate            | Description                                                                                 |
+|:-----------------|:--------------------------------------------------------------------------------------------|
 | `quelay-domain`  | Domain model: transport traits, DRR scheduler, priority types, session / handler interfaces |
-| `quelay-quic`    | QUIC transport via `quinn` |
-| `quelay-thrift`  | Apache Thrift C2I service stubs |
-| `quelay-agent`   | Deployable relay daemon — data pump, `SessionManager`, rate limiter, reconnect |
-| `quelay-example` | Demonstrating clients and Docker healthcheck probe |
+| `quelay-quic`    | QUIC transport via `quinn`                                                                  |
+| `quelay-thrift`  | Apache Thrift C2I service stubs                                                             |
+| `quelay-agent`   | Deployable relay daemon — data pump, `SessionManager`, rate limiter, reconnect              |
+| `quelay-example` | Demonstrating clients and Docker healthcheck probe                                          |
 
 ---
 
@@ -92,6 +92,7 @@ will block the client automatically.
 | [Local Testing](docs/contributing/LOCAL_TESTING.md) | Running the full CI suite before pushing |
 | [quelay-agent](quelay-agent/README.md)              | Daemon CLI reference, TLS, internal structure |
 | [e2e_test](quelay-agent/src/bin/README.md)          | Integration test design and subcommand reference |
+| [Link Sim Findings](docs/link-sim-findings.md)      | Network impairment test results, architecture, future work |
 
 ---
 
@@ -106,48 +107,54 @@ cargo test --workspace
 
 ## Network Impairment Testing
 
-`scripts/link-sim-test.sh` runs the full link simulation test suite using
-Docker Compose. Two `quelay-agent` containers communicate over an isolated
-`quic-net` bridge; network impairment is applied by
-[Pumba](https://github.com/alexei-led/pumba) on that bridge. No host kernel
-namespaces, `veth` pairs, or `sudo` required.
+`scripts/link-sim-test.sh` runs the link simulation test suite using Docker
+Compose. A `link-sim` sidecar container shares the network namespace of
+`agent-client` and applies a single `tc netem` qdisc that atomically combines
+rate cap, delay, loss, corruption, and duplication — no Pumba required, no
+host kernel namespaces, no `sudo`.
+
+Impairment profiles live in `docker/link-sim/profiles/`:
+
+| Profile | Description |
+|:--------|:------------|
+| `BLOS-750ms` | Clean satellite: 100 kbps uplink, 750 ms RTT |
+| `LOS-250ms`  | Line-of-sight: 500 kbps uplink, 250 ms RTT, 10 ms jitter |
+| `Degraded-BLOS` | Stressed satellite: 5% loss, 1% corrupt, 3% duplicate, 750 ms RTT |
+| `clean` | No impairment — baseline |
 
 ```
-┌─────────────────────────────────────────────┐
-│  Docker Compose                             │
-│                                             │
-│  ┌────────────┐   quic-net   ┌───────────┐  │
-│  │agent-client│◄────────────►│agent-serv │  │
-│  └─────┬──────┘  Pumba       └┬──────────┘  │
-│       ↑│        impairs       │↑            │
-│       ↓│   c2i-net            │↓            │
-│        └──────────┬───────────┘             │
-│               ┌───┴───┐                     │
-│               │  e2e  │                     │
-│               └───────┘                     │
-└─────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────┐
+│  Docker Compose                                     │
+│                                                     │
+│  ┌────────────┐    ┌──────────┐  quic-net  ┌──────┐ │
+│  │agent-client│◄──►│ link-sim │◄──────────►│agent │ │
+│  └─────┬──────┘    │  (netem) │            │-serv │ │
+│        │           └──────────┘            └──┬───┘ │
+│        │   c2i-net                            │     │
+│        └───────────────┬──────────────────────┘     │
+│                    ┌───┴───┐                        │
+│                    │  e2e  │                        │
+│                    └───────┘                        │
+└─────────────────────────────────────────────────────┘
 ```
 
 ```bash
-# 5% packet loss
-./scripts/link-sim-test.sh loss
+# Clean satellite link (750ms RTT, 100kbps uplink)
+./scripts/link-sim-test.sh BLOS-750ms --size-mb 10
 
-# 600ms delay ±100ms jitter
-./scripts/link-sim-test.sh delay
+# Stressed satellite (5% loss, corrupt, duplicate, 750ms RTT)
+./scripts/link-sim-test.sh Degraded-BLOS --size-mb 10 --bw-cap 80kbps
 
-# Loss + delay combined
-./scripts/link-sim-test.sh both --loss-percent 5 --delay-ms 300
-
-# Link bandwidth cap at 2mbit (agent cap must be ≤ link cap)
-./scripts/link-sim-test.sh rate --rate 2mbit --bw-cap 1Mbps --size-mb 2
+# Line-of-sight link (250ms RTT, 500kbps uplink)
+./scripts/link-sim-test.sh LOS-250ms --size-mb 10
 
 # Baseline — no impairment
-./scripts/link-sim-test.sh clean
+./scripts/link-sim-test.sh clean --size-mb 10
 ```
 
 Requires Docker with Compose v2. See
-[`quelay-agent/README.md`](quelay-agent/README.md#network-impairment-testing)
-for the full option reference.
+[`docs/link-sim-findings.md`](docs/link-sim-findings.md) for test results,
+architecture notes, and future work.
 
 ---
 

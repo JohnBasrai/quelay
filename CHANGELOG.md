@@ -7,17 +7,56 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+---
+
+## [0.3.0] - 2026-03-05
+
+### Breaking Changes
+- IDL: `ConnStats` gains three new fields (`rtt_ms`, `cwnd`, `lost_bytes`);
+  generated Thrift stubs must be regenerated (`scripts/thrift-compile.sh`)
+
 ### Added
-- E2E test reports packet loss percentage and congestion event count per transfer
+- `link-sim` sidecar container (`docker/link-sim/`) replaces Pumba for network
+  impairment; applies a single `tc netem` qdisc combining rate + delay + loss +
+  corrupt + duplicate atomically — something Pumba cannot do
+- TOML impairment profiles (`docker/link-sim/profiles/`):
+  - `BLOS-750ms.toml` — clean satellite link, 100kbps uplink, 750ms RTT
+  - `LOS-250ms.toml` — line-of-sight, 500kbps uplink, 250ms RTT
+  - `Degraded-BLOS.toml` — stressed satellite, 5% loss, 1% corrupt, 3% duplicate
+- `scripts/link-sim-test.sh` — new test driver replacing Pumba-based runner;
+  accepts a profile name (`BLOS-750ms`, `LOS-250ms`, `Degraded-BLOS`, `clean`)
+  and sets `LINK_SIM_PROFILE` for Docker Compose
+- `scripts/entrypoints/` — entrypoint scripts reorganized from `scripts/` root;
+  `agent-entrypoint.sh`, `link-sim-entrypoint.sh`, `e2e-entrypoint.sh`,
+  `agent-healthcheck.sh`
 - `ConnStats` struct in `quelay-domain` with `sent_packets`, `lost_packets`,
   `congestion_events` fields and `conn_stats()` method on `QueLaySession` trait
 - Quinn QUIC path stats wired into `quelay-quic` session implementation
 - Thrift IDL `ConnStats` struct and `get_conn_stats()` RPC method in `quelay-thrift`
 - `AgentCmd::GetConnStats` / `SessionCommand::GetConnStats` dispatch chain
+- `ConnStats` IDL expanded with `rtt_ms`, `cwnd`, `lost_bytes` from Quinn
+  `PathStats`; e2e transfer report now shows RTT, CWND, and lost bytes alongside
+  packet loss and congestion events
+- Hostname resolution in all binaries (`quelay-agent`, `e2e-test`, `bw-cap-test`);
+  peer and C2I addresses accept hostnames (e.g. `agent-server:4433`) resolved at
+  connect time via `tokio::net::lookup_host` — eliminates DNS shell gymnastics
+  from entrypoint scripts
+- `docs/link-sim-findings.md` — test results, architecture notes, and future work
+  for the link-sim test infrastructure
+- SIGINT handler added to `e2e-test` binary for clean shutdown on Ctrl+C
+
+### Changed
+- `docker-compose.yml`: `agent-server` gains a `quic-net` alias
+  (`agent-server-quic`) so QUIC connections resolve to `172.19.0.x` (quic-net)
+  rather than `172.18.0.x` (c2i-net); without this netem on `eth1` had no effect
+- `docker-compose.yml`: `LINK_SIM_IFACE` defaults to `eth1` (quic-net); `eth0`
+  is c2i-net and must not be impaired
+- `link-sim` container now sleeps indefinitely after applying the qdisc, holding
+  it active for the duration of the test run
 
 ### Fixed
-- `link-sim-test.sh`: `--rate` flag now errors if used with non-`rate` profiles
-  (Pumba does not support chaining `rate` with other netem subcommands)
+- `link-sim-test.sh`: removed Pumba arg translation logic; profile name maps
+  directly to a TOML file via `LINK_SIM_PROFILE`
 
 ---
 

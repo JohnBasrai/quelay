@@ -121,7 +121,7 @@ pub enum TransportConfig {
     /// Client mode: reconnect by constructing a new `QuicTransport` and
     /// calling `connect()`.
     Client {
-        peer: std::net::SocketAddr,
+        peer: String,
         server_name: String,
         cert_der: rustls_pki_types::CertificateDer<'static>,
     },
@@ -800,9 +800,18 @@ impl SessionManager {
                 cert_der,
             } => {
                 use quelay_domain::QueLayTransport;
+
+                // Resolve hostname at connect time so Docker DNS changes
+                // (e.g. container restarts) are picked up on each reconnect.
+                let peer_addr = tokio::net::lookup_host(peer.as_str())
+                    .await
+                    .map_err(|e| anyhow::anyhow!("DNS resolution failed for '{peer}': {e}"))?
+                    .next()
+                    .ok_or_else(|| anyhow::anyhow!("no addresses found for '{peer}'"))?;
+
                 let transport =
                     quelay_quic::QuicTransport::client(cert_der.clone(), server_name.clone())?;
-                let session = transport.connect(*peer).await?;
+                let session = transport.connect(peer_addr).await?;
                 Ok(Arc::new(session))
             }
 

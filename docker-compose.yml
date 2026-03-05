@@ -3,14 +3,14 @@
 #
 # Usage (via scripts/link-sim-test.sh — do not invoke directly):
 #
-#   QUELAY_CAP=10Mbps   BW cap on the QUIC path (default: 10Mbps)
-#   PUMBA_ARGS          netem subcommand + args, e.g. "loss --percent 5"
-#   SIZE_MB             payload size per stream for e2e (default: 100)
+#   QUELAY_CAP=10Mbps         BW cap on the QUIC path (default: 10Mbps)
+#   LINK_SIM_PROFILE          path to TOML impairment profile (optional)
+#   SIZE_MB                   payload size per stream for e2e (default: 100)
 #
 # Networks
 # --------
 #   quic-net  isolated bridge between agent-server <-> agent-client only.
-#             Pumba applies tc netem impairment here. QUIC traffic only.
+#             link-sim applies tc netem impairment here. QUIC traffic only.
 #
 #   c2i-net   bridge shared by both agents, e2e, and (via port mapping) host.
 #             Carries Thrift C2I, callback TCP, and ephemeral spool ports.
@@ -37,24 +37,22 @@ services:
       context: .
       target: agent
     networks:
-      - quic-net
-      - c2i-net
+      quic-net:
+        aliases:
+          - agent-server-quic
+      c2i-net:
     ports:
       - "9191:9191"     # C2I reachable from host and from e2e container
     volumes:
       - cert-vol:/app   # WORKDIR=/app; 'server' writes quelay-server.der here
     environment:
       RUST_LOG: ${RUST_LOG:-info}
-    command:
-      - --agent-endpoint
-      - "0.0.0.0:9191"
-      - --bw-cap-bps
-      - "${QUELAY_CAP:-10Mbps}"
-      - server
-      - --bind
-      - "0.0.0.0:4433" 
+      QUELAY_MODE: server
+      QUELAY_AGENT_ENDPOINT: "0.0.0.0:9191"
+      QUELAY_CAP: ${QUELAY_CAP:-10Mbps}
+      QUELAY_BIND: "0.0.0.0:4433"
     healthcheck:
-      test: ["CMD", "/usr/local/bin/agent-healthcheck.sh", "9191"]
+      test: ["CMD", "/usr/local/bin/entrypoints/agent-healthcheck.sh", "9191"]
       interval: 2s
       timeout: 2s
       retries: 15
@@ -77,51 +75,53 @@ services:
       - cert-vol:/app   # reads /app/quelay-server.der written by server
     environment:
       RUST_LOG: ${RUST_LOG:-info}
-    entrypoint: ["/bin/sh", "-c"]
-    command:
-      - |
-        # Wait for agent-server to write the cert to the shared volume.
-        until [ -f /app/quelay-server.der ]; do sleep 0.2; done
-        PEER_IP=$$(getent hosts agent-server | awk '{print $$1}')
-        exec quelay-agent \
-          --agent-endpoint 0.0.0.0:9190 \
-          --bw-cap-bps "$${QUELAY_CAP:-10Mbps}" \
-          client \
-          --peer "$$PEER_IP:4433" \
-          --cert /app/quelay-server.der
+      QUELAY_MODE: client
+      QUELAY_AGENT_ENDPOINT: "0.0.0.0:9190"
+      QUELAY_CAP: ${QUELAY_CAP:-10Mbps}
+      QUELAY_PEER: "agent-server-quic:4433"
+      QUELAY_CERT: "/app/quelay-server.der"
     depends_on:
       agent-server:
         condition: service_started  # must not be service_healthy — server blocks on QUIC
                                     # handshake before opening Thrift port, so healthy
                                     # requires the client to already be running.
     healthcheck:
-      test: ["CMD", "/usr/local/bin/agent-healthcheck.sh", "9190"]
+      test: ["CMD", "/usr/local/bin/entrypoints/agent-healthcheck.sh", "9190"]
       interval: 2s
       timeout: 2s
       retries: 15
       start_period: 5s
 
   # --------------------------------------------------------------------------
-  # pumba — applies tc netem to agent-client's quic-net interface
+  # link-sim — tc netem sidecar attached to agent-client's network namespace
   #
-  # Impairs egress from agent-client (the sending/uplink side).
-  # PUMBA_ARGS examples:
-  #   loss --percent 5
-  #   delay --time 600 --jitter 100
-  #   rate --rate 2mbit
-  #   loss --percent 3 delay --time 400 --jitter 80
+  # Runs as a sidecar sharing quelay-agent-client's network namespace.
+  # Reads a TOML profile and applies a single tc netem qdisc to eth0,
+  # enabling combined rate + delay + loss + corrupt + duplicate impairment.
+  #
+  # When LINK_SIM_PROFILE is unset, no impairment is applied and the
+  # container exits immediately (clean/unimpaired test runs).
+  #
+  # Profile examples (in docker/link-sim/profiles/):
+  #   BLOS-750ms.toml        satellite link, 750ms RTT, clean signal
+  #   SZIP2-253.toml         severe: 750ms, 5% loss, corrupt, duplicate
+  #   LOS-250ms.toml         line-of-sight, 250ms RTT, clean
   # --------------------------------------------------------------------------
-  pumba:
-    image: ghcr.io/alexei-led/pumba:latest
+  link-sim:
+    build:
+      context: docker/link-sim
+    network_mode: "container:quelay-agent-client"
+    cap_add:
+      - NET_ADMIN
     volumes:
-      - /var/run/docker.sock:/var/run/docker.sock
-    command: >
-      netem
-        --tc-image ghcr.io/alexei-led/pumba-alpine-nettools:latest
-        --interface eth0
-        --duration 24h
-        ${PUMBA_ARGS}
-        quelay-agent-client
+      - ./docker/link-sim/profiles:/profiles:ro
+    environment:
+      LINK_SIM_PROFILE: ${LINK_SIM_PROFILE:-}
+      # eth1 is quic-net (172.19.0.0/16). eth0 is c2i-net (172.18.0.0/16).
+      # Interface order is determined by network attachment order in this
+      # compose file. If networks are reordered, re-verify with:
+      #   docker run --rm --network container:quelay-agent-client nicolaka/netshoot ip addr
+      LINK_SIM_IFACE: ${LINK_SIM_IFACE:-eth1}
     depends_on:
       agent-client:
         condition: service_healthy
@@ -147,5 +147,5 @@ services:
         condition: service_healthy
       agent-server:
         condition: service_healthy
-      pumba:
+      link-sim:
         condition: service_started

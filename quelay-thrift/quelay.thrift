@@ -162,6 +162,15 @@ struct ConnStats {
 
     /// Number of congestion events (e.g. ECN CE marks or loss-based triggers).
     3: i64 congestion_events,
+
+    /// Current best estimate of round-trip time in milliseconds.
+    4: i64 rtt_ms,
+
+    /// Current congestion window in bytes.
+    5: i64 cwnd,
+
+    /// Bytes declared lost by the QUIC congestion controller.
+    6: i64 lost_bytes,
 }
 
 // ---------------------------------------------------------------------------

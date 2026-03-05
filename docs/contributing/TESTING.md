@@ -51,29 +51,28 @@ Validates end-to-end handshake and C2I reachability in ~1 second.
 ### Network impairment tests (manual)
 
 `scripts/link-sim-test.sh` runs the link simulation suite using Docker Compose.
-Two `quelay-agent` containers communicate over an isolated `quic-net` bridge;
-[Pumba](https://github.com/alexei-led/pumba) applies network impairment on that
-bridge. No host kernel namespaces, `veth` pairs, or `sudo` required.
+A `link-sim` sidecar shares the network namespace of `agent-client` and applies
+a single `tc netem` qdisc, atomically combining rate, delay, loss, corruption,
+and duplication. No Pumba, no host kernel namespaces, no `sudo` required.
+
+Pass a profile name from `docker/link-sim/profiles/`:
 
 ```bash
-# 5% packet loss, 10 MiB payload
-./scripts/link-sim-test.sh loss --size-mb 10
+# Clean satellite link (100 kbps uplink, 750 ms RTT), 10 MiB payload
+./scripts/link-sim-test.sh BLOS-750ms --size-mb 10
 
-# 600ms delay ±100ms jitter
-./scripts/link-sim-test.sh delay --size-mb 10
+# Stressed satellite (5% loss, 1% corrupt, 3% duplicate)
+./scripts/link-sim-test.sh Degraded-BLOS --size-mb 10 --bw-cap 80kbps
 
-# Loss + delay combined
-./scripts/link-sim-test.sh both --size-mb 10
-
-# 2mbit link cap (agent cap must be ≤ link cap)
-./scripts/link-sim-test.sh rate --rate 2mbit --bw-cap 1Mbps --size-mb 2
+# Line-of-sight (500 kbps, 250 ms RTT, 10 ms jitter)
+./scripts/link-sim-test.sh LOS-250ms --size-mb 10
 
 # Baseline — no impairment
 ./scripts/link-sim-test.sh clean --size-mb 10
 ```
 
-Requires Docker with Compose v2. Run `./scripts/link-sim-test.sh --help` for
-the full option reference.
+Requires Docker with Compose v2. See `docs/link-sim-findings.md` for test
+results and analysis.
 
 ## Before Submitting a PR
 
