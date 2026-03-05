@@ -205,11 +205,20 @@ async fn main() -> anyhow::Result<()> {
             let cert_der = rustls_pki_types::CertificateDer::from(cert_bytes);
 
             let transport = QuicTransport::client(cert_der.clone(), server_name.clone())?;
-            let session = transport.connect(*peer).await?;
+
+            // Resolve hostname at initial connect. Subsequent reconnects
+            // re-resolve in session_manager::try_connect().
+            let peer_addr = tokio::net::lookup_host(peer.as_str())
+                .await
+                .map_err(|e| anyhow::anyhow!("DNS resolution failed for '{peer}': {e}"))?
+                .next()
+                .ok_or_else(|| anyhow::anyhow!("no addresses found for '{peer}'"))?;
+
+            let session = transport.connect(peer_addr).await?;
             info!("client mode: connected to server @{peer}");
 
             let tcfg = TransportConfig::Client {
-                peer: *peer,
+                peer: peer.clone(),
                 server_name: server_name.clone(),
                 cert_der,
             };

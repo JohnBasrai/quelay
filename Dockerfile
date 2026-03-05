@@ -71,14 +71,17 @@ RUN apt-get update \
 
 COPY --from=builder /build/target/release/quelay-agent  /usr/local/bin/quelay-agent
 COPY --from=builder /build/target/release/quelay-example /usr/local/bin/quelay-example
-COPY scripts/agent-healthcheck.sh /usr/local/bin/agent-healthcheck.sh
-RUN chmod +x /usr/local/bin/agent-healthcheck.sh
+COPY scripts/entrypoints/agent-entrypoint.sh   /usr/local/bin/entrypoints/agent-entrypoint.sh
+COPY scripts/entrypoints/agent-healthcheck.sh  /usr/local/bin/entrypoints/agent-healthcheck.sh
+RUN chmod +x \
+      /usr/local/bin/entrypoints/agent-entrypoint.sh \
+      /usr/local/bin/entrypoints/agent-healthcheck.sh
 
 # Working directory is also the default cert output path for the 'server'
 # subcommand (quelay-server.der is written here).
 WORKDIR /app
 
-ENTRYPOINT ["quelay-agent"]
+ENTRYPOINT ["/usr/local/bin/entrypoints/agent-entrypoint.sh"]
 
 # ---------------------------------------------------------------------------
 # Stage 3 — e2e test runner image
@@ -93,9 +96,9 @@ RUN apt-get update \
 # link_enable / set_max_concurrent / set_chunk_size_bytes RPC calls are
 # compiled in and wired up in the agents under test.
 COPY --from=builder /build/target/release/e2e-test /usr/local/bin/e2e-test
-COPY scripts/e2e-entrypoint.sh /usr/local/bin/e2e-entrypoint.sh
-RUN chmod +x /usr/local/bin/e2e-entrypoint.sh
+COPY scripts/entrypoints/e2e-entrypoint.sh /usr/local/bin/entrypoints/e2e-entrypoint.sh
+RUN chmod +x /usr/local/bin/entrypoints/e2e-entrypoint.sh
 
 WORKDIR /app
 
-ENTRYPOINT ["/usr/local/bin/e2e-entrypoint.sh"]
+ENTRYPOINT ["/usr/local/bin/entrypoints/e2e-entrypoint.sh"]

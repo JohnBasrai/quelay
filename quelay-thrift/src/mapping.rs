@@ -42,6 +42,9 @@ impl From<DomainConnStats> for WireConnStats {
             sent_packets: Some(d.sent_packets as i64),
             lost_packets: Some(d.lost_packets as i64),
             congestion_events: Some(d.congestion_events as i64),
+            rtt_ms: Some(d.rtt_ms as i64),
+            cwnd: Some(d.cwnd as i64),
+            lost_bytes: Some(d.lost_bytes as i64),
         }
     }
 }
@@ -53,6 +56,9 @@ impl From<WireConnStats> for DomainConnStats {
             sent_packets: w.sent_packets.unwrap_or(0) as u64,
             lost_packets: w.lost_packets.unwrap_or(0) as u64,
             congestion_events: w.congestion_events.unwrap_or(0) as u64,
+            rtt_ms: w.rtt_ms.unwrap_or(0) as u64,
+            cwnd: w.cwnd.unwrap_or(0) as u64,
+            lost_bytes: w.lost_bytes.unwrap_or(0) as u64,
         }
     }
 }

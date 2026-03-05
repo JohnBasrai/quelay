@@ -1,0 +1,22 @@
+# Copyright (c) 2026 John Basrai
+# SPDX-License-Identifier: MIT OR Apache-2.0
+#
+# BLOS-750ms — Beyond Line-of-Sight satellite link profile
+#
+# Models a high-latency asymmetric satellite link with clean signal.
+# Typical of a BLOS ISR downlink: high bandwidth down, narrow uplink.
+
+[link]
+uplink_rate_bps   = 100000    # 100 kbps
+downlink_rate_bps = 13000000  # 13 Mbps
+delay_rtt_ms      = 750       # 750 ms RTT (netem applies as round-trip)
+jitter_ms         = 50        # ±50 ms
+delay_corr        = 25        # 25% correlation
+
+[loss]
+drop      = 0
+drop_corr = 0
+corrupt   = 0
+corrupt_corr  = 0
+duplicate     = 0
+duplicate_corr = 0

@@ -83,10 +83,17 @@ use max_concurrent::*;
 use multi_file::*;
 use small_file_edge_cases::*;
 
-fn ensure_agent_running(addr: SocketAddr) -> Result<()> {
-    // ---
+fn resolve_addr(host_port: &str) -> anyhow::Result<SocketAddr> {
+    use std::net::ToSocketAddrs;
+    host_port
+        .to_socket_addrs()
+        .map_err(|e| anyhow::anyhow!("DNS resolution failed for '{host_port}': {e}"))?
+        .next()
+        .ok_or_else(|| anyhow::anyhow!("no addresses found for '{host_port}'"))
+}
 
-    let timeout = Duration::from_millis(300);
+fn ensure_agent_running(addr: SocketAddr) -> Result<()> {
+    let timeout = Duration::from_secs(5);
     match std::net::TcpStream::connect_timeout(&addr, timeout) {
         Ok(_) => Ok(()),
         Err(_) => bail!("Agent not reachable at {addr} (is it running?)"),
@@ -145,12 +152,18 @@ const SPOOL_FILL_FRACTION: f64 = 0.50;
 struct Cli {
     // ---
     /// C2I address of the sending agent.
+    ///
+    /// Accepts hostnames (`agent-client:9190`) or numeric IPs (`127.0.0.1:9090`).
+    /// Resolved at connect time.
     #[arg(long, default_value = "127.0.0.1:9090")]
-    sender_c2i: SocketAddr,
+    sender_c2i: String,
 
     /// C2I address of the receiving agent.
+    ///
+    /// Accepts hostnames (`agent-server:9191`) or numeric IPs (`127.0.0.1:9091`).
+    /// Resolved at connect time.
     #[arg(long, default_value = "127.0.0.1:9091")]
-    receiver_c2i: SocketAddr,
+    receiver_c2i: String,
 
     /// IP address the callback listener binds on and advertises to agents.
     /// Override with the host-side veth IP (e.g. 10.99.0.1) when the
@@ -260,10 +273,16 @@ fn print_transfer_report(
         if cs.sent_packets.unwrap_or(0) > 0 {
             let sent = cs.sent_packets.unwrap_or(0);
             let lost = cs.lost_packets.unwrap_or(0);
+            let lost_bytes = cs.lost_bytes.unwrap_or(0);
             let cong = cs.congestion_events.unwrap_or(0);
+            let rtt_ms = cs.rtt_ms.unwrap_or(0);
+            let cwnd_kib = cs.cwnd.unwrap_or(0) / 1024;
             let loss_pct = lost as f64 / sent as f64 * 100.0;
             println!("    ---\t   Packet loss   : {loss_pct:.2}% ({lost} lost / {sent} sent)");
+            println!("    ---\t   Lost bytes    : {lost_bytes} B");
             println!("    ---\t   Congestion    : {cong} events");
+            println!("    ---\t   RTT (Quinn)   : {rtt_ms} ms");
+            println!("    ---\t   CWND          : {cwnd_kib} KiB");
         }
     }
     println!("    ============================================================\n");
@@ -325,6 +344,11 @@ fn diff_conn_stats(before: ConnStats, after: ConnStats) -> ConnStats {
         congestion_events: Some(
             after.congestion_events.unwrap_or(0) - before.congestion_events.unwrap_or(0),
         ),
+        // RTT and cwnd are point-in-time values — take the after snapshot.
+        rtt_ms: after.rtt_ms,
+        cwnd: after.cwnd,
+        // lost_bytes is cumulative like lost_packets.
+        lost_bytes: Some(after.lost_bytes.unwrap_or(0) - before.lost_bytes.unwrap_or(0)),
     }
 }
 
@@ -680,9 +704,28 @@ async fn run_multi_file_link_fail(
 
 #[tokio::main]
 async fn main() {
-    if let Err(e) = real_main().await {
-        eprintln!("\nERROR: {e:#}\n");
-        std::process::exit(1);
+    use tokio::signal::unix::{signal, SignalKind};
+
+    let mut sigterm = signal(SignalKind::terminate()).expect("failed to install SIGTERM handler");
+    let mut sigint = signal(SignalKind::interrupt()).expect("failed to install SIGINT handler");
+
+    eprintln!("e2e-test: setting signal handlers for SITTERM and SIGINT (Control-C)");
+
+    tokio::select! {
+        result = real_main() => {
+            if let Err(e) = result {
+                eprintln!("\nERROR: {e:#}\n");
+                std::process::exit(1);
+            }
+        }
+        _ = sigterm.recv() => {
+            eprintln!("e2e-test: received SIGTERM, shutting down");
+            std::process::exit(0);
+        }
+        _ = sigint.recv() => {
+            eprintln!("e2e-test: received SIGINT, shutting down");
+            std::process::exit(0);
+        }
     }
 }
 
@@ -704,8 +747,8 @@ async fn real_main() -> anyhow::Result<()> {
         .init();
 
     let ctx = TestContext {
-        sender_c2i: cli.sender_c2i,
-        receiver_c2i: cli.receiver_c2i,
+        sender_c2i: resolve_addr(&cli.sender_c2i)?,
+        receiver_c2i: resolve_addr(&cli.receiver_c2i)?,
         callback_ip: cli.callback_ip,
     };
 

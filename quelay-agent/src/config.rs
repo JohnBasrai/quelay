@@ -182,9 +182,14 @@ pub enum Mode {
     /// Connect to a remote Quelay agent (example: 192.168.1.10:5000).
     Client {
         // ---
-        /// UDP address of the remote agent's QUIC endpoint.
+        /// UDP address or hostname of the remote agent's QUIC endpoint.
+        ///
+        /// Accepts both numeric IPs (`192.168.1.10:5000`) and hostnames
+        /// (`agent-server:4433`).  DNS resolution is deferred to connect
+        /// time so the agent handles container startup ordering gracefully
+        /// without shell-level `getent` workarounds.
         #[arg(long)]
-        peer: SocketAddr,
+        peer: String,
 
         /// TLS server name — must match the name used when the server
         /// generated its cert.
@@ -363,6 +368,7 @@ mod tests {
     fn client_mode_parses_valid() {
         // ---
 
+        // numeric IP
         let cfg = parse_ok(&[
             "quelay-agent",
             "client",
@@ -371,7 +377,17 @@ mod tests {
             "--cert",
             "server.der",
         ]);
+        assert!(matches!(cfg.mode, crate::Mode::Client { .. }));
 
+        // hostname — DNS resolved at connect time, not parse time
+        let cfg = parse_ok(&[
+            "quelay-agent",
+            "client",
+            "--peer",
+            "agent-server:4433",
+            "--cert",
+            "server.der",
+        ]);
         assert!(matches!(cfg.mode, crate::Mode::Client { .. }));
     }
 }

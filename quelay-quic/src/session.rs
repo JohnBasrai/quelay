@@ -135,6 +135,9 @@ impl QueLaySession for QuicSession {
             sent_packets: s.path.sent_packets,
             lost_packets: s.path.lost_packets,
             congestion_events: s.path.congestion_events,
+            rtt_ms: self.conn.rtt().as_millis() as u64,
+            cwnd: s.path.cwnd,
+            lost_bytes: s.path.lost_bytes,
         }
     }
 
