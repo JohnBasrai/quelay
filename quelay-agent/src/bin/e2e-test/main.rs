@@ -42,6 +42,7 @@ use uuid::Uuid;
 #[allow(unused)]
 use quelay_thrift::{
     // ---
+    ConnStats,
     FailReason,
     LinkState,
     QueLayAgentSyncClient,
@@ -228,6 +229,7 @@ fn print_transfer_report(
     elapsed: Duration,
     cap_bps: Option<u64>,
     progress_msgs: (usize, usize),
+    conn_stats_delta: Option<&ConnStats>,
 ) {
     // ---
 
@@ -253,6 +255,17 @@ fn print_transfer_report(
         println!("    ---\t   BW Utilization: {utilize:.1}%");
     }
     println!("    ---\t   Progress msgs : {total_prog} (snd {snd} + rcv {rcv}), {prog_rate:.1}/s");
+
+    if let Some(cs) = conn_stats_delta {
+        if cs.sent_packets.unwrap_or(0) > 0 {
+            let sent = cs.sent_packets.unwrap_or(0);
+            let lost = cs.lost_packets.unwrap_or(0);
+            let cong = cs.congestion_events.unwrap_or(0);
+            let loss_pct = lost as f64 / sent as f64 * 100.0;
+            println!("    ---\t   Packet loss   : {loss_pct:.2}% ({lost} lost / {sent} sent)");
+            println!("    ---\t   Congestion    : {cong} events");
+        }
+    }
     println!("    ============================================================\n");
 }
 
@@ -288,6 +301,31 @@ fn query_cap(sender_c2i: SocketAddr) -> anyhow::Result<Option<u64>> {
     } else {
         Some(cap_bps as u64)
     })
+}
+
+// ---
+
+/// Snapshot QUIC connection statistics from the sender agent.
+/// Returns `None` if the RPC fails (agent may be unconfigured or down).
+fn query_conn_stats(sender_c2i: SocketAddr) -> Option<ConnStats> {
+    // ---
+    connect_agent(sender_c2i)
+        .ok()
+        .and_then(|mut a| a.get_conn_stats().ok())
+}
+
+// ---
+
+/// Subtract two `ConnStats` snapshots to get per-transfer deltas.
+fn diff_conn_stats(before: ConnStats, after: ConnStats) -> ConnStats {
+    // ---
+    ConnStats {
+        sent_packets: Some(after.sent_packets.unwrap_or(0) - before.sent_packets.unwrap_or(0)),
+        lost_packets: Some(after.lost_packets.unwrap_or(0) - before.lost_packets.unwrap_or(0)),
+        congestion_events: Some(
+            after.congestion_events.unwrap_or(0) - before.congestion_events.unwrap_or(0),
+        ),
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -363,6 +401,7 @@ async fn run_transfer(
     attrs.insert("sha256".to_string(), sha256_sent.clone());
 
     let t_start = Instant::now();
+    let conn_stats_before = query_conn_stats(sender_c2i);
 
     let result = sender_agent.stream_start(
         uuid.to_string(),
@@ -471,6 +510,10 @@ async fn run_transfer(
     let elapsed = t_start.elapsed();
     sender_done.await??;
 
+    let conn_stats_delta = conn_stats_before.and_then(|before| {
+        query_conn_stats(sender_c2i).map(|after| diff_conn_stats(before, after))
+    });
+
     let sha256_rcvd = sha256_hex(&received);
 
     print_transfer_report(
@@ -479,6 +522,7 @@ async fn run_transfer(
         elapsed,
         cap_bps,
         (sender_cb.progress_count(), receiver_cb.progress_count()),
+        conn_stats_delta.as_ref(),
     );
 
     Ok(TransferStats {

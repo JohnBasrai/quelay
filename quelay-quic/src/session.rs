@@ -9,6 +9,7 @@ use uuid::Uuid;
 
 use quelay_domain::{
     // ---
+    ConnStats,
     LinkState,
     Priority,
     QueLayError,
@@ -122,6 +123,19 @@ impl QueLaySession for QuicSession {
     /// including all QUIC retransmits.  Resets to zero on each new connection.
     fn wire_bytes_sent(&self) -> u64 {
         self.conn.stats().udp_tx.bytes
+    }
+
+    // ---
+
+    /// Returns a snapshot of QUIC path statistics for this connection.
+    /// All counters reset to zero on each new connection.
+    fn conn_stats(&self) -> ConnStats {
+        let s = self.conn.stats();
+        ConnStats {
+            sent_packets: s.path.sent_packets,
+            lost_packets: s.path.lost_packets,
+            congestion_events: s.path.congestion_events,
+        }
     }
 
     // ---

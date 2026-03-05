@@ -147,6 +147,23 @@ struct StartStreamReturn {
     2: optional i32 queue_position,
 }
 
+/// QUIC connection statistics snapshot for the active peer session.
+///
+/// Counters are cumulative since the session was established.
+/// Lost packets and congestion events are indicators of link quality;
+/// high values suggest the link is operating near or beyond its capacity.
+struct ConnStats {
+
+    /// Total QUIC packets transmitted (includes retransmits).
+    1: i64 sent_packets,
+
+    /// Packets declared lost by the QUIC congestion controller.
+    2: i64 lost_packets,
+
+    /// Number of congestion events (e.g. ECN CE marks or loss-based triggers).
+    3: i64 congestion_events,
+}
+
 // ---------------------------------------------------------------------------
 // QueLayAgent — command/control service (clients → Quelay)
 // ---------------------------------------------------------------------------
@@ -196,6 +213,12 @@ service QueLayAgent {
     /// Used by the integration test binary to derive transfer timing without
     /// duplicating the cap value on the test command line.
     i64 get_bandwidth_cap_bps(),
+
+    /// Returns a snapshot of QUIC connection statistics for the active session.
+    ///
+    /// Counters are cumulative since the session was established.
+    /// Returns zeroed stats if no session is currently active.
+    ConnStats get_conn_stats(),
 
     // -----------------------------------------------------------------------
     // Test / debug methods — disabled in production builds

@@ -72,7 +72,7 @@ impl QueLayCallbackSyncHandler for TestCallbackHandler {
         let mut last = self.last_dot.lock().unwrap();
         if last.elapsed() >= std::time::Duration::from_secs(1) {
             match progress.percent_done {
-                Some(pct) => print!("\r  {pct:.1}%   "),
+                Some(pct) => print!("\rdownload percent:  {pct:.1}%   "),
                 None => print!("\r  {} bytes   ", progress.bytes_transferred.unwrap_or(0)),
             }
             let _ = std::io::Write::flush(&mut std::io::stdout());

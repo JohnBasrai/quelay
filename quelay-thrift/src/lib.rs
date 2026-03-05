@@ -18,6 +18,7 @@ pub use mapping::progress_to_wire;
 
 pub use gen::{
     //
+    ConnStats,
     FailReason,
     LinkState,
     ProgressInfo,

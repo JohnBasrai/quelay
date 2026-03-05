@@ -55,6 +55,13 @@ impl Agent {
                         .await;
                 }
 
+                AgentCmd::GetConnStats { reply_tx } => {
+                    let _ = self
+                        .sm_cmd_tx
+                        .send(SessionCommand::GetConnStats { reply_tx })
+                        .await;
+                }
+
                 #[cfg(feature = "test-hooks")]
                 AgentCmd::LinkEnable(enabled) => {
                     // Forward to SessionManager via command channel

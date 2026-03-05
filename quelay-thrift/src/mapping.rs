@@ -15,6 +15,7 @@ use uuid::Uuid;
 
 use quelay_domain::{
     // ---
+    ConnStats as DomainConnStats,
     LinkState as DomainLinkState,
     QueueStatus as DomainQueueStatus,
     StreamInfo as DomainStreamInfo,
@@ -23,11 +24,38 @@ use quelay_domain::{
 
 use crate::gen::{
     // ---
+    ConnStats as WireConnStats,
     LinkState as WireLinkState,
     ProgressInfo as WireProgressInfo,
     QueueStatus as WireQueueStatus,
     StreamInfo as WireStreamInfo,
 };
+
+// ---------------------------------------------------------------------------
+// ConnStats
+// ---------------------------------------------------------------------------
+
+impl From<DomainConnStats> for WireConnStats {
+    // ---
+    fn from(d: DomainConnStats) -> Self {
+        WireConnStats {
+            sent_packets: Some(d.sent_packets as i64),
+            lost_packets: Some(d.lost_packets as i64),
+            congestion_events: Some(d.congestion_events as i64),
+        }
+    }
+}
+
+impl From<WireConnStats> for DomainConnStats {
+    // ---
+    fn from(w: WireConnStats) -> Self {
+        DomainConnStats {
+            sent_packets: w.sent_packets.unwrap_or(0) as u64,
+            lost_packets: w.lost_packets.unwrap_or(0) as u64,
+            congestion_events: w.congestion_events.unwrap_or(0) as u64,
+        }
+    }
+}
 
 // ---------------------------------------------------------------------------
 // LinkState

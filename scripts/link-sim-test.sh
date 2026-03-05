@@ -22,7 +22,9 @@
 #   --loss-percent  N    Packet loss % for 'loss' / 'both' profiles  (default: 5)
 #   --delay-ms      N    Base delay ms for 'delay' / 'both' profiles (default: 600)
 #   --jitter-ms     N    Jitter ms for 'delay' / 'both' profiles     (default: 100)
-#   --rate          STR  Bandwidth for 'rate' profile, e.g. 2mbit     (default: 2mbit)
+#   --rate          STR  Wire bandwidth cap for Pumba, e.g. 12mbit (default: 2mbit)
+#                        Applied as sole impairment for 'rate' profile; appended to
+#                        any other profile when explicitly provided.
 #   --bw-cap        STR  Quelay daemon BW cap, e.g. 10Mbps            (default: 10Mbps)
 #   --size-mb       N    Payload size per stream in MiB               (default: 100)
 #   --e2e-args      STR  Override entire e2e command after binary     (default: see below)
@@ -73,7 +75,7 @@ while [[ $# -gt 0 ]]; do
         --loss-percent) OPT_LOSS_PERCENT="$2"; shift 2 ;;
         --delay-ms)     OPT_DELAY_MS="$2";     shift 2 ;;
         --jitter-ms)    OPT_JITTER_MS="$2";    shift 2 ;;
-        --rate)         OPT_RATE="$2";          shift 2 ;;
+        --rate)         OPT_RATE="$2"; RATE_EXPLICIT=1; shift 2 ;;
         --bw-cap)       OPT_BW_CAP="$2";        shift 2 ;;
         --size-mb)      OPT_SIZE_MB="$2";        shift 2 ;;
         --e2e-args)     OPT_E2E_ARGS="$2";      shift 2 ;;
@@ -109,6 +111,12 @@ case "$PROFILE" in
         die "Unknown profile '${PROFILE}'. Valid: loss | delay | rate | both | clean"
         ;;
 esac
+
+# Append a wire rate cap to any profile when --rate is explicitly provided
+# (except 'rate' which already has it as its sole impairment).
+if [[ "${RATE_EXPLICIT:-0}" -eq 1 && "$PROFILE" != "rate" ]]; then
+    PUMBA_ARGS="${PUMBA_ARGS} rate --rate ${OPT_RATE}"
+fi
 
 # ---------------------------------------------------------------------------
 # Compose e2e command override

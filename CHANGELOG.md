@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+- E2E test reports packet loss percentage and congestion event count per transfer
+- `ConnStats` struct in `quelay-domain` with `sent_packets`, `lost_packets`,
+  `congestion_events` fields and `conn_stats()` method on `QueLaySession` trait
+- Quinn QUIC path stats wired into `quelay-quic` session implementation
+- Thrift IDL `ConnStats` struct and `get_conn_stats()` RPC method in `quelay-thrift`
+- `AgentCmd::GetConnStats` / `SessionCommand::GetConnStats` dispatch chain
+
+### Fixed
+- `link-sim-test.sh`: `--rate` flag now errors if used with non-`rate` profiles
+  (Pumba does not support chaining `rate` with other netem subcommands)
+
 ---
 
 ## [0.2.0] - 2026-03-04
