@@ -92,6 +92,10 @@ pub enum CallbackCmd {
     StreamDone {
         uuid: Uuid,
         bytes: u64,
+        /// Total UDP wire bytes sent for this stream (including QUIC retransmits).
+        /// Sampled from `wire_bytes_sent` at transfer completion.
+        /// 0 on the receiver side or when the transport does not track wire stats.
+        bytes_wire: u64,
     },
 
     StreamFailed {
@@ -230,9 +234,13 @@ impl CallbackAgent {
                     });
                 }
 
-                CallbackCmd::StreamDone { uuid, bytes } => {
+                CallbackCmd::StreamDone {
+                    uuid,
+                    bytes,
+                    bytes_wire,
+                } => {
                     fire(&mut client, |c| {
-                        c.stream_done(uuid.to_string(), bytes as i64)
+                        c.stream_done(uuid.to_string(), bytes as i64, bytes_wire as i64)
                     });
                 }
 

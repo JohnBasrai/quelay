@@ -54,6 +54,8 @@ pub enum CicMsg {
         role: Role,
         uuid: String,
         bytes: u64,
+        /// Wire bytes for this stream (0 on receiver side).
+        bytes_wire: u64,
     },
 
     /// Agent reported a stream failure.
@@ -246,8 +248,8 @@ impl Cic {
                             }
                         }
 
-                        CicMsg::StreamDone { role, uuid, bytes } => {
-                            self.route(&uuid, role, TunerCmd::Done { role, bytes }).await;
+                        CicMsg::StreamDone { role, uuid, bytes, bytes_wire } => {
+                            self.route(&uuid, role, TunerCmd::Done { role, bytes, bytes_wire }).await;
                         }
 
                         CicMsg::StreamFailed { role, uuid, reason } => {
@@ -345,6 +347,12 @@ pub fn assert_aggregate_bw(
         .map(|r| r.bytes)
         .sum();
 
+    let total_wire: u64 = results
+        .iter()
+        .filter(|r| r.role == Role::Sender)
+        .map(|r| r.bytes_wire)
+        .sum();
+
     let cap_bytes_ps = cap_bits_ps as f64 / 8.0;
     let realized_bytes_ps = total_bytes as f64 / wall_elapsed.as_secs_f64();
     let low = cap_bytes_ps * (1.0 - tolerance);
@@ -356,6 +364,13 @@ pub fn assert_aggregate_bw(
         cap_bytes_ps / 1_000.0,
         realized_bytes_ps / cap_bytes_ps * 100.0,
     );
+
+    if total_wire > 0 {
+        let wire_eff = total_bytes as f64 / total_wire as f64;
+        println!(
+            "  Wire efficiency: {wire_eff:.3}  ({total_bytes} payload / {total_wire} wire bytes)"
+        );
+    }
 
     anyhow::ensure!(
         realized_bytes_ps >= low && realized_bytes_ps <= high,

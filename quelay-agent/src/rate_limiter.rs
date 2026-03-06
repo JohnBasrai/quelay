@@ -62,7 +62,7 @@ use std::sync::{
 // ---
 
 use tokio::io::{AsyncWriteExt, WriteHalf};
-use tokio::sync::{mpsc, Mutex};
+use tokio::sync::{mpsc, Mutex, Notify};
 use tokio::time::{interval, Duration, MissedTickBehavior};
 use uuid::Uuid;
 
@@ -469,6 +469,25 @@ impl AggregateRateLimiter {
 
     // ---
 
+    /// Raw UDP bytes sent on the current session, with no baseline subtraction.
+    ///
+    /// Used by `AckTask` to compute a stream-scoped wire delta: sample once
+    /// at stream start, once at stream end, subtract.  Unlike `wire_bytes_now`
+    /// this value is not affected by the timer task's rolling baseline updates.
+    ///
+    /// Returns 0 when no session is installed.
+    pub async fn wire_bytes_absolute(&self) -> u64 {
+        // ---
+        self.session
+            .lock()
+            .await
+            .as_ref()
+            .map(|s| s.wire_bytes_sent())
+            .unwrap_or(0)
+    }
+
+    // ---
+
     /// Register a new stream.
     ///
     /// Returns:
@@ -760,18 +779,15 @@ impl StreamPump {
 
 /// Per-stream handle to the rate-limiting infrastructure.
 ///
-/// In **capped** mode a [`StreamPump`] task was spawned at construction;
-/// `cmd_tx` drives its lifecycle (LinkDown / LinkUp / Finish).
-///
-/// In **uncapped** mode no pump is spawned; `direct_tx` is a plain write half
-/// used by the caller directly (unchanged from before).
+/// A [`StreamPump`] task is always spawned.  In capped mode it is gated by
+/// [`AllocTicket`]s from the ARL timer.  In uncapped mode a synthetic
+/// forwarder task watches `data_ready` and sends unlimited-budget tickets,
+/// so the pump drains at full QUIC speed.  `cmd_tx` drives the pump
+/// lifecycle (LinkDown / LinkUp / Finish) in both modes.
 pub struct RateLimiter {
     // ---
-    /// Command channel to the [`StreamPump`] (capped mode only).
+    /// Command channel to the [`StreamPump`].
     cmd_tx: Option<mpsc::Sender<RateCmd>>,
-
-    /// Direct write half for uncapped mode.
-    direct_tx: Option<WriteHalf<QueLayStreamPtr>>,
 }
 
 impl RateLimiter {
@@ -779,10 +795,10 @@ impl RateLimiter {
 
     /// Construct a `RateLimiter` for one uplink stream.
     ///
-    /// - `alloc_rx = Some(rx)`: capped mode.  Spawns a [`StreamPump`] that
-    ///   selects on `rx` (budget grants) and `cmd_rx` (lifecycle events).
-    /// - `alloc_rx = None`: uncapped mode.  No pump spawned; caller writes
-    ///   directly via the returned `direct_tx` path.
+    /// - `alloc_rx = Some(rx)`: capped mode.  Spawns a [`StreamPump`] gated
+    ///   by `rx` (budget grants from the ARL timer).
+    /// - `alloc_rx = None`: uncapped mode.  Spawns a synthetic forwarder that
+    ///   wakes on `data_ready` and sends unlimited-budget tickets to the pump.
     ///
     /// `backlog` must be the [`Arc<AtomicU64>`] returned by
     /// [`AggregateRateLimiter::register`] for this stream.
@@ -791,36 +807,58 @@ impl RateLimiter {
         alloc_rx: Option<mpsc::Receiver<AllocTicket>>,
         spool: Arc<Mutex<SpoolBuffer>>,
         q_atomic: Arc<AtomicU64>,
+        data_ready: Arc<Notify>,
     ) -> Self {
         // ---
-        match alloc_rx {
-            None => Self {
-                cmd_tx: None,
-                direct_tx: Some(quic_tx),
-            },
-
-            Some(alloc_rx) => {
-                let (cmd_tx, cmd_rx) = mpsc::channel(8);
-
-                tokio::spawn(
-                    StreamPump {
-                        spool,
-                        q: 0,
-                        quic_tx,
-                        alloc_rx,
-                        cmd_rx,
-                        q_atomic,
-                        done: false,
-                        finishing: false,
+        let (alloc_rx, _) = match alloc_rx {
+            Some(rx) => (rx, false),
+            None => {
+                // Uncapped mode: synthesise an alloc channel driven by
+                // data_ready.  StreamPump is always used — this reuses all
+                // drain, reconnect, and finish logic without a separate path.
+                let (alloc_tx, alloc_rx) = mpsc::channel::<AllocTicket>(1);
+                let q_for_fwd = Arc::clone(&q_atomic);
+                let spool_for_fwd = Arc::clone(&spool);
+                tokio::spawn(async move {
+                    loop {
+                        data_ready.notified().await;
+                        let backlog = {
+                            let s = spool_for_fwd.lock().await;
+                            s.head_offset()
+                                .saturating_sub(q_for_fwd.load(Ordering::Acquire))
+                        };
+                        if backlog > 0
+                            && alloc_tx
+                                .send(AllocTicket { bytes: u64::MAX })
+                                .await
+                                .is_err()
+                        {
+                            return; // pump exited
+                        }
                     }
-                    .run(),
-                );
-
-                Self {
-                    cmd_tx: Some(cmd_tx),
-                    direct_tx: None,
-                }
+                });
+                (alloc_rx, true)
             }
+        };
+
+        let (cmd_tx, cmd_rx) = mpsc::channel(8);
+
+        tokio::spawn(
+            StreamPump {
+                spool,
+                q: 0,
+                quic_tx,
+                alloc_rx,
+                cmd_rx,
+                q_atomic,
+                done: false,
+                finishing: false,
+            }
+            .run(),
+        );
+
+        Self {
+            cmd_tx: Some(cmd_tx),
         }
     }
 
@@ -846,19 +884,15 @@ impl RateLimiter {
     // ---
 
     /// Hand the pump a fresh QUIC write half after reconnect.
-    /// In uncapped mode, replaces `direct_tx` in-place.
     pub async fn link_up(&mut self, new_tx: WriteHalf<QueLayStreamPtr>) -> io::Result<()> {
         // ---
-        match (&self.cmd_tx, &mut self.direct_tx) {
-            (Some(cmd_tx), None) => cmd_tx
+        if let Some(cmd_tx) = &self.cmd_tx {
+            cmd_tx
                 .send(RateCmd::LinkUp(new_tx))
                 .await
-                .map_err(|_| io::Error::new(io::ErrorKind::BrokenPipe, "stream pump exited")),
-            (None, Some(direct)) => {
-                *direct = new_tx;
-                Ok(())
-            }
-            _ => unreachable!(),
+                .map_err(|_| io::Error::new(io::ErrorKind::BrokenPipe, "stream pump exited"))
+        } else {
+            Ok(())
         }
     }
 

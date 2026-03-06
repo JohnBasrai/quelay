@@ -48,7 +48,7 @@ pub async fn cmd_small_file_edge_cases(
             let reverse_ctx = TestContext {
                 sender_c2i: ctx.receiver_c2i,
                 receiver_c2i: ctx.sender_c2i,
-                callback_ip: ctx.callback_ip,
+                ..*ctx
             };
             run_single_transfer(&reverse_ctx, *sz, &format!("{label} (reverse)"), cap_mbps).await?;
         }

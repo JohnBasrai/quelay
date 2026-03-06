@@ -101,7 +101,12 @@ impl QueLayCallbackSyncHandler for CallbackHandler {
         Ok(())
     }
 
-    fn handle_stream_done(&self, _uuid: String, bytes_transferred: i64) -> thrift::Result<()> {
+    fn handle_stream_done(
+        &self,
+        _uuid: String,
+        bytes_transferred: i64,
+        _bytes_wire: i64,
+    ) -> thrift::Result<()> {
         let _ = self.tx.lock().unwrap().send(CallbackEvent::Done {
             bytes: bytes_transferred as u64,
         });

@@ -82,8 +82,20 @@ impl QueLayCallbackSyncHandler for TestCallbackHandler {
         Ok(())
     }
 
-    fn handle_stream_done(&self, uuid: String, bytes_transferred: i64) -> thrift::Result<()> {
-        tracing::info!(%uuid, bytes_transferred, "callback: stream_done");
+    fn handle_stream_done(
+        &self,
+        uuid: String,
+        bytes_transferred: i64,
+        bytes_wire: i64,
+    ) -> thrift::Result<()> {
+        let wire_eff = if bytes_wire > 0 {
+            bytes_transferred as f64 / bytes_wire as f64
+        } else {
+            0.0
+        };
+        tracing::info!(%uuid, bytes_transferred, bytes_wire,
+            wire_efficiency = format!("{:.3}", wire_eff),
+            "callback: stream_done");
         let _ = self.tx.lock().unwrap().send(TestCallbackEvent::Done {
             uuid,
             bytes: bytes_transferred as u64,

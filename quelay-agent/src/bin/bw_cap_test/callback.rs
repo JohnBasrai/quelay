@@ -107,12 +107,18 @@ impl QueLayCallbackSyncHandler for CallbackActor {
         Ok(())
     }
 
-    fn handle_stream_done(&self, uuid: String, bytes_transferred: i64) -> thrift::Result<()> {
+    fn handle_stream_done(
+        &self,
+        uuid: String,
+        bytes_transferred: i64,
+        bytes_wire: i64,
+    ) -> thrift::Result<()> {
         // ---
         self.forward(CicMsg::StreamDone {
             role: self.role,
             uuid,
             bytes: bytes_transferred as u64,
+            bytes_wire: bytes_wire as u64,
         });
         Ok(())
     }

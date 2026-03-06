@@ -5,6 +5,7 @@
 #   QUELAY_MODE          server | client  (required)
 #   QUELAY_AGENT_ENDPOINT  bind address for Thrift C2I (default: 0.0.0.0:9190)
 #   QUELAY_CAP           bandwidth cap, e.g. 10Mbps  (default: uncapped)
+#   QUELAY_CONGESTION    congestion algorithm: new-reno | bbr | cubic  (default: new-reno)
 #   QUELAY_BIND          QUIC bind address for server mode (default: 0.0.0.0:4433)
 #   QUELAY_PEER          peer host:port for client mode (e.g. agent-server:4433)
 #   QUELAY_CERT          path to server cert DER for client mode
@@ -21,6 +22,10 @@ COMMON_ARGS="--agent-endpoint ${QUELAY_AGENT_ENDPOINT}"
 
 if [ -n "${QUELAY_CAP}" ]; then
     COMMON_ARGS="${COMMON_ARGS} --bw-cap-bps ${QUELAY_CAP}"
+fi
+
+if [ -n "${QUELAY_CONGESTION:-}" ]; then
+    COMMON_ARGS="${COMMON_ARGS} --congestion ${QUELAY_CONGESTION}"
 fi
 
 case "${QUELAY_MODE}" in

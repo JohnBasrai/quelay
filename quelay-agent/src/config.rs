@@ -7,7 +7,7 @@
 use std::net::SocketAddr;
 use std::path::PathBuf;
 
-use clap::{Parser, Subcommand};
+use clap::{Parser, Subcommand, ValueEnum};
 
 // ---------------------------------------------------------------------------
 // Defaults — kept here so integration tests can import them directly.
@@ -35,6 +35,31 @@ pub const DEFAULT_MAX_CONCURRENT: usize = 0;
 
 /// Default maximum depth of the pending queue.
 pub const DEFAULT_MAX_PENDING: usize = 100;
+
+// ---------------------------------------------------------------------------
+// CongestionAlgo
+// ---------------------------------------------------------------------------
+
+/// QUIC congestion control algorithm selection.
+///
+/// Passed to `quinn::TransportConfig::congestion_controller_factory`.
+/// Both sides of a connection can use different algorithms independently —
+/// congestion control is a per-sender property in QUIC.
+#[derive(Debug, Clone, Default, ValueEnum)]
+pub enum CongestionAlgo {
+    /// RFC 6582 loss-based controller (quinn default).
+    #[default]
+    NewReno,
+
+    /// Bottleneck Bandwidth and RTT — measures bandwidth directly; does not
+    /// treat loss as a congestion signal.  Preferred for high-latency,
+    /// lossy SATCOM links where loss-based controllers enter a death spiral.
+    Bbr,
+
+    /// RFC 8312 CUBIC — improved loss recovery over NewReno; widely deployed
+    /// in terrestrial TCP stacks.
+    Cubic,
+}
 
 // ---------------------------------------------------------------------------
 // Config
@@ -98,6 +123,19 @@ pub struct Config {
     /// the size of the `pending_queue` snapshot returned by `stream_start`.
     #[arg(long, default_value_t = DEFAULT_MAX_PENDING)]
     pub max_pending: usize,
+
+    /// QUIC congestion control algorithm.
+    ///
+    /// `new-reno` (default) is the RFC 6582 loss-based controller built into
+    /// quinn.  `bbr` measures bandwidth and RTT directly without using loss as
+    /// a congestion signal — strongly preferred for SATCOM links with high RTT
+    /// and moderate loss where NewReno enters a window-halving death spiral.
+    /// `cubic` is RFC 8312, a middle ground widely used for terrestrial TCP.
+    ///
+    /// Both peers may run different algorithms; congestion control is a
+    /// per-sender property in QUIC.
+    #[arg(long, default_value = "new-reno", value_enum)]
+    pub congestion: CongestionAlgo,
 }
 
 /// Parse a bandwidth string of the form `<value><unit>` into bits/sec.

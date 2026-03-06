@@ -124,6 +124,8 @@ pub enum TransportConfig {
         peer: String,
         server_name: String,
         cert_der: rustls_pki_types::CertificateDer<'static>,
+        /// Congestion controller to install on every new connection.
+        congestion_algo: quelay_quic::CongestionAlgo,
     },
 }
 
@@ -798,6 +800,7 @@ impl SessionManager {
                 peer,
                 server_name,
                 cert_der,
+                congestion_algo,
             } => {
                 use quelay_domain::QueLayTransport;
 
@@ -809,8 +812,11 @@ impl SessionManager {
                     .next()
                     .ok_or_else(|| anyhow::anyhow!("no addresses found for '{peer}'"))?;
 
-                let transport =
-                    quelay_quic::QuicTransport::client(cert_der.clone(), server_name.clone())?;
+                let transport = quelay_quic::QuicTransport::client(
+                    cert_der.clone(),
+                    server_name.clone(),
+                    congestion_algo.clone(),
+                )?;
                 let session = transport.connect(peer_addr).await?;
                 Ok(Arc::new(session))
             }

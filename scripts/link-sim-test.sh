@@ -18,7 +18,10 @@
 #   clean           No impairment (baseline sanity check)
 #
 # Options:
-#   --bw-cap    STR  Quelay daemon BW cap, e.g. 10Mbps  (default: 10Mbps)
+#   --bw-cap    STR  Quelay daemon BW cap, e.g. 10Mbps  (default: uncapped)
+#   --congestion STR Congestion algorithm: new-reno | bbr | cubic  (default: new-reno)
+#   --skip-bw-check  Skip ±10% BW utilization assertion in e2e-test
+#                    (implied when comparing CC algorithms on degraded links)
 #   --size-mb   N    Payload size in MiB                (default: 100)
 #   --e2e-args  STR  Override entire e2e subcommand     (default: see below)
 #   --no-build       Skip docker compose build
@@ -34,10 +37,12 @@ COMPOSE_FILE="$REPO_ROOT/docker-compose.yml"
 # Defaults
 # ---------------------------------------------------------------------------
 PROFILE=""
-: "${OPT_BW_CAP:=10Mbps}"
+OPT_BW_CAP=""          # empty = uncapped; set via --bw-cap e.g. 10Mbps
 OPT_SIZE_MB=100
 OPT_E2E_ARGS=""
 OPT_NO_BUILD=0
+OPT_CONGESTION="new-reno"
+OPT_SKIP_BW_CHECK=0
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -61,10 +66,12 @@ fi
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
-        --bw-cap)    OPT_BW_CAP="$2";   shift 2 ;;
-        --size-mb)   OPT_SIZE_MB="$2";  shift 2 ;;
-        --e2e-args)  OPT_E2E_ARGS="$2"; shift 2 ;;
-        --no-build)  OPT_NO_BUILD=1;    shift   ;;
+        --bw-cap)    OPT_BW_CAP="$2";    shift 2 ;;
+        --size-mb)   OPT_SIZE_MB="$2";   shift 2 ;;
+        --e2e-args)  OPT_E2E_ARGS="$2";  shift 2 ;;
+        --congestion) OPT_CONGESTION="$2"; shift 2 ;;
+        --skip-bw-check) OPT_SKIP_BW_CHECK=1; shift ;;
+        --no-build)  OPT_NO_BUILD=1;     shift   ;;
         -h|--help)   usage 0 ;;
         *) die "Unknown option: $1" ;;
     esac
@@ -96,6 +103,10 @@ if [[ -z "$OPT_E2E_ARGS" ]]; then
     OPT_E2E_ARGS="multi-file --size-mb ${OPT_SIZE_MB} --bidirectional"
 fi
 
+if [[ $OPT_SKIP_BW_CHECK -eq 1 ]]; then
+    OPT_E2E_ARGS="--skip-bw-check ${OPT_E2E_ARGS}"
+fi
+
 # ---------------------------------------------------------------------------
 # Cleanup trap
 # ---------------------------------------------------------------------------
@@ -114,11 +125,13 @@ trap cleanup EXIT INT TERM
 echo "==> Quelay link-sim-test"
 echo "    profile         : ${PROFILE}"
 echo "    link-sim profile: ${LINK_SIM_PROFILE:-<none — clean link>}"
-echo "    bw-cap          : ${OPT_BW_CAP}"
+echo "    bw-cap          : ${OPT_BW_CAP:-uncapped}"
+echo "    congestion      : ${OPT_CONGESTION}"
 echo "    e2e args        : ${OPT_E2E_ARGS}"
 echo ""
 
-export QUELAY_CAP="$OPT_BW_CAP"
+export QUELAY_CAP="${OPT_BW_CAP}"   # empty string → entrypoint omits --bw-cap-bps
+export QUELAY_CONGESTION="$OPT_CONGESTION"
 export LINK_SIM_PROFILE
 export E2E_ARGS="$OPT_E2E_ARGS"
 

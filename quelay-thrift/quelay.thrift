@@ -10,7 +10,7 @@ namespace cpp quelay
 // ---------------------------------------------------------------------------
 
 /// IDL version — bump when any interface changes.
-const string idl_version  = "2026-Mar-02"
+const string idl_version  = "2026-Mar-05"
 const i8     priority_min = 0
 const i8     priority_max = 127
 
@@ -310,9 +310,16 @@ service QueLayCallback {
     ///
     /// Sender side: fired when the client closes the write socket (EOF sent).
     /// Receiver side: fired when QUIC stream read returns EOF.
+    ///
+    /// `bytes_wire` is the total UDP bytes (including QUIC retransmits) that
+    /// left the NIC for this stream, sampled at completion.  Divide
+    /// `bytes_transferred / bytes_wire` to get wire efficiency (1.0 = perfect).
+    /// `bytes_wire` is 0 when the transport does not track wire-level stats
+    /// (e.g. loopback or mock transport, or the receiver side).
     oneway void stream_done(
         1: string uuid,
-        2: i64    bytes_transferred),
+        2: i64    bytes_transferred,
+        3: i64    bytes_wire),
 
     /// Fired when a stream terminates abnormally.
     ///

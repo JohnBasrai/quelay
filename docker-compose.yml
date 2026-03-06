@@ -4,6 +4,7 @@
 # Usage (via scripts/link-sim-test.sh — do not invoke directly):
 #
 #   QUELAY_CAP=10Mbps         BW cap on the QUIC path (default: 10Mbps)
+#   QUELAY_CONGESTION=new-reno Congestion algorithm: new-reno | bbr | cubic (default: new-reno)
 #   LINK_SIM_PROFILE          path to TOML impairment profile (optional)
 #   SIZE_MB                   payload size per stream for e2e (default: 100)
 #
@@ -49,7 +50,8 @@ services:
       RUST_LOG: ${RUST_LOG:-info}
       QUELAY_MODE: server
       QUELAY_AGENT_ENDPOINT: "0.0.0.0:9191"
-      QUELAY_CAP: ${QUELAY_CAP:-10Mbps}
+      QUELAY_CAP: ${QUELAY_CAP:-}
+      QUELAY_CONGESTION: ${QUELAY_CONGESTION:-new-reno}
       QUELAY_BIND: "0.0.0.0:4433"
     healthcheck:
       test: ["CMD", "/usr/local/bin/entrypoints/agent-healthcheck.sh", "9191"]
@@ -77,7 +79,8 @@ services:
       RUST_LOG: ${RUST_LOG:-info}
       QUELAY_MODE: client
       QUELAY_AGENT_ENDPOINT: "0.0.0.0:9190"
-      QUELAY_CAP: ${QUELAY_CAP:-10Mbps}
+      QUELAY_CAP: ${QUELAY_CAP:-}
+      QUELAY_CONGESTION: ${QUELAY_CONGESTION:-new-reno}
       QUELAY_PEER: "agent-server-quic:4433"
       QUELAY_CERT: "/app/quelay-server.der"
     depends_on:
