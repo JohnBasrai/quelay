@@ -17,6 +17,51 @@ use crate::session::QuicSession;
 use crate::tls::{client_config, server_config, CertBundle};
 
 // ---------------------------------------------------------------------------
+// CongestionAlgo
+// ---------------------------------------------------------------------------
+
+/// Which QUIC congestion-control algorithm to install on the endpoint.
+///
+/// Mirrors `quelay_agent::config::CongestionAlgo` so `quelay-quic` stays
+/// free of a direct dependency on the agent crate.  Callers convert with
+/// `.into()` or pass the value directly.
+#[derive(Debug, Clone, Default)]
+pub enum CongestionAlgo {
+    #[default]
+    NewReno,
+    Bbr,
+    Cubic,
+}
+
+/// Build a `quinn::TransportConfig` with the requested congestion controller.
+fn make_transport_config(algo: &CongestionAlgo) -> quinn::TransportConfig {
+    // ---
+    let mut tc = quinn::TransportConfig::default();
+
+    // Satellite links have high RTT and reconnect windows that far exceed
+    // quinn's 30s default idle timeout.  Set a generous timeout so a
+    // temporarily stalled transfer (e.g. spool-full back-pressure or a
+    // reconnect cycle) does not terminate the QUIC connection.
+    tc.max_idle_timeout(Some(
+        quinn::VarInt::from_u32(300_000) // 300 s in milliseconds
+            .into(),
+    ));
+
+    match algo {
+        CongestionAlgo::NewReno => {
+            tc.congestion_controller_factory(Arc::new(quinn::congestion::NewRenoConfig::default()));
+        }
+        CongestionAlgo::Bbr => {
+            tc.congestion_controller_factory(Arc::new(quinn::congestion::BbrConfig::default()));
+        }
+        CongestionAlgo::Cubic => {
+            tc.congestion_controller_factory(Arc::new(quinn::congestion::CubicConfig::default()));
+        }
+    }
+    tc
+}
+
+// ---------------------------------------------------------------------------
 // QuicTransport
 // ---------------------------------------------------------------------------
 
@@ -31,13 +76,14 @@ pub struct QuicTransport {
 impl QuicTransport {
     // ---
     /// Create a server-side transport bound to `bind_addr`.
-    pub fn server(bundle: CertBundle, bind_addr: SocketAddr) -> Result<Self> {
+    pub fn server(bundle: CertBundle, bind_addr: SocketAddr, algo: CongestionAlgo) -> Result<Self> {
         let tls = server_config(&bundle).map_err(QueLayError::from)?;
 
         let quinn_tls = quinn::crypto::rustls::QuicServerConfig::try_from(tls)
             .map_err(|e| QueLayError::Transport(e.to_string()))?;
 
-        let scfg = quinn::ServerConfig::with_crypto(Arc::new(quinn_tls));
+        let mut scfg = quinn::ServerConfig::with_crypto(Arc::new(quinn_tls));
+        scfg.transport_config(Arc::new(make_transport_config(&algo)));
 
         let endpoint = quinn::Endpoint::server(scfg, bind_addr)
             .map_err(|e: std::io::Error| QueLayError::Transport(e.to_string()))?;
@@ -58,6 +104,7 @@ impl QuicTransport {
     pub fn client(
         server_cert_der: rustls_pki_types::CertificateDer<'static>,
         server_name: String,
+        algo: CongestionAlgo,
     ) -> Result<Self> {
         // ---
         let tls = client_config(server_cert_der).map_err(QueLayError::from)?;
@@ -65,7 +112,8 @@ impl QuicTransport {
         let quinn_tls = quinn::crypto::rustls::QuicClientConfig::try_from(tls)
             .map_err(|e| QueLayError::Transport(e.to_string()))?;
 
-        let ccfg = quinn::ClientConfig::new(Arc::new(quinn_tls));
+        let mut ccfg = quinn::ClientConfig::new(Arc::new(quinn_tls));
+        ccfg.transport_config(Arc::new(make_transport_config(&algo)));
 
         let bind_addr: SocketAddr = "0.0.0.0:0"
             .parse::<std::net::SocketAddr>()

@@ -94,7 +94,7 @@ pub async fn cmd_multi_file(ctx: &TestContext, args: &MultiFileArgs) -> anyhow::
                 let reverse_ctx = TestContext {
                     sender_c2i: ctx.receiver_c2i,
                     receiver_c2i: ctx.sender_c2i,
-                    callback_ip: ctx.callback_ip,
+                    ..*ctx
                 };
                 run_single_transfer(
                     &reverse_ctx,

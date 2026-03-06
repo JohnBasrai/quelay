@@ -31,4 +31,4 @@ pub use error::QuicError;
 pub use session::QuicSession;
 pub use stream::{QuicRecvHalf, QuicSendHalf};
 pub use tls::CertBundle;
-pub use transport::QuicTransport;
+pub use transport::{CongestionAlgo, QuicTransport};

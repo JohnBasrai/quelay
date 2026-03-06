@@ -15,7 +15,7 @@ IFACE="${LINK_SIM_IFACE:-eth0}"
 
 if [ -z "${LINK_SIM_PROFILE}" ]; then
     echo "link-sim: LINK_SIM_PROFILE not set — no impairment applied"
-    exit 0
+    exec sleep infinity
 fi
 
 PROFILE_PATH="/profiles/${LINK_SIM_PROFILE}"

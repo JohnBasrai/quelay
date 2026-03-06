@@ -29,7 +29,8 @@ pub async fn run() {
     // Bind on an OS-assigned loopback port.
     let bind_addr = "127.0.0.1:0".parse().unwrap();
     let server_transport =
-        QuicTransport::server(bundle, bind_addr).expect("server transport failed");
+        QuicTransport::server(bundle, bind_addr, quelay_quic::CongestionAlgo::default())
+            .expect("server transport failed");
 
     // listen() returns a channel of incoming sessions. The bind addr passed
     // here is ignored — the endpoint is already bound in server().
@@ -62,8 +63,12 @@ pub async fn run() {
 
     // --- client -------------------------------------------------------------
 
-    let client_transport =
-        QuicTransport::client(cert_der, "quelay".into()).expect("client transport failed");
+    let client_transport = QuicTransport::client(
+        cert_der,
+        "quelay".into(),
+        quelay_quic::CongestionAlgo::default(),
+    )
+    .expect("client transport failed");
 
     let session = client_transport
         .connect(server_addr)

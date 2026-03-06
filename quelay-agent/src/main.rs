@@ -27,7 +27,7 @@ use quelay_domain::{
     StreamInfo as DomainStreamInfo,
 };
 
-use quelay_quic::{CertBundle, QuicTransport};
+use quelay_quic::{CertBundle, CongestionAlgo as QuicCongestionAlgo, QuicTransport};
 
 use quelay_thrift::{
     // ---
@@ -147,6 +147,7 @@ async fn main() -> anyhow::Result<()> {
         spool_capacity_bytes = cfg.spool_capacity_bytes,
         max_concurrent = cfg.max_concurrent,
         max_pending = cfg.max_pending,
+        congestion = ?cfg.congestion,
         "quelay-agent starting",
     );
 
@@ -165,6 +166,12 @@ async fn main() -> anyhow::Result<()> {
     let cb_tx = CallbackAgent::spawn()?;
     spawn_ping_timer(cb_tx.clone(), std::time::Duration::from_secs(60));
 
+    let quic_algo = match &cfg.congestion {
+        config::CongestionAlgo::NewReno => QuicCongestionAlgo::NewReno,
+        config::CongestionAlgo::Bbr => QuicCongestionAlgo::Bbr,
+        config::CongestionAlgo::Cubic => QuicCongestionAlgo::Cubic,
+    };
+
     let (initial_session, transport_cfg, mode) = match &cfg.mode {
         Mode::Server { bind } => {
             debug!("server mode: binding QUIC on {bind}");
@@ -176,7 +183,7 @@ async fn main() -> anyhow::Result<()> {
             fs::write(&cert_path, cert_der.as_ref())?;
             debug!("server mode: cert written to {}", cert_path.display());
 
-            let transport = QuicTransport::server(bundle, *bind)?;
+            let transport = QuicTransport::server(bundle, *bind, quic_algo)?;
             let mut sess_rx = transport.listen(*bind).await?;
 
             debug!("server mode: waiting for client connection...");
@@ -204,7 +211,8 @@ async fn main() -> anyhow::Result<()> {
             let cert_bytes = fs::read(cert)?;
             let cert_der = rustls_pki_types::CertificateDer::from(cert_bytes);
 
-            let transport = QuicTransport::client(cert_der.clone(), server_name.clone())?;
+            let transport =
+                QuicTransport::client(cert_der.clone(), server_name.clone(), quic_algo.clone())?;
 
             // Resolve hostname at initial connect. Subsequent reconnects
             // re-resolve in session_manager::try_connect().
@@ -221,6 +229,7 @@ async fn main() -> anyhow::Result<()> {
                 peer: peer.clone(),
                 server_name: server_name.clone(),
                 cert_der,
+                congestion_algo: quic_algo,
             };
             (
                 Arc::new(session) as quelay_domain::QueLaySessionPtr,

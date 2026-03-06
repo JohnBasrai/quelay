@@ -329,8 +329,13 @@ async fn real_main() -> anyhow::Result<()> {
             TunerOutcome::Pass => "✓  │".to_string(),
             TunerOutcome::Fail { reason } => format!("✗  │ {reason}"),
         };
+        let wire_eff_str = if r.role == Role::Sender && r.bytes_wire > 0 {
+            format!("  wire_eff={:.3}", r.bytes as f64 / r.bytes_wire as f64)
+        } else {
+            String::new()
+        };
         tracing::info!(
-            "  │  {:<8} {:>10} B  {:>6.2}s  {status}",
+            "  │  {:<8} {:>10} B  {:>6.2}s{wire_eff_str}  {status}",
             format!("{:?}", r.role),
             r.bytes,
             r.elapsed.as_secs_f32(),

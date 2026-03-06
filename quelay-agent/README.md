@@ -64,6 +64,17 @@ Options:
           Set via `--bw-cap-bps` on the command line using a value and unit,
           e.g. `--bw-cap-bps 10Mbps`, `--bw-cap-bps 500Kbps`, `--bw-cap-bps 1.5Gbps`.
 
+      --congestion <CONGESTION>
+          QUIC congestion control algorithm.
+
+          `new-reno` is the quinn default and is loss-based. `bbr` is
+          rate-based and maintains throughput under packet loss — recommended
+          for satellite BLOS links. `cubic` is loss-based with faster
+          recovery than NewReno; not yet validated for satellite use cases.
+
+          [default: new-reno]
+          [possible values: new-reno, bbr, cubic]
+
       --chunk-size-bytes <CHUNK_SIZE_BYTES>
           Chunk payload size in bytes written to the QUIC stream.
           
@@ -79,22 +90,21 @@ Options:
           In-memory spool capacity per uplink stream in bytes.
           
           The spool absorbs bursts during link outages.  When full the TCP
-          reader pauses (back-pressure to the client).  The link-outage test in
-          `e2e_test` derives its link-down window from this value. Defaults to 1 MiB.
+          reader pauses (back-pressure to the client).  The link-outage
+          test in `e2e_test` derives its link-down window from this value.
           [default: 1048576]
 
   -N, --max-concurrent <MAX_CONCURRENT>
           Maximum concurrent active streams (0 = unlimited).
           
-          The DRR test sets this to 1 via the `set_max_concurrent` C2I call so
-          that queued streams are reordered by priority before activation. This
-          flag sets the startup default; the value can be changed live via
-          `set_max_concurrent`.
+          The DRR test sets this to 1 via the `set_max_concurrent` C2I call
+          so that queued streams are reordered by priority before
+          activation. This flag sets the startup default; the value can be
+          changed live via `set_max_concurrent`.
           [default: 0]
 
       --max-pending <MAX_PENDING>
-          Maximum number of streams allowed in the pending queue (default: 100).
-          
+          Maximum number of streams allowed in the pending queue
           When the pending queue is full, `stream_start` returns
           `queue_position == -1` and an error message.
           [default: 100]
@@ -115,6 +125,7 @@ Usage: quelay-agent server [OPTIONS]
 Options:
       --bind <BIND>  UDP address to bind the QUIC endpoint on
                      [default: 0.0.0.0:5000]
+
   -h, --help         Print help
 ```
 
@@ -127,13 +138,17 @@ Connect to a remote Quelay agent (example: 192.168.1.10:5000)
 Usage: quelay-agent client [OPTIONS] --peer <PEER> --cert <CERT>
 
 Options:
-      --peer <PEER>                UDP address of the remote agent's QUIC endpoint
+      --peer <PEER>                UDP address of the remote agent's QUIC
+                                   endpoint 
+
       --server-name <SERVER_NAME>  TLS server name — must match the name used
                                    when the server generated its cert
                                    [default: quelay]
+
       --cert <CERT>                Path to the server's self-signed cert DER
-                                   file. The server writes this at startup; copy
-                                   it to the client before launching
+                                   file. The server writes this at startup;
+                                   copy it to the client before launching
+
   -h, --help                       Print help
 ```
 
@@ -233,62 +248,79 @@ design details.
 
 ## Network Impairment Testing
 
-`scripts/link-sim-test.sh` runs the link simulation test suite using Docker
-Compose. Two `quelay-agent` containers communicate over an isolated `quic-net`
-bridge; network impairment is applied by Pumba on that bridge. No host kernel
-namespaces, `veth` pairs, or `sudo` required.
+`scripts/link-sim-test.sh` runs the link simulation suite using Docker Compose.
+A `link-sim` sidecar container shares the network namespace of `agent-client`
+and applies a single `tc netem` qdisc, atomically combining rate, delay, loss,
+corruption, and duplication. No Pumba, no host kernel namespaces, no `sudo`
+required.
+
+Impairment profiles live in `docker/link-sim/profiles/`:
+
+| Profile | Description |
+|:--------|:------------|
+| `BLOS-750ms` | Clean satellite: 100 kbps uplink, 750 ms RTT, 50 ms jitter |
+| `Degraded-BLOS` | Stressed satellite: 5% loss, 1% corrupt, 3% duplicate, 750 ms RTT |
+| `LOS-250ms` | Line-of-sight: 500 kbps, 250 ms RTT, 10 ms jitter |
 
 ### Usage
 
-```
+```bash
 ./scripts/link-sim-test.sh <profile> [options]
 
-Profiles:
-  loss    Packet loss only
-  delay   Latency / jitter only
-  rate    Bandwidth cap only (via pumba rate)
-  both    Loss + delay combined
-  clean   No impairment (baseline sanity check)
+Profile:
+ BLOS-750ms      Beyond Line-of-Sight, 750ms RTT, clean
+ LOS-250ms       Line-of-Sight, 250ms RTT, clean
+ Degraded-BLOS   BLOS with packet loss, corruption, duplicates
+ clean           No impairment (baseline sanity check)
 
 Options:
-  --loss-percent  N    Packet loss % for 'loss' / 'both' profiles  (default: 5)
-  --delay-ms      N    Base delay ms for 'delay' / 'both' profiles (default: 600)
-  --jitter-ms     N    Jitter ms for 'delay' / 'both' profiles     (default: 100)
-  --rate          STR  Bandwidth for 'rate' profile, e.g. 2mbit    (default: 2mbit)
-  --bw-cap        STR  Quelay daemon BW cap, e.g. 10Mbps           (default: 10Mbps)
-  --size-mb       N    Payload size per stream in MiB              (default: 100)
-  --e2e-args      STR  Override entire e2e command after binary    (default: see below)
-  --no-build           Skip --build flag (use cached images)
-  -h, --help           Show this help
+ --bw-cap     STR Quelay daemon BW cap, e.g. 10Mbps  (default: uncapped)
+ --congestion STR Congestion algorithm: new-reno | bbr | cubic  (default: new-reno)
+ --skip-bw-check  Skip ±10% BW utilization assertion in e2e-test
+                 (requried when comparing CC algorithms on degraded links)
+ --size-mb   N    Payload size in MiB                (default: 100)
+ --e2e-args  STR  Override entire e2e subcommand     (default: see below)
+ --no-build       Skip docker compose build
+ -h, --help       Show this help
 ```
 
 ### Examples
 
 ```bash
-# 5% packet loss, 10 MiB payload
-./scripts/link-sim-test.sh loss --size-mb 10
+# Clean satellite link, default NewReno, 10 MiB payload
+./scripts/link-sim-test.sh BLOS-750ms --size-mb 10
 
-# 600ms delay ±100ms jitter
-./scripts/link-sim-test.sh delay --size-mb 10
+# Good-neighbor validation: BBR at 25% of 800 Kbit/s link
+./scripts/link-sim-test.sh BLOS-750ms --size-mb 1 --congestion bbr --bw-cap 200Kbps
 
-# Loss + delay combined
-./scripts/link-sim-test.sh both --loss-percent 5 --delay-ms 300 --size-mb 10
+# Degraded BLOS — compare CC algorithms
+./scripts/link-sim-test.sh Degraded-BLOS --size-mb 1 --congestion new-reno --skip-bw-check
+./scripts/link-sim-test.sh Degraded-BLOS --size-mb 1 --congestion bbr --skip-bw-check
 
-# 2mbit link cap, agent capped at 1Mbps, 2 MiB payload
-./scripts/link-sim-test.sh rate --rate 2mbit --bw-cap 1Mbps --size-mb 2
-
-# Baseline — no impairment
-./scripts/link-sim-test.sh clean --size-mb 10
+# Baseline — no impairment, good-neighbor check at 1 Mbps
+./scripts/link-sim-test.sh clean --size-mb 1 --congestion bbr --bw-cap 1Mbps
 ```
 
-### Results (debug build, 10 Mbit/s agent cap, `both` profile)
+### Results summary
 
-5% packet loss + 600ms ±100ms jitter. All transfers: 4 × 10 MiB bidirectional,
-SHA-256 ✓.
+All transfers SHA-256 verified. Forward direction = client→server (impaired path).
 
-| Profile | Loss | Delay        | Elapsed (s) | BW Util |
-|:--------|:-----|:-------------|:------------|:--------|
-| `both`  | 5%   | 600ms ±100ms | ~8.2        | ~102%   |
+**Clean link, 1 Mbps cap, BBR (good-neighbor validation):**
 
-QUIC absorbs all impairment transparently — the token bucket rate limiter
-remains the binding constraint.
+| Transfer            | BW Utilization | Elapsed |
+|:--------------------|:---------------|:--------|
+| All 4 bidirectional | 102.6–103.2%   | ~8.2 s  |
+
+BBR holds within the ±10% tolerance on a clean link — it is a well-behaved neighbor.
+
+**Degraded-BLOS (750 ms RTT, 5% loss, 1% corrupt, 3% dup), 1 MiB, uncapped:**
+
+| Algorithm | Forward BW | Congestion events | CWND         |
+|:----------|:-----------|:------------------|:-------------|
+| NewReno   | 12–17 kBps | 15–17             | 20–41 KiB    |
+| BBR       | 31–74 kBps | 2–7               | 200–1042 KiB |
+
+BBR delivers 4–5× throughput improvement on degraded BLOS links. NewReno collapses
+under sustained packet loss; BBR maintains a healthy CWND and recovers quickly.
+
+See `docs/link-sim-findings.md` for full test logs and analysis.

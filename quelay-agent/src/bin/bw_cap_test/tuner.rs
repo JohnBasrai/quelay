@@ -40,7 +40,11 @@ pub enum TunerCmd {
     Port(u16),
 
     /// CIC → tuner: agent confirmed the stream finished normally.
-    Done { role: Role, bytes: u64 },
+    Done {
+        role: Role,
+        bytes: u64,
+        bytes_wire: u64,
+    },
 
     /// CIC → tuner: agent reported a stream failure.
     Failed { role: Role, reason: String },
@@ -72,6 +76,8 @@ pub struct TunerResult {
     pub role: Role,
     pub outcome: TunerOutcome,
     pub bytes: u64,
+    /// Wire bytes reported by the agent at stream done (sender side only; 0 on receiver).
+    pub bytes_wire: u64,
     pub elapsed: Duration,
 }
 
@@ -128,9 +134,9 @@ pub fn spawn_sender(
         tracing::debug!(%uuid, "sender: after wait_for_shutdown");
 
         // --- wait for agent's Done / Failed after the socket was closed ---
-        let final_bytes =
+        let (final_bytes, bytes_wire) =
             match wait_for_agent_done(&uuid, Role::Sender, &mut cmd_rx, &cic, t_start).await {
-                Some(n) => n,
+                Some(pair) => pair,
                 None => return Ok(()),
             };
 
@@ -141,6 +147,7 @@ pub fn spawn_sender(
                 role: Role::Sender,
                 outcome: TunerOutcome::Pass,
                 bytes: final_bytes,
+                bytes_wire,
                 elapsed: t_start.elapsed(),
             },
         )
@@ -200,6 +207,7 @@ pub fn spawn_receiver(
                 role: Role::Receiver,
                 outcome,
                 bytes,
+                bytes_wire: 0, // receiver does not hold session wire stats
                 elapsed: t_start.elapsed(),
             },
         )
@@ -337,14 +345,16 @@ async fn wait_for_agent_done(
     cmd_rx: &mut mpsc::Receiver<TunerCmd>,
     cic: &CicHandle,
     t_start: Instant,
-) -> Option<u64> {
+) -> Option<(u64, u64)> {
     // ---
     tracing::debug!("wait_for_agent_done: ...");
     loop {
         match cmd_rx.recv().await {
-            Some(TunerCmd::Done { bytes, .. }) => {
+            Some(TunerCmd::Done {
+                bytes, bytes_wire, ..
+            }) => {
                 tracing::debug!("wait_for_agent_done: Got TunerCmd::Done ...");
-                return Some(bytes);
+                return Some((bytes, bytes_wire));
             }
             Some(TunerCmd::Failed { reason, .. }) => {
                 tracing::debug!("wait_for_agent_done: Got TunerCmd::Finish ...");
@@ -497,6 +507,7 @@ fn fail(uuid: &str, role: Role, reason: String, t_start: Instant) -> TunerResult
         role,
         outcome: TunerOutcome::Fail { reason },
         bytes: 0,
+        bytes_wire: 0,
         elapsed: t_start.elapsed(),
     }
 }

@@ -175,6 +175,14 @@ struct Cli {
     #[arg(long, default_value_t = false)]
     debug: bool,
 
+    /// Skip the ±10% BW utilization assertion after each transfer.
+    ///
+    /// Use when testing with a congestion algorithm (e.g. BBR evaluation) or
+    /// impairment profile where low utilization is expected and correctness
+    /// (sha256) is the only success criterion.
+    #[arg(long, default_value_t = false)]
+    skip_bw_check: bool,
+
     #[command(subcommand)]
     command: Command,
 }
@@ -382,10 +390,13 @@ struct TransferStats {
 // exceeding clippy's too_many_arguments limit on run_transfer.
 // ---------------------------------------------------------------------------
 
+#[derive(Clone, Copy)]
 struct TestContext {
     sender_c2i: SocketAddr,
     receiver_c2i: SocketAddr,
     callback_ip: std::net::IpAddr,
+    /// When true, skip the ±10% BW utilization assertion in `run_single_transfer`.
+    skip_bw_check: bool,
 }
 
 // ---------------------------------------------------------------------------
@@ -610,7 +621,15 @@ async fn run_single_transfer(
     println!("  [{label}] sha256 ✓");
 
     if let Some(cap) = cap_bps {
-        if bytes >= MIN_BW_TEST_BYTES && stats.elapsed >= MIN_BW_TEST_ELAPSED {
+        if ctx.skip_bw_check {
+            println!(
+                "  [{label}] BW check skipped (--skip-bw-check): \
+                 realized {:.1} KB/s, cap {:.1} KB/s ({:.1}%)",
+                stats.rate_bytes_per_sec / 1_000.0,
+                cap as f64 / 8_000.0,
+                stats.rate_bytes_per_sec / (cap as f64 / 8.0) * 100.0,
+            );
+        } else if bytes >= MIN_BW_TEST_BYTES && stats.elapsed >= MIN_BW_TEST_ELAPSED {
             assert_bw_within_tolerance(&stats, cap)?;
         } else {
             println!(
@@ -750,6 +769,7 @@ async fn real_main() -> anyhow::Result<()> {
         sender_c2i: resolve_addr(&cli.sender_c2i)?,
         receiver_c2i: resolve_addr(&cli.receiver_c2i)?,
         callback_ip: cli.callback_ip,
+        skip_bw_check: cli.skip_bw_check,
     };
 
     match &cli.command {

@@ -105,9 +105,9 @@ use super::{
 const SPOOL_CAPACITY: usize = 1024 * 1024; // 1 MiB
 
 /// How often to fire [`CallbackCmd::StreamProgress`] on both uplink and
-/// downlink, measured in bytes transferred.  Fires once per interval boundary
-/// crossed, so a 10 MiB transfer at this default produces ~10 callbacks.
-const PROGRESS_INTERVAL_BYTES: u64 = 1024 * 1024; // 1 MiB
+/// downlink, measured in wall-clock seconds.  Time-based so that slow
+/// (capped or impaired) transfers still get regular updates.
+const PROGRESS_INTERVAL_SECS: u64 = 5;
 
 // ---------------------------------------------------------------------------
 // SpoolBuffer
@@ -406,6 +406,7 @@ impl ActiveStream {
             alloc_rx,
             Arc::clone(&spool),
             Arc::clone(&q_atomic),
+            Arc::clone(&data_ready),
         );
         #[cfg(feature = "test-hooks")]
         let link_down_tx = rate_limiter.link_down_tx_clone();
@@ -608,7 +609,7 @@ impl ActiveStream {
         // the correct baseline rather than zero.
         let mut bytes_written = bytes_written_atomic.load(Ordering::Acquire);
         let mut last_acked = bytes_written;
-        let mut next_progress: u64 = PROGRESS_INTERVAL_BYTES;
+        let mut last_progress_at = std::time::Instant::now();
         let size_bytes = self._info.size_bytes;
 
         // Split the initial QUIC stream.  We need separate halves so that
@@ -637,6 +638,7 @@ impl ActiveStream {
                         .send(CallbackCmd::StreamDone {
                             uuid,
                             bytes: bytes_written,
+                            bytes_wire: 0,
                         })
                         .await;
                     return;
@@ -720,7 +722,9 @@ impl ActiveStream {
                         bytes_written += to_write.len() as u64;
                         bytes_written_atomic.store(bytes_written, Ordering::Release);
 
-                        while bytes_written >= next_progress {
+                        let now = std::time::Instant::now();
+                        if now.duration_since(last_progress_at).as_secs() >= PROGRESS_INTERVAL_SECS
+                        {
                             let percent =
                                 size_bytes.map(|total| bytes_written as f64 / total as f64 * 100.0);
                             self.cb_tx
@@ -730,7 +734,7 @@ impl ActiveStream {
                                     percent,
                                 })
                                 .await;
-                            next_progress += PROGRESS_INTERVAL_BYTES;
+                            last_progress_at = now;
                         }
                     }
 
@@ -992,11 +996,16 @@ struct AckTask {
     ack_rx: mpsc::Receiver<AckMsg>,
     // ---
     bytes_sent: u64,
-    next_progress: u64,
+    /// Instant of the last `StreamProgress` callback — used for time-based
+    /// progress firing (every `PROGRESS_INTERVAL_SECS` seconds).
+    last_progress_at: std::time::Instant,
     /// True once `RateCmd::Finish` has been sent to the pump task.
     finish_sent: bool,
     /// Shared ARL — deregistered when this task exits (done or failed).
     arl: Arc<AggregateRateLimiter>,
+    /// Absolute wire bytes at stream registration — subtracted from the final
+    /// sample to compute per-stream wire overhead.
+    wire_bytes_start: u64,
     /// Notify `SessionManager` when this stream finishes so it can promote
     /// the next pending stream into the freed active slot.
     session_cmd_tx: super::SessionCommandQueue,
@@ -1045,6 +1054,8 @@ impl AckTask {
 
         let (stream_ack_tx, ack_rx) = Self::spawn_reader(uuid);
 
+        let wire_bytes_start = arl.wire_bytes_absolute().await;
+
         let task = Self {
             uuid,
             spool,
@@ -1057,9 +1068,10 @@ impl AckTask {
             stream_ack_tx,
             ack_rx,
             bytes_sent: 0,
-            next_progress: PROGRESS_INTERVAL_BYTES,
+            last_progress_at: std::time::Instant::now(),
             finish_sent: false,
             arl,
+            wire_bytes_start,
             session_cmd_tx,
         };
 
@@ -1172,11 +1184,25 @@ impl AckTask {
             match msg {
                 Some(AckMsg::Ack { bytes_received }) => self.on_ack(bytes_received).await,
                 Some(AckMsg::Done) => {
-                    tracing::debug!(uuid = %self.uuid, bytes = self.bytes_sent, "uplink: receiver done");
+                    let wire_end = self.arl.wire_bytes_absolute().await;
+                    let bytes_wire = wire_end.saturating_sub(self.wire_bytes_start);
+                    let wire_eff = if bytes_wire > 0 {
+                        self.bytes_sent as f64 / bytes_wire as f64
+                    } else {
+                        0.0
+                    };
+                    tracing::info!(
+                        uuid = %self.uuid,
+                        bytes = self.bytes_sent,
+                        bytes_wire,
+                        wire_efficiency = format!("{wire_eff:.3}"),
+                        "uplink: stream done",
+                    );
                     self.cb_tx
                         .send(CallbackCmd::StreamDone {
                             uuid: self.uuid,
                             bytes: self.bytes_sent,
+                            bytes_wire,
                         })
                         .await;
                     return;
@@ -1223,7 +1249,8 @@ impl AckTask {
             self.bytes_sent = self.bytes_sent.max(bytes_received);
             self.space_ready.notify_one();
 
-            while self.bytes_sent >= self.next_progress {
+            let now = std::time::Instant::now();
+            if now.duration_since(self.last_progress_at).as_secs() >= PROGRESS_INTERVAL_SECS {
                 let percent = self
                     .size_bytes
                     .map(|total| self.bytes_sent as f64 / total as f64 * 100.0);
@@ -1234,7 +1261,7 @@ impl AckTask {
                         percent,
                     })
                     .await;
-                self.next_progress += PROGRESS_INTERVAL_BYTES;
+                self.last_progress_at = now;
             }
         }
     }
