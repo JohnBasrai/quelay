@@ -71,6 +71,26 @@ Pass a profile name from `docker/link-sim/profiles/`:
 ./scripts/link-sim-test.sh clean --size-mb 10
 ```
 
+#### Congestion control selection
+
+Use `--congestion` to select the QUIC CC algorithm for the run:
+
+```bash
+# Compare NewReno vs BBR on a degraded BLOS link
+./scripts/link-sim-test.sh Degraded-BLOS --size-mb 1 --congestion new-reno --skip-bw-check
+./scripts/link-sim-test.sh Degraded-BLOS --size-mb 1 --congestion bbr --skip-bw-check
+
+# Validate BBR as a good neighbor at 25% BW allocation on an impaired link
+./scripts/link-sim-test.sh BLOS-750ms --size-mb 1 --congestion bbr --bw-cap 200Kbps
+```
+
+Valid values: `new-reno` (default), `bbr`, `cubic`.
+
+Use `--skip-bw-check` when the CC algorithm under test is expected to underutilize
+the configured cap (e.g. BBR on a lossy link). SHA-256 integrity checks still run.
+Do not use `--skip-bw-check` for good-neighbor validation — the ±10% BW assertion
+should pass.
+
 Requires Docker with Compose v2. See `docs/link-sim-findings.md` for test
 results and analysis.
 

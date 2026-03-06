@@ -9,6 +9,51 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [0.4.0] - 2026-03-06
+
+### Added
+- `--congestion` flag on `quelay-agent` client/server: selects QUIC congestion
+  control algorithm at startup (`new-reno` | `bbr` | `cubic`; default:
+  `new-reno` for backward compatibility)
+- BBR validated as a good neighbor under ARL bandwidth enforcement: 102–103%
+  utilization on a clean link at 1 Mbps cap, consistent across 4 bidirectional
+  transfers
+- BBR delivers 4–5× throughput improvement over NewReno on Degraded-BLOS
+  (750 ms RTT, 5% loss, 1% corrupt, 3% duplicate): 31–74 kBps vs 12–17 kBps
+- `wire_bytes_absolute()` on `AggregateRateLimiter`: returns raw session UDP
+  byte counter without rolling-baseline subtraction; used by `AckTask` for
+  accurate per-stream wire efficiency reporting
+- `sample-logs/Degraded-BLOS-200Kbps.txt`: reference log for BBR on degraded
+  BLOS with 200 Kbps ARL cap (25% of 800 Kbit/s link)
+- `--congestion` and `--skip-bw-check` flags in `scripts/link-sim-test.sh`
+- `--skip-bw-check` flag in `e2e-test` binary: skips the ±10% BW utilization
+  assertion while preserving SHA-256 integrity check; intended for impaired-link
+  runs where CC algorithm under test is expected to underutilize the cap
+
+### Changed
+- QUIC max idle timeout raised from quinn default (30 s) to 300 s; the default
+  was triggering connection drops on high-RTT satellite links during BBR's
+  initial probe cycle
+- `StreamProgress` firing changed from byte-interval (`PROGRESS_INTERVAL_BYTES`
+  = 1 MiB) to time-interval (`PROGRESS_INTERVAL_SECS` = 5 s); the byte-based
+  trigger produced only 1 callback on slow/capped transfers regardless of
+  elapsed time
+- Uncapped mode (`--bw-cap` omitted) now correctly drains data to QUIC: the
+  direct-write path was dead code; the fix reuses `StreamPump` with
+  unlimited-budget `AllocTicket`s signalled by `data_ready` notifications
+- `link-sim-entrypoint.sh`: on clean profile (no `LINK_SIM_PROFILE` set),
+  container now sleeps indefinitely instead of exiting; prevents
+  `--abort-on-container-exit` from tearing down the test run prematurely
+
+### Fixed
+- `wire_efficiency` metric was incorrect in capped mode: `wire_bytes_now()`
+  returned only the delta since the last ARL timer tick (~100 ms) rather than
+  the full stream duration; replaced with `wire_bytes_absolute()` sampled at
+  stream start and end
+- Removed unused `wire_bytes_now()` method from `AggregateRateLimiter`
+
+---
+
 ## [0.3.0] - 2026-03-05
 
 ### Breaking Changes
