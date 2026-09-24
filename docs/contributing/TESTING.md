@@ -15,7 +15,7 @@ cargo test -p quelay-agent
 ### Workspace unit tests
 
 ```bash
-cargo test --workspace
+cargo nextest run --workspace
 ```
 
 ### Integration tests (`e2e_test` binary)
@@ -102,7 +102,7 @@ Run the full local CI check to match what `ci.yml` will execute on the PR:
 ./scripts/local-test.sh
 ```
 
-This runs `cargo fmt --check`, `cargo clippy`, `cargo test --workspace`,
+This runs `cargo xfmt --check`, `cargo clippy`, `cargo nextest run --workspace`,
 the smoke test (`ci-smoke-test.sh`), and the full integration test suite
 (`ci-integration-test.sh`) in order, stopping on the first failure. A PR
 should only be pushed once this passes cleanly.

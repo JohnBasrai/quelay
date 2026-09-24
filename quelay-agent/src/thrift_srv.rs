@@ -14,12 +14,7 @@
 //! The startup defaults come from [`Config`] and are set in `main.rs` before
 //! the handler is constructed.
 
-use std::collections::HashMap;
-use std::sync::Arc;
-
-use tokio::runtime::Handle;
-use tokio::sync::{mpsc, oneshot, Mutex as AsyncMutex};
-use uuid::Uuid;
+use std::{collections::HashMap, sync::Arc};
 
 use quelay_domain::{
     // ---
@@ -28,7 +23,15 @@ use quelay_domain::{
     Priority,
     StreamInfo as DomainStreamInfo,
 };
+use quelay_thrift::ConnStats as WireConnStats;
+use tokio::{
+    runtime::Handle,
+    sync::{mpsc, oneshot, Mutex as AsyncMutex},
+};
+use uuid::Uuid;
 
+// ---
+use super::{CallbackCmd, CallbackTx};
 use super::{
     // ---
     QueLayAgentSyncHandler,
@@ -38,12 +41,6 @@ use super::{
     WireStreamStartStatus,
     IDL_VERSION,
 };
-
-use quelay_thrift::ConnStats as WireConnStats;
-
-// ---
-
-use super::{CallbackCmd, CallbackTx};
 #[cfg(feature = "test-hooks")]
 use crate::config::{DEFAULT_CHUNK_SIZE_BYTES, DEFAULT_MAX_CONCURRENT};
 
@@ -99,7 +96,8 @@ macro_rules! test_hook {
 /// This mutex is held only briefly for reads/writes of primitive values.
 /// Never hold it across an `await` point.
 #[derive(Debug, Clone)]
-pub struct RuntimeConfig {
+pub struct RuntimeConfig
+{
     // ---
     /// Configured uplink BW cap in Mbit/s (0 = uncapped).
     ///
@@ -123,9 +121,11 @@ pub struct RuntimeConfig {
 
 // ---
 
-impl RuntimeConfig {
+impl RuntimeConfig
+{
     // ---
-    pub fn new(bw_cap_bps: u64, chunk_size_bytes: usize, max_concurrent: usize) -> Self {
+    pub fn new(bw_cap_bps: u64, chunk_size_bytes: usize, max_concurrent: usize) -> Self
+    {
         Self {
             bw_cap_bps,
             chunk_size_bytes,
@@ -144,7 +144,8 @@ pub type RuntimeConfigHandle = Arc<std::sync::Mutex<RuntimeConfig>>;
 /// Response sent back to `handle_stream_start` via a oneshot channel after
 /// the session manager has determined whether the stream is active or queued.
 #[derive(Debug)]
-pub struct StreamStartResponse {
+pub struct StreamStartResponse
+{
     // ---
     /// Status of stream, `Running`, `Pending`, `QueueFull`.
     status: WireStreamStartStatus,
@@ -154,9 +155,11 @@ pub struct StreamStartResponse {
     queue_position: Option<i32>,
 }
 
-impl StreamStartResponse {
+impl StreamStartResponse
+{
     // ---
-    pub(crate) fn new(status: WireStreamStartStatus, queue_position: Option<i32>) -> Self {
+    pub(crate) fn new(status: WireStreamStartStatus, queue_position: Option<i32>) -> Self
+    {
         // ---
 
         Self {
@@ -172,9 +175,11 @@ impl StreamStartResponse {
 
 /// Commands the Thrift handler sends to the async agent loop.
 #[derive(Debug)]
-pub enum AgentCmd {
+pub enum AgentCmd
+{
     // ---
-    StreamStart {
+    StreamStart
+    {
         uuid: Uuid,
         info: DomainStreamInfo,
         priority: Priority,
@@ -182,7 +187,8 @@ pub enum AgentCmd {
     },
 
     /// Request a snapshot of QUIC connection statistics.
-    GetConnStats {
+    GetConnStats
+    {
         reply_tx: oneshot::Sender<DomainConnStats>,
     },
 
@@ -202,7 +208,8 @@ pub enum AgentCmd {
 // ---------------------------------------------------------------------------
 
 /// Implements `QueLayAgentSyncHandler` — the generated Thrift service trait.
-pub struct AgentHandler {
+pub struct AgentHandler
+{
     // ---
     rt: Handle,
     cmd_tx: mpsc::Sender<AgentCmd>,
@@ -214,7 +221,8 @@ pub struct AgentHandler {
 
 // ---
 
-impl AgentHandler {
+impl AgentHandler
+{
     // ---
     pub fn new(
         rt: Handle,
@@ -222,7 +230,8 @@ impl AgentHandler {
         link_state: Arc<AsyncMutex<LinkState>>,
         cb_tx: CallbackTx,
         runtime_cfg: RuntimeConfigHandle,
-    ) -> Self {
+    ) -> Self
+    {
         Self {
             rt,
             cmd_tx,
@@ -237,7 +246,8 @@ impl AgentHandler {
     ///
     /// Use this in RPC handlers to keep poison handling consistent and
     /// avoid unwrap/expect on the config mutex.
-    fn lock_runtime_cfg(&self) -> thrift::Result<std::sync::MutexGuard<'_, RuntimeConfig>> {
+    fn lock_runtime_cfg(&self) -> thrift::Result<std::sync::MutexGuard<'_, RuntimeConfig>>
+    {
         // ---
         self.runtime_cfg.lock().map_err(|_| {
             thrift::Error::Application(thrift::ApplicationError::new(
@@ -246,7 +256,8 @@ impl AgentHandler {
             ))
         })
     }
-    fn send_cmd(&self, cmd: AgentCmd) -> thrift::Result<()> {
+    fn send_cmd(&self, cmd: AgentCmd) -> thrift::Result<()>
+    {
         // ---
         self.rt.block_on(async {
             self.cmd_tx.send(cmd).await.map_err(|_| {
@@ -258,13 +269,17 @@ impl AgentHandler {
         })
     }
 
-    fn send_callback_cmd(&self, cmd: CallbackCmd) -> thrift::Result<()> {
+    fn send_callback_cmd(&self, cmd: CallbackCmd) -> thrift::Result<()>
+    {
         // ---
         let delivered = self.rt.block_on(async { self.cb_tx.send(cmd).await });
 
-        if delivered {
+        if delivered
+        {
             Ok(())
-        } else {
+        }
+        else
+        {
             Err(thrift::Error::Application(thrift::ApplicationError::new(
                 thrift::ApplicationErrorKind::InternalError,
                 "callback channel closed",
@@ -277,10 +292,12 @@ impl AgentHandler {
 // QueLayAgentSyncHandler impl
 // ---------------------------------------------------------------------------
 
-impl QueLayAgentSyncHandler for AgentHandler {
+impl QueLayAgentSyncHandler for AgentHandler
+{
     // ---
 
-    fn handle_get_version(&self) -> thrift::Result<String> {
+    fn handle_get_version(&self) -> thrift::Result<String>
+    {
         tracing::debug!("get_version");
         Ok(IDL_VERSION.to_string())
     }
@@ -292,7 +309,8 @@ impl QueLayAgentSyncHandler for AgentHandler {
         uuid_str: String,
         info: WireStreamInfo,
         priority: i8,
-    ) -> thrift::Result<WireStreamStartReturn> {
+    ) -> thrift::Result<WireStreamStartReturn>
+    {
         // ---
 
         tracing::debug!(uuid = %uuid_str, priority, "THFT: stream_start");
@@ -339,7 +357,8 @@ impl QueLayAgentSyncHandler for AgentHandler {
 
     // ---
 
-    fn handle_set_callback(&self, endpoint: String) -> thrift::Result<String> {
+    fn handle_set_callback(&self, endpoint: String) -> thrift::Result<String>
+    {
         // ---
 
         tracing::debug!(%endpoint, "callback endpoint registered");
@@ -351,13 +370,15 @@ impl QueLayAgentSyncHandler for AgentHandler {
 
     // ---
 
-    fn handle_get_link_state(&self) -> thrift::Result<WireLinkState> {
+    fn handle_get_link_state(&self) -> thrift::Result<WireLinkState>
+    {
         // ---
         tracing::debug!("handle_get_link_state");
 
         let state = self.rt.block_on(async { *self.link_state.lock().await });
 
-        Ok(match state {
+        Ok(match state
+        {
             LinkState::Connecting => WireLinkState::CONNECTING,
             LinkState::Normal => WireLinkState::NORMAL,
             LinkState::Degraded => WireLinkState::DEGRADED,
@@ -367,7 +388,8 @@ impl QueLayAgentSyncHandler for AgentHandler {
 
     // ---
 
-    fn handle_get_bandwidth_cap_bps(&self) -> thrift::Result<i64> {
+    fn handle_get_bandwidth_cap_bps(&self) -> thrift::Result<i64>
+    {
         // ---
         tracing::debug!("handle_get_bandwidth_cap_bps");
 
@@ -381,7 +403,8 @@ impl QueLayAgentSyncHandler for AgentHandler {
 
     // ---
 
-    fn handle_get_conn_stats(&self) -> thrift::Result<WireConnStats> {
+    fn handle_get_conn_stats(&self) -> thrift::Result<WireConnStats>
+    {
         // ---
         tracing::debug!("handle_get_conn_stats");
 
@@ -402,7 +425,8 @@ impl QueLayAgentSyncHandler for AgentHandler {
     // Test / debug handlers — disabled in production builds
     // -----------------------------------------------------------------------
 
-    fn handle_link_enable(&self, _enabled: bool) -> thrift::Result<()> {
+    fn handle_link_enable(&self, _enabled: bool) -> thrift::Result<()>
+    {
         // ---
         tracing::debug!("handle_link_enable");
 
@@ -417,7 +441,8 @@ impl QueLayAgentSyncHandler for AgentHandler {
 
     // ---
 
-    fn handle_set_max_concurrent(&self, _n: i32) -> thrift::Result<()> {
+    fn handle_set_max_concurrent(&self, _n: i32) -> thrift::Result<()>
+    {
         // ---
         tracing::debug!("handle_set_max_concurrent");
 
@@ -439,7 +464,8 @@ impl QueLayAgentSyncHandler for AgentHandler {
 
     // ---
 
-    fn handle_set_chunk_size_bytes(&self, _n: i32) -> thrift::Result<()> {
+    fn handle_set_chunk_size_bytes(&self, _n: i32) -> thrift::Result<()>
+    {
         // ---
         tracing::debug!("handle_set_chunk_size_bytes");
 
@@ -448,13 +474,17 @@ impl QueLayAgentSyncHandler for AgentHandler {
                 let requested = _n as usize;
                 tracing::debug!(requested, "set_chunk_size_bytes (test/debug)");
 
-                let effective = if requested == 0 {
+                let effective = if requested == 0
+                {
                     DEFAULT_CHUNK_SIZE_BYTES
-                } else {
+                }
+                else
+                {
                     requested
                 };
 
-                if effective > 65_535 {
+                if effective > 65_535
+                {
                     return Err(thrift::Error::Application(thrift::ApplicationError::new(
                         thrift::ApplicationErrorKind::InvalidTransform,
                         format!("chunk_size_bytes {effective} exceeds u16 max (65535)"),

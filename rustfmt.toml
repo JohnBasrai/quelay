@@ -1,0 +1,14 @@
+brace_style = "AlwaysNextLine"
+control_brace_style = "AlwaysNextLine"
+edition = "2021"
+group_imports = "StdExternalCrate"
+hard_tabs = false
+imports_granularity = "Crate"
+imports_layout = "HorizontalVertical"
+indent_style = "Block"
+max_width = 100
+newline_style = "Unix"
+style_edition = "2021"
+tab_spaces = 4
+unstable_features = true
+wrap_comments = false

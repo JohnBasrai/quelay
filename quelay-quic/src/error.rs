@@ -24,7 +24,8 @@
 use thiserror::Error;
 
 #[derive(Debug, Error)]
-pub enum QuicError {
+pub enum QuicError
+{
     // ---
     /// Failed to construct the QUIC endpoint.
     ///
@@ -131,9 +132,11 @@ pub enum QuicError {
 // Bridge to quelay_domain::QueLayError
 // ---------------------------------------------------------------------------
 
-impl From<QuicError> for quelay_domain::QueLayError {
+impl From<QuicError> for quelay_domain::QueLayError
+{
     // ---
-    fn from(e: QuicError) -> Self {
+    fn from(e: QuicError) -> Self
+    {
         quelay_domain::QueLayError::Transport(e.to_string())
     }
 }

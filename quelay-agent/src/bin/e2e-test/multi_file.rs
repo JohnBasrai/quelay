@@ -7,7 +7,8 @@ use clap::Args;
 use crate::*;
 
 #[derive(Debug, Args)]
-pub struct MultiFileArgs {
+pub struct MultiFileArgs
+{
     // ---
     /// Transfer 3 large files: 30 MiB, 2 MiB, 500 KiB.
     #[arg(long, conflicts_with_all = ["small", "size_mb", "duration_secs"])]
@@ -49,7 +50,8 @@ pub struct MultiFileArgs {
 
 // ---
 
-pub async fn cmd_multi_file(ctx: &TestContext, args: &MultiFileArgs) -> anyhow::Result<()> {
+pub async fn cmd_multi_file(ctx: &TestContext, args: &MultiFileArgs) -> anyhow::Result<()>
+{
     // ---
 
     println!("=== multi-file ===");
@@ -59,38 +61,54 @@ pub async fn cmd_multi_file(ctx: &TestContext, args: &MultiFileArgs) -> anyhow::
 
     let cap_bps = query_cap(ctx.sender_c2i).context("query_cap(sender_c2i) failed")?;
 
-    let file_sizes: Vec<usize> = if args.large {
+    let file_sizes: Vec<usize> = if args.large
+    {
         vec![
             30 * 1024 * 1024, //  30 MiB
             2 * 1024 * 1024,  //   2 MiB
             512 * 1024,       // 512 KiB
         ]
-    } else if args.small {
+    }
+    else if args.small
+    {
         vec![9_000, 1_024, 512, 1]
-    } else if let Some(mb) = args.size_mb {
+    }
+    else if let Some(mb) = args.size_mb
+    {
         let count = (mb * 1024_f32 * 1024_f32) as usize;
         std::iter::repeat_n(count, args.count).collect()
-    } else if let Some(secs) = args.duration_secs {
+    }
+    else if let Some(secs) = args.duration_secs
+    {
         let bytes = cap_bps
             .map(|c| c as usize / 8 * secs as usize)
             .unwrap_or(32 * 1024 * 1024);
         std::iter::repeat_n(bytes, args.count).collect()
-    } else {
+    }
+    else
+    {
         let bytes = cap_bps
             .map(|c| c as usize / 8 * 10)
             .unwrap_or(32 * 1024 * 1024);
         std::iter::repeat_n(bytes, args.count).collect::<Vec<usize>>()
     };
 
-    if args.link_outage {
+    if args.link_outage
+    {
         run_multi_file_link_outage(ctx, &file_sizes, cap_bps).await?;
-    } else if args.link_fail {
+    }
+    else if args.link_fail
+    {
         run_multi_file_link_fail(ctx.sender_c2i, ctx.receiver_c2i).await?;
-    } else {
-        for (i, &sz) in file_sizes.iter().enumerate() {
+    }
+    else
+    {
+        for (i, &sz) in file_sizes.iter().enumerate()
+        {
             run_single_transfer(ctx, sz, &format!("multi-file-{i}"), cap_bps).await?;
 
-            if args.bidirectional {
+            if args.bidirectional
+            {
                 let reverse_ctx = TestContext {
                     sender_c2i: ctx.receiver_c2i,
                     receiver_c2i: ctx.sender_c2i,

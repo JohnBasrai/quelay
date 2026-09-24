@@ -6,13 +6,13 @@ Run the same checks that CI runs, before pushing.
 
 ```bash
 # Format check
-cargo fmt --all -- --check
+cargo xfmt --check
 
 # Lint
 cargo clippy --all-targets -- -D warnings
 
 # Tests
-cargo test --workspace
+cargo nextest run --workspace
 ```
 
 ## All-in-One

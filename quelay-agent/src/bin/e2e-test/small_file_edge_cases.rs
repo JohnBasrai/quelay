@@ -7,7 +7,8 @@ use clap::Args;
 use crate::*;
 
 #[derive(Debug, Args)]
-pub struct SmallFileEdgeCasesArgs {
+pub struct SmallFileEdgeCasesArgs
+{
     // ---
     /// Test both transfer directions for each size.
     #[arg(long, default_value_t = false)]
@@ -17,7 +18,8 @@ pub struct SmallFileEdgeCasesArgs {
 pub async fn cmd_small_file_edge_cases(
     ctx: &TestContext,
     args: &SmallFileEdgeCasesArgs,
-) -> anyhow::Result<()> {
+) -> anyhow::Result<()>
+{
     // ---
 
     println!("=== small-file-edge-cases ===");
@@ -41,10 +43,12 @@ pub async fn cmd_small_file_edge_cases(
         (1, "1B (minimum C2I stream)"),
     ];
 
-    for (sz, label) in &sizes {
+    for (sz, label) in &sizes
+    {
         println!("  [{label}]");
         run_single_transfer(ctx, *sz, label, cap_mbps).await?;
-        if args.bidirectional {
+        if args.bidirectional
+        {
             let reverse_ctx = TestContext {
                 sender_c2i: ctx.receiver_c2i,
                 receiver_c2i: ctx.sender_c2i,

@@ -6,17 +6,11 @@
 //!   quelay-agent server --bind 0.0.0.0:5000
 //!   quelay-agent client --peer 192.168.1.2:5000 --cert /tmp/quelay-server.der
 
-use std::fs;
-use std::sync::Arc;
+use std::{fs, sync::Arc};
 
 // ---
-
 use clap::Parser;
-use tokio::sync::{mpsc, Mutex};
-use tracing::{debug, info}; // trace
-
 // ---
-
 use quelay_domain::{
     // ---
     LinkState,
@@ -26,9 +20,7 @@ use quelay_domain::{
     QueueStatus,
     StreamInfo as DomainStreamInfo,
 };
-
 use quelay_quic::{CertBundle, CongestionAlgo as QuicCongestionAlgo, QuicTransport};
-
 use quelay_thrift::{
     // ---
     LinkState as WireLinkState,
@@ -44,6 +36,8 @@ use quelay_thrift::{
     TServer,
     IDL_VERSION,
 };
+use tokio::sync::{mpsc, Mutex};
+use tracing::{debug, info}; // trace
 
 // ---
 
@@ -58,21 +52,6 @@ mod thrift_srv;
 
 // ---
 
-use agent::Agent;
-use callback::{spawn_ping_timer, CallbackAgent};
-pub(crate) use config::{Config, Mode};
-
-use session_manager::{
-    // ---
-    SessionCommand,
-    SessionCommandQueue,
-    SessionManager,
-    SessionManagerConfig,
-    TransportConfig,
-};
-
-pub use thrift_srv::{AgentCmd, AgentHandler, RuntimeConfig, StreamStartResponse};
-
 // Gateway re-exports — siblings import via super::Symbol per EMBP §2.3
 pub(crate) use active_stream::{
     // --
@@ -82,17 +61,10 @@ pub(crate) use active_stream::{
     UplinkContext,
     UplinkHandle,
 };
-pub(crate) use rate_limiter::{
-    // --
-    AggregateRateLimiter,
-    AllocTicket,
-    RateLimiter,
-};
-
-#[cfg(feature = "test-hooks")]
-pub(crate) use rate_limiter::RateCmd;
-
+use agent::Agent;
+use callback::{spawn_ping_timer, CallbackAgent};
 pub use callback::{CallbackCmd, CallbackTx};
+pub(crate) use config::{Config, Mode};
 pub use framing::{
     // ---
     read_chunk,
@@ -111,13 +83,31 @@ pub use framing::{
     CHUNK_HEADER_LEN,
     CHUNK_SIZE,
 };
+#[cfg(feature = "test-hooks")]
+pub(crate) use rate_limiter::RateCmd;
+pub(crate) use rate_limiter::{
+    // --
+    AggregateRateLimiter,
+    AllocTicket,
+    RateLimiter,
+};
+use session_manager::{
+    // ---
+    SessionCommand,
+    SessionCommandQueue,
+    SessionManager,
+    SessionManagerConfig,
+    TransportConfig,
+};
+pub use thrift_srv::{AgentCmd, AgentHandler, RuntimeConfig, StreamStartResponse};
 
 // ---------------------------------------------------------------------------
 // main
 // ---------------------------------------------------------------------------
 
 #[tokio::main]
-async fn main() -> anyhow::Result<()> {
+async fn main() -> anyhow::Result<()>
+{
     // ---
 
     let cfg = Config::parse();
@@ -166,14 +156,17 @@ async fn main() -> anyhow::Result<()> {
     let cb_tx = CallbackAgent::spawn()?;
     spawn_ping_timer(cb_tx.clone(), std::time::Duration::from_secs(60));
 
-    let quic_algo = match &cfg.congestion {
+    let quic_algo = match &cfg.congestion
+    {
         config::CongestionAlgo::NewReno => QuicCongestionAlgo::NewReno,
         config::CongestionAlgo::Bbr => QuicCongestionAlgo::Bbr,
         config::CongestionAlgo::Cubic => QuicCongestionAlgo::Cubic,
     };
 
-    let (initial_session, transport_cfg, mode) = match &cfg.mode {
-        Mode::Server { bind } => {
+    let (initial_session, transport_cfg, mode) = match &cfg.mode
+    {
+        Mode::Server { bind } =>
+        {
             debug!("server mode: binding QUIC on {bind}");
 
             let bundle = CertBundle::generate("quelay")?;
@@ -205,7 +198,8 @@ async fn main() -> anyhow::Result<()> {
             peer,
             server_name,
             cert,
-        } => {
+        } =>
+        {
             info!("client mode: connecting to peer {peer}");
 
             let cert_bytes = fs::read(cert)?;
@@ -273,7 +267,8 @@ async fn main() -> anyhow::Result<()> {
             processor,
             10,
         );
-        if let Err(e) = server.listen(&agent_endpoint) {
+        if let Err(e) = server.listen(&agent_endpoint)
+        {
             tracing::error!("Thrift server error: {e:?}");
         }
     });

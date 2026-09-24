@@ -10,14 +10,14 @@
 //!   6. Server accepts the stream and reads to EOF.
 //!   7. Both sides assert the payload matches.
 
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
-
 use quelay_domain::{Priority, QueLaySession, QueLayTransport};
 use quelay_quic::{CertBundle, QuicTransport};
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 // ---
 
-pub async fn run() {
+pub async fn run()
+{
     // ---
     let payload = b"hello from quelay over QUIC";
 

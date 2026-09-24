@@ -2,6 +2,6 @@
 set -euo pipefail
 
 echo "==> test"
-cargo test --workspace
+cargo nextest run --workspace
 
 echo "==> test OK"

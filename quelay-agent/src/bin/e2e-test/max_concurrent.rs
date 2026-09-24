@@ -7,7 +7,8 @@ use clap::Args;
 use crate::*;
 
 #[derive(Debug, Args)]
-pub struct MaxConcurrentArgs {
+pub struct MaxConcurrentArgs
+{
     // ---
     /// Maximum concurrent streams to configure on the sender agent (default: 2).
     ///
@@ -43,7 +44,8 @@ pub struct MaxConcurrentArgs {
 /// The test does **not** drive actual data; it only verifies the
 /// `stream_start` return values.  Completing the queued streams and
 /// observing `promote_pending` fire is left to a future extension.
-pub async fn cmd_max_concurrent(ctx: &TestContext, args: &MaxConcurrentArgs) -> anyhow::Result<()> {
+pub async fn cmd_max_concurrent(ctx: &TestContext, args: &MaxConcurrentArgs) -> anyhow::Result<()>
+{
     // ---
     println!("=== max-concurrent ===");
 
@@ -99,15 +101,20 @@ pub async fn cmd_max_concurrent(ctx: &TestContext, args: &MaxConcurrentArgs) -> 
     let mut lo = 0usize;
     let mut hi = generated.len().saturating_sub(1);
     let mut take_lo = true;
-    while lo <= hi {
-        if lo == hi {
+    while lo <= hi
+    {
+        if lo == hi
+        {
             priorities.push(generated[lo]);
             break;
         }
-        if take_lo {
+        if take_lo
+        {
             priorities.push(generated[lo]);
             lo += 1;
-        } else {
+        }
+        else
+        {
             priorities.push(generated[hi]);
             hi -= 1;
         }
@@ -129,7 +136,7 @@ pub async fn cmd_max_concurrent(ctx: &TestContext, args: &MaxConcurrentArgs) -> 
             .zip(uuids[args.max_concurrent..].iter())
             .map(|(&p, u)| (p, u.clone()))
             .collect();
-        pending.sort_by(|a, b| b.0.cmp(&a.0)); // highest priority first
+        pending.sort_by_key(|entry| std::cmp::Reverse(entry.0)); // highest priority first
         pending.into_iter().map(|(_, u)| u).collect()
     };
 
@@ -141,7 +148,8 @@ pub async fn cmd_max_concurrent(ctx: &TestContext, args: &MaxConcurrentArgs) -> 
     let mut agent = connect_agent(ctx.sender_c2i)?;
 
     let mut results = Vec::new();
-    for (i, (uuid, &pri)) in uuids.iter().zip(priorities.iter()).enumerate() {
+    for (i, (uuid, &pri)) in uuids.iter().zip(priorities.iter()).enumerate()
+    {
         let result = agent
             .stream_start(
                 uuid.clone(),
@@ -167,13 +175,16 @@ pub async fn cmd_max_concurrent(ctx: &TestContext, args: &MaxConcurrentArgs) -> 
     let mut running_count = 0usize;
     let mut pending_count = 0usize;
 
-    for (i, uuid, pri, result) in &results {
+    for (i, uuid, pri, result) in &results
+    {
         let status = result
             .status
             .ok_or_else(|| anyhow::anyhow!("stream {i}: stream_start returned no status"))?;
 
-        match status {
-            Status::RUNNING => {
+        match status
+        {
+            Status::RUNNING =>
+            {
                 running_count += 1;
                 anyhow::ensure!(
                     result.queue_position.is_none() || result.queue_position == Some(0),
@@ -182,7 +193,8 @@ pub async fn cmd_max_concurrent(ctx: &TestContext, args: &MaxConcurrentArgs) -> 
                 );
                 println!("  stream {i} (priority {pri:>3}, uuid {uuid}): RUNNING ✓");
             }
-            Status::PENDING => {
+            Status::PENDING =>
+            {
                 let pos = result
                     .queue_position
                     .ok_or_else(|| anyhow::anyhow!("stream {i}: PENDING but no queue_position"))?;
@@ -195,7 +207,8 @@ pub async fn cmd_max_concurrent(ctx: &TestContext, args: &MaxConcurrentArgs) -> 
                     "  stream {i} (priority {pri:>3}, uuid {uuid}): PENDING queue_pos={pos} (snapshot) ✓"
                 );
             }
-            other => {
+            other =>
+            {
                 anyhow::bail!(
                     "stream {i} (priority {pri}): expected RUNNING or PENDING, got {other:?}"
                 );

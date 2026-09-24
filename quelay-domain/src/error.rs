@@ -3,13 +3,17 @@ use thiserror::Error;
 // ---
 
 #[derive(Debug, Error)]
-pub enum QueLayError {
+pub enum QueLayError
+{
     // ---
     #[error("transport error: {0}")]
     Transport(String),
 
     #[error("stream reset by remote (code {code})")]
-    StreamReset { code: u64 },
+    StreamReset
+    {
+        code: u64
+    },
 
     #[error("stream already finished")]
     AlreadyFinished,

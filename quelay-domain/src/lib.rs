@@ -19,10 +19,19 @@ mod transport;
 
 // --- error
 pub use error::{QueLayError, Result};
-
 // --- priority
 pub use priority::Priority;
-
+// --- scheduler
+pub use scheduler::DrrScheduler;
+// --- session
+pub use session::{
+    // ---
+    QueLayHandler,
+    QueueStatus,
+    StreamInfo,
+    StreamMeta,
+    TransferProgress,
+};
 // --- transport
 pub use transport::{
     // ---
@@ -33,17 +42,4 @@ pub use transport::{
     QueLayStream,
     QueLayStreamPtr,
     QueLayTransport,
-};
-
-// --- scheduler
-pub use scheduler::DrrScheduler;
-
-// --- session
-pub use session::{
-    // ---
-    QueLayHandler,
-    QueueStatus,
-    StreamInfo,
-    StreamMeta,
-    TransferProgress,
 };

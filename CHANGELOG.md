@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Changed
+- Adopted the nightly-backed `cargo xfmt` workflow and project formatting
+  configuration.
+- Run workspace unit tests with `cargo nextest` in CI and local test scripts.
+
 ---
 
 ## [0.4.0] - 2026-03-06

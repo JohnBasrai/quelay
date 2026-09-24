@@ -20,14 +20,11 @@
 use std::time::{Duration, Instant};
 
 // ---
-
 use tokio::sync::mpsc;
 
 // ---
-
 use super::CicHandle;
-use super::CicMsg;
-use super::Role;
+use super::{CicMsg, Role};
 
 // ---------------------------------------------------------------------------
 // TunerCmd
@@ -35,19 +32,24 @@ use super::Role;
 
 /// Commands sent from CIC to a tuner task.
 #[derive(Debug, Clone)]
-pub enum TunerCmd {
+pub enum TunerCmd
+{
     /// CIC → tuner: agent opened this ephemeral port; connect to it.
     Port(u16),
 
     /// CIC → tuner: agent confirmed the stream finished normally.
-    Done {
+    Done
+    {
         role: Role,
         bytes: u64,
         bytes_wire: u64,
     },
 
     /// CIC → tuner: agent reported a stream failure.
-    Failed { role: Role, reason: String },
+    Failed
+    {
+        role: Role, reason: String
+    },
 
     /// CIC → sender tuner: duration elapsed, close the write socket.
     Shutdown,
@@ -62,16 +64,21 @@ pub enum TunerCmd {
 
 /// Outcome of a single tuner task.
 #[derive(Debug, Clone)]
-pub enum TunerOutcome {
+pub enum TunerOutcome
+{
     Pass,
-    Fail { reason: String },
+    Fail
+    {
+        reason: String,
+    },
 }
 
 // ---
 
 /// Result reported by a tuner task to CIC via [`CicMsg::TunerFinished`].
 #[derive(Debug, Clone)]
-pub struct TunerResult {
+pub struct TunerResult
+{
     pub uuid: String,
     pub role: Role,
     pub outcome: TunerOutcome,
@@ -92,7 +99,8 @@ pub fn spawn_sender(
     payload: Vec<u8>,
     mut cmd_rx: mpsc::Receiver<TunerCmd>,
     cic: CicHandle,
-) -> tokio::task::JoinHandle<anyhow::Result<()>> {
+) -> tokio::task::JoinHandle<anyhow::Result<()>>
+{
     // ---
     tokio::spawn(async move {
         // ---
@@ -100,9 +108,11 @@ pub fn spawn_sender(
         tracing::debug!("spawn_sender: starting ...");
 
         let t_start = Instant::now();
-        let port = match wait_for_port(&uuid, Role::Sender, &mut cmd_rx, &cic, t_start).await {
+        let port = match wait_for_port(&uuid, Role::Sender, &mut cmd_rx, &cic, t_start).await
+        {
             Some(p) => p,
-            None => {
+            None =>
+            {
                 tracing::debug!("spawn_sender: wait_for_port returns None");
                 return Ok(());
             }
@@ -122,11 +132,13 @@ pub fn spawn_sender(
         )
         .await
         {
-            Some(n) => {
+            Some(n) =>
+            {
                 tracing::debug!(%uuid, %n, "sender: got wait_for_shutdown");
                 n
             }
-            None => {
+            None =>
+            {
                 tracing::debug!(%uuid, "sender: got NONE return from wait_for_shutdown");
                 return Ok(());
             }
@@ -135,7 +147,8 @@ pub fn spawn_sender(
 
         // --- wait for agent's Done / Failed after the socket was closed ---
         let (final_bytes, bytes_wire) =
-            match wait_for_agent_done(&uuid, Role::Sender, &mut cmd_rx, &cic, t_start).await {
+            match wait_for_agent_done(&uuid, Role::Sender, &mut cmd_rx, &cic, t_start).await
+            {
                 Some(pair) => pair,
                 None => return Ok(()),
             };
@@ -165,15 +178,18 @@ pub fn spawn_receiver(
     uuid: String,
     mut cmd_rx: mpsc::Receiver<TunerCmd>,
     cic: CicHandle,
-) -> tokio::task::JoinHandle<anyhow::Result<()>> {
+) -> tokio::task::JoinHandle<anyhow::Result<()>>
+{
     // ---
     tokio::spawn(async move {
         // ---
         let t_start = Instant::now();
 
-        let port = match wait_for_port(&uuid, Role::Receiver, &mut cmd_rx, &cic, t_start).await {
+        let port = match wait_for_port(&uuid, Role::Receiver, &mut cmd_rx, &cic, t_start).await
+        {
             Some(p) => p,
-            None => {
+            None =>
+            {
                 tracing::debug!(%uuid, "receiver: Got None return from wait_for_port");
                 return Ok(());
             }
@@ -185,15 +201,18 @@ pub fn spawn_receiver(
         let read_handle = tokio::task::spawn_blocking(move || blocking_tcp_reader(port));
 
         // --- wait for Done / Failed from CIC ---
-        let outcome =
-            match wait_for_receiver_done(&uuid, &mut cmd_rx, &cic, &read_handle, t_start).await {
-                Some(o) => o,
-                None => return Ok(()),
-            };
+        let outcome = match wait_for_receiver_done(&uuid, &mut cmd_rx, &cic, &read_handle, t_start)
+            .await
+        {
+            Some(o) => o,
+            None => return Ok(()),
+        };
 
-        let bytes = match read_handle.await {
+        let bytes = match read_handle.await
+        {
             Ok(Ok(n)) => n,
-            Ok(Err(e)) => {
+            Ok(Err(e)) =>
+            {
                 tracing::warn!(%uuid, "receiver read error: {e}");
                 0
             }
@@ -230,25 +249,32 @@ async fn wait_for_port(
     cmd_rx: &mut mpsc::Receiver<TunerCmd>,
     cic: &CicHandle,
     t_start: Instant,
-) -> Option<u16> {
+) -> Option<u16>
+{
     // ---
     tracing::debug!(uuid, "wait_for_port");
-    loop {
-        match cmd_rx.recv().await {
-            Some(TunerCmd::Port(p)) => {
+    loop
+    {
+        match cmd_rx.recv().await
+        {
+            Some(TunerCmd::Port(p)) =>
+            {
                 tracing::debug!("wait_for_port: Got TunerCmd::Port from rx.recv");
                 return Some(p);
             }
-            Some(TunerCmd::Kill) => {
+            Some(TunerCmd::Kill) =>
+            {
                 tracing::debug!("wait_for_port: Got TunerCmd::Kill from rx.recv");
                 finish(cic, killed(uuid, role, t_start)).await;
                 return None;
             }
-            Some(other) => {
+            Some(other) =>
+            {
                 tracing::debug!("wait_for_port: Got Some({other:?}) from rx.recv",);
                 tracing::warn!(%uuid, ?role, ?other, "tuner: unexpected cmd awaiting port");
             }
-            None => {
+            None =>
+            {
                 tracing::debug!("wait_for_port: Got None from rx.recv");
                 finish(cic, disconnected(uuid, role, t_start)).await;
                 return None;
@@ -269,30 +295,38 @@ async fn wait_for_shutdown(
     cic: &CicHandle,
     write_handle: tokio::task::JoinHandle<anyhow::Result<()>>,
     t_start: Instant,
-) -> Option<u64> {
+) -> Option<u64>
+{
     // ---
 
     tracing::trace!(%uuid, "sender: wait_for_shutdown, starting...");
 
-    loop {
+    loop
+    {
         let cmd = cmd_rx.recv().await;
         tracing::trace!(%uuid, "sender: wait_for_shutdown: {:?}", cmd);
 
-        match cmd {
-            Some(TunerCmd::Shutdown) => {
+        match cmd
+        {
+            Some(TunerCmd::Shutdown) =>
+            {
                 let _ = abort_tx.send(());
 
                 tracing::debug!(%uuid, "wait_for_shutdown: TunerCmd::Shutdown, aborting sender");
 
-                match write_handle.await {
-                    Ok(Ok(())) => {}
+                match write_handle.await
+                {
+                    Ok(Ok(())) =>
+                    {}
                     Ok(Err(e)) => tracing::warn!(%uuid, "write task error: {e}"),
-                    Err(_) => {}
+                    Err(_) =>
+                    {}
                 }
                 return Some(0);
             }
 
-            Some(TunerCmd::Kill) => {
+            Some(TunerCmd::Kill) =>
+            {
                 let _ = abort_tx.send(());
 
                 tracing::info!(%uuid, "wait_for_shutdown: TunerCmd::Kill, aborting sender");
@@ -303,7 +337,8 @@ async fn wait_for_shutdown(
 
             // Payload exhausted before shutdown — unlikely in bw-cap-test
             // but handle it gracefully.
-            Some(TunerCmd::Done { bytes, .. }) => {
+            Some(TunerCmd::Done { bytes, .. }) =>
+            {
                 let _ = abort_tx.send(());
 
                 tracing::debug!(%uuid, "wait_for_shutdown: TunerCmd::Done");
@@ -311,7 +346,8 @@ async fn wait_for_shutdown(
                 return Some(bytes);
             }
 
-            Some(TunerCmd::Failed { reason, .. }) => {
+            Some(TunerCmd::Failed { reason, .. }) =>
+            {
                 let _ = abort_tx.send(());
 
                 tracing::info!(%uuid, "wait_for_shutdown: TunerCmd::Failed");
@@ -320,10 +356,12 @@ async fn wait_for_shutdown(
                 return None;
             }
 
-            Some(other) => {
+            Some(other) =>
+            {
                 tracing::warn!(%uuid, ?other, "sender: wait_for_shutdown: unexpected cmd")
             }
-            None => {
+            None =>
+            {
                 let _ = abort_tx.send(());
 
                 tracing::debug!(%uuid, "wait_for_shutdown: None");
@@ -345,31 +383,39 @@ async fn wait_for_agent_done(
     cmd_rx: &mut mpsc::Receiver<TunerCmd>,
     cic: &CicHandle,
     t_start: Instant,
-) -> Option<(u64, u64)> {
+) -> Option<(u64, u64)>
+{
     // ---
     tracing::debug!("wait_for_agent_done: ...");
-    loop {
-        match cmd_rx.recv().await {
+    loop
+    {
+        match cmd_rx.recv().await
+        {
             Some(TunerCmd::Done {
                 bytes, bytes_wire, ..
-            }) => {
+            }) =>
+            {
                 tracing::debug!("wait_for_agent_done: Got TunerCmd::Done ...");
                 return Some((bytes, bytes_wire));
             }
-            Some(TunerCmd::Failed { reason, .. }) => {
+            Some(TunerCmd::Failed { reason, .. }) =>
+            {
                 tracing::debug!("wait_for_agent_done: Got TunerCmd::Finish ...");
                 finish(cic, fail(uuid, role, reason, t_start)).await;
                 return None;
             }
-            Some(TunerCmd::Kill) => {
+            Some(TunerCmd::Kill) =>
+            {
                 tracing::debug!("wait_for_agent_done: Got TunerCmd::Kill ...");
                 finish(cic, killed(uuid, role, t_start)).await;
                 return None;
             }
-            Some(other) => {
+            Some(other) =>
+            {
                 tracing::warn!(%uuid, ?other, "wait_for_agent_done: unexpected cmd post-shutdown")
             }
-            None => {
+            None =>
+            {
                 tracing::debug!("wait_for_agent_done: none ...");
                 finish(cic, disconnected(uuid, role, t_start)).await;
                 return None;
@@ -393,30 +439,37 @@ async fn wait_for_receiver_done(
     cic: &CicHandle,
     read_handle: &tokio::task::JoinHandle<anyhow::Result<u64>>,
     t_start: Instant,
-) -> Option<TunerOutcome> {
+) -> Option<TunerOutcome>
+{
     // ---
 
     tracing::debug!(%uuid, "wait_for_receiver_done ...");
 
-    loop {
-        match cmd_rx.recv().await {
-            Some(TunerCmd::Done { .. }) => {
+    loop
+    {
+        match cmd_rx.recv().await
+        {
+            Some(TunerCmd::Done { .. }) =>
+            {
                 tracing::debug!(%uuid, "wait_for_receiver_done Got TunerCmd::Done...");
                 return Some(TunerOutcome::Pass);
             }
-            Some(TunerCmd::Failed { reason, .. }) => {
+            Some(TunerCmd::Failed { reason, .. }) =>
+            {
                 tracing::debug!(%uuid, "wait_for_receiver_done Got TunerCmd::Failed...");
                 read_handle.abort();
                 return Some(TunerOutcome::Fail { reason });
             }
-            Some(TunerCmd::Kill) => {
+            Some(TunerCmd::Kill) =>
+            {
                 tracing::debug!(%uuid, "wait_for_receiver_done Got TunerCmd::Kill...");
                 read_handle.abort();
                 finish(cic, killed(uuid, Role::Receiver, t_start)).await;
                 return None;
             }
             Some(other) => tracing::warn!(%uuid, ?other, "receiver: unexpected cmd"),
-            None => {
+            None =>
+            {
                 tracing::debug!(%uuid, "wait_for_receiver_done Got None...");
                 read_handle.abort();
                 finish(cic, disconnected(uuid, Role::Receiver, t_start)).await;
@@ -438,12 +491,14 @@ async fn async_tcp_writer(
     port: u16,
     payload: Vec<u8>,
     mut abort_rx: tokio::sync::oneshot::Receiver<()>,
-) -> anyhow::Result<()> {
+) -> anyhow::Result<()>
+{
     // ---
     use tokio::io::AsyncWriteExt;
     let mut tcp = tokio::net::TcpStream::connect(format!("127.0.0.1:{port}")).await?;
 
-    for chunk in payload.chunks(64 * 1024) {
+    for chunk in payload.chunks(64 * 1024)
+    {
         tokio::select! {
             biased;
             _ = &mut abort_rx => {
@@ -463,7 +518,8 @@ async fn async_tcp_writer(
 /// Read from a TCP connection on `port` until EOF, counting bytes received.
 ///
 /// Intended for use inside `tokio::task::spawn_blocking`.
-fn blocking_tcp_reader(port: u16) -> anyhow::Result<u64> {
+fn blocking_tcp_reader(port: u16) -> anyhow::Result<u64>
+{
     // ---
     use std::io::Read;
     let mut tcp = std::net::TcpStream::connect(format!("127.0.0.1:{port}"))?;
@@ -472,10 +528,12 @@ fn blocking_tcp_reader(port: u16) -> anyhow::Result<u64> {
 
     tracing::debug!("reader: starting ...");
 
-    loop {
+    loop
+    {
         tracing::debug!("reader: reading chunk !!");
         let n = tcp.read(&mut buf)?;
-        if n == 0 {
+        if n == 0
+        {
             tracing::debug!("reader: got EOF !!");
             break; // EOF
         }
@@ -488,7 +546,8 @@ fn blocking_tcp_reader(port: u16) -> anyhow::Result<u64> {
 // Internal helpers
 // ---------------------------------------------------------------------------
 
-async fn finish(cic: &CicHandle, result: TunerResult) {
+async fn finish(cic: &CicHandle, result: TunerResult)
+{
     // ---
     let _ = cic
         .tx
@@ -500,7 +559,8 @@ async fn finish(cic: &CicHandle, result: TunerResult) {
         .await;
 }
 
-fn fail(uuid: &str, role: Role, reason: String, t_start: Instant) -> TunerResult {
+fn fail(uuid: &str, role: Role, reason: String, t_start: Instant) -> TunerResult
+{
     // ---
     TunerResult {
         uuid: uuid.to_string(),
@@ -512,13 +572,15 @@ fn fail(uuid: &str, role: Role, reason: String, t_start: Instant) -> TunerResult
     }
 }
 
-fn killed(uuid: &str, role: Role, t_start: Instant) -> TunerResult {
+fn killed(uuid: &str, role: Role, t_start: Instant) -> TunerResult
+{
     // ---
     tracing::warn!(%uuid, ?role, "tuner: killed by failsafe");
     fail(uuid, role, "killed by failsafe".into(), t_start)
 }
 
-fn disconnected(uuid: &str, role: Role, t_start: Instant) -> TunerResult {
+fn disconnected(uuid: &str, role: Role, t_start: Instant) -> TunerResult
+{
     // ---
     tracing::warn!(%uuid, ?role, "tuner: CIC channel closed unexpectedly");
     fail(uuid, role, "CIC channel closed".into(), t_start)

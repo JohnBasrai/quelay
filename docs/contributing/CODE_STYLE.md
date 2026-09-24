@@ -2,13 +2,22 @@
 
 ## Formatter
 
-All Rust code is formatted with `rustfmt`. Run before every commit:
+All Rust code is formatted with `cargo xfmt`. It applies this repository's
+`rustfmt.toml`, including formatting options that require the nightly Rust
+formatter. Run it after changing Rust code:
 
 ```bash
-cargo fmt --all
+cargo xfmt
 ```
 
-The CI lint script enforces this.
+To check formatting without modifying files:
+
+```bash
+cargo xfmt --check
+```
+
+The CI lint script enforces this. Do not substitute `cargo fmt`; it does not
+apply the full repository formatting contract.
 
 ## Linter
 

@@ -11,10 +11,15 @@
 //! 2. Duration timer  — fires [`TunerCmd::Shutdown`] to all sender tuners
 //! 3. Failsafe timer  — fires [`TunerCmd::Kill`] to everything still alive
 
-use std::collections::{HashMap, HashSet};
-use std::net::SocketAddr;
-use std::time::Duration;
+use std::{
+    collections::{HashMap, HashSet},
+    net::SocketAddr,
+    time::Duration,
+};
 
+// ---
+use quelay_thrift::LinkState;
+use quelay_thrift::StreamInfo;
 // ---
 
 //e anyhow::Context as _;
@@ -22,12 +27,6 @@ use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 
 // ---
-
-use quelay_thrift::LinkState;
-use quelay_thrift::StreamInfo;
-
-// ---
-
 use super::Role;
 use super::TunerCmd;
 //use super::TunerOutcome;
@@ -39,10 +38,12 @@ use super::TunerResult;
 
 /// All messages that flow into CIC — from callback actors and tuner tasks.
 #[derive(Debug)]
-pub enum CicMsg {
+pub enum CicMsg
+{
     // --- from callbacks (UUID-bearing → routed to the matching tuner) ---
     /// Agent opened an ephemeral port for this stream.
-    StreamStarted {
+    StreamStarted
+    {
         role: Role,
         uuid: String,
         info: StreamInfo,
@@ -50,7 +51,8 @@ pub enum CicMsg {
     },
 
     /// Agent finished transferring this stream normally.
-    StreamDone {
+    StreamDone
+    {
         role: Role,
         uuid: String,
         bytes: u64,
@@ -59,7 +61,8 @@ pub enum CicMsg {
     },
 
     /// Agent reported a stream failure.
-    StreamFailed {
+    StreamFailed
+    {
         role: Role,
         uuid: String,
         reason: String,
@@ -67,11 +70,15 @@ pub enum CicMsg {
 
     // --- from callbacks (no UUID → CIC handles directly) ---
     /// Link state changed on one side.
-    LinkStatus { role: Role, state: LinkState },
+    LinkStatus
+    {
+        role: Role, state: LinkState
+    },
 
     // --- from tuner tasks ---
     /// A tuner task has completed and is about to exit.
-    TunerFinished {
+    TunerFinished
+    {
         uuid: String,
         role: Role,
         result: TunerResult,
@@ -87,7 +94,8 @@ pub enum CicMsg {
 /// In the current single-process model both fields carry the same UUID value —
 /// the same UUID flows through the air agent and arrives at the ground agent.
 /// The [`Role`] discriminant in the master map prevents key collisions.
-pub struct TunerPair {
+pub struct TunerPair
+{
     // ---
     pub sender_uuid: String,
     pub receiver_uuid: String,
@@ -99,7 +107,8 @@ pub struct TunerPair {
 
 /// Cloneable handle tuner tasks use to send [`CicMsg`]s back to CIC.
 #[derive(Clone)]
-pub struct CicHandle {
+pub struct CicHandle
+{
     // ---
     pub tx: mpsc::Sender<CicMsg>,
 }
@@ -109,7 +118,8 @@ pub struct CicHandle {
 // ---------------------------------------------------------------------------
 
 /// Construction-time configuration for [`Cic`].
-pub struct CicConfig {
+pub struct CicConfig
+{
     // ---
     pub sender_c2i: SocketAddr,
     pub receiver_c2i: SocketAddr,
@@ -128,7 +138,8 @@ pub struct CicConfig {
 type TunerJobKey = (String, Role);
 
 /// Central Intelligence Controller.
-pub struct Cic {
+pub struct Cic
+{
     // ---
     cfg: CicConfig,
     cic_rx: mpsc::Receiver<CicMsg>,
@@ -154,10 +165,12 @@ pub struct Cic {
 
 // ---
 
-impl Cic {
+impl Cic
+{
     /// Create a new CIC.  Returns the instance and a [`mpsc::Sender`] that
     /// callback actors and tuner tasks use to reach CIC.
-    pub fn new(cfg: CicConfig) -> (Self, mpsc::Sender<CicMsg>) {
+    pub fn new(cfg: CicConfig) -> (Self, mpsc::Sender<CicMsg>)
+    {
         // ---
         let (tx, rx) = mpsc::channel(256);
         let cic = Self {
@@ -180,20 +193,23 @@ impl Cic {
         role: Role,
         cmd_tx: mpsc::Sender<TunerCmd>,
         handle: JoinHandle<anyhow::Result<()>>,
-    ) {
+    )
+    {
         // ---
         self.dispatch.insert((uuid.clone(), role), cmd_tx);
         self.handles.push(((uuid, role), handle));
     }
 
     /// Register a [`TunerPair`] (once per sender+receiver pair).
-    pub fn register_pair(&mut self, pair: TunerPair) {
+    pub fn register_pair(&mut self, pair: TunerPair)
+    {
         // ---
         self.pairs.push(pair);
     }
 
     /// Return a [`CicHandle`] suitable for cloning into tuner tasks.
-    pub fn handle(&self) -> CicHandle {
+    pub fn handle(&self) -> CicHandle
+    {
         // ---
         CicHandle {
             tx: self.cic_tx.clone(),
@@ -206,7 +222,8 @@ impl Cic {
 
     /// Run the CIC dispatch loop until all tuners have finished or the
     /// failsafe timer fires.  Returns collected [`TunerResult`]s.
-    pub async fn run(mut self) -> anyhow::Result<Vec<TunerResult>> {
+    pub async fn run(mut self) -> anyhow::Result<Vec<TunerResult>>
+    {
         // ---
         let total_tasks = self.handles.len();
         let duration = self.cfg.duration;
@@ -220,7 +237,8 @@ impl Cic {
 
         let mut shutdown_sent = false;
 
-        loop {
+        loop
+        {
             tokio::select! {
                 biased;
 
@@ -277,9 +295,12 @@ impl Cic {
         }
 
         // Join all handles for cleanup; results already collected via channel.
-        for ((uuid, role), handle) in self.handles {
-            match tokio::time::timeout(Duration::from_secs(5), handle).await {
-                Ok(Ok(Ok(()))) => {}
+        for ((uuid, role), handle) in self.handles
+        {
+            match tokio::time::timeout(Duration::from_secs(5), handle).await
+            {
+                Ok(Ok(Ok(()))) =>
+                {}
                 Ok(Ok(Err(e))) => tracing::warn!(%uuid, ?role, "tuner task error: {e}"),
                 Ok(Err(_)) => tracing::warn!(%uuid, ?role, "tuner task panicked"),
                 Err(_) => tracing::warn!(%uuid, ?role, "tuner task drain timeout"),
@@ -293,11 +314,15 @@ impl Cic {
     // Helpers
     // ---------------------------------------------------------------------------
 
-    async fn route(&self, uuid: &str, role: Role, cmd: TunerCmd) {
+    async fn route(&self, uuid: &str, role: Role, cmd: TunerCmd)
+    {
         // ---
-        match self.dispatch.get(&(uuid.to_string(), role)) {
-            Some(tx) => {
-                if tx.send(cmd).await.is_err() {
+        match self.dispatch.get(&(uuid.to_string(), role))
+        {
+            Some(tx) =>
+            {
+                if tx.send(cmd).await.is_err()
+                {
                     tracing::warn!(%uuid, ?role, "CIC: tuner channel closed");
                 }
             }
@@ -305,9 +330,11 @@ impl Cic {
         }
     }
 
-    async fn shutdown_senders(&self) {
+    async fn shutdown_senders(&self)
+    {
         // ---
-        for pair in &self.pairs {
+        for pair in &self.pairs
+        {
             self.route(&pair.sender_uuid, Role::Sender, TunerCmd::Shutdown)
                 .await;
         }
@@ -318,8 +345,10 @@ impl Cic {
         TunerCmd: Clone,
     {
         // ---
-        for ((uuid, role), tx) in &self.dispatch {
-            if tx.send(cmd.clone()).await.is_err() {
+        for ((uuid, role), tx) in &self.dispatch
+        {
+            if tx.send(cmd.clone()).await.is_err()
+            {
                 tracing::warn!(%uuid, ?role, "CIC: broadcast send failed");
             }
         }
@@ -339,7 +368,8 @@ pub fn assert_aggregate_bw(
     cap_bits_ps: u64,
     wall_elapsed: Duration,
     tolerance: f64,
-) -> anyhow::Result<()> {
+) -> anyhow::Result<()>
+{
     // ---
     let total_bytes: u64 = results
         .iter()
@@ -365,7 +395,8 @@ pub fn assert_aggregate_bw(
         realized_bytes_ps / cap_bytes_ps * 100.0,
     );
 
-    if total_wire > 0 {
+    if total_wire > 0
+    {
         let wire_eff = total_bytes as f64 / total_wire as f64;
         println!(
             "  Wire efficiency: {wire_eff:.3}  ({total_bytes} payload / {total_wire} wire bytes)"

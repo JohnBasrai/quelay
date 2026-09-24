@@ -20,7 +20,6 @@
 use std::net::SocketAddr;
 
 use clap::Parser;
-
 use quelay_thrift::{
     // ---
     QueLayAgentSyncClient,
@@ -47,7 +46,8 @@ mod thrift_demo;
     name = "quelay-example",
     about = "Quelay example client and demo runner"
 )]
-struct Config {
+struct Config
+{
     // ---
     /// TCP address of the agent's C2I interface.
     /// When supplied, a live smoke check runs against the agent.
@@ -72,12 +72,14 @@ struct Config {
 // ---------------------------------------------------------------------------
 
 #[tokio::main]
-async fn main() -> anyhow::Result<()> {
+async fn main() -> anyhow::Result<()>
+{
     // ---
     let cfg = Config::parse();
 
     // Healthcheck: run smoke_check only, suppress all other output.
-    if cfg.healthcheck {
+    if cfg.healthcheck
+    {
         let addr = cfg.agent_endpoint.expect("clap requires agent_endpoint");
         smoke_check(addr)?;
         return Ok(());
@@ -94,7 +96,8 @@ async fn main() -> anyhow::Result<()> {
         .with_ansi(!no_color)
         .init();
 
-    if let Some(addr) = cfg.agent_endpoint {
+    if let Some(addr) = cfg.agent_endpoint
+    {
         println!("=== Live agent smoke check: {addr} ===");
         smoke_check(addr)?;
         println!();
@@ -107,7 +110,8 @@ async fn main() -> anyhow::Result<()> {
     println!("=== 2. QUIC transport demo ===");
     quic_demo::run().await;
 
-    if let (Some(sender), Some(receiver)) = (cfg.agent_endpoint, cfg.receiver_endpoint) {
+    if let (Some(sender), Some(receiver)) = (cfg.agent_endpoint, cfg.receiver_endpoint)
+    {
         println!();
         println!("=== 3. End-to-end transfer demo ===");
         // Generate a small fixed payload — this is a demo, not a benchmark.
@@ -128,7 +132,8 @@ async fn main() -> anyhow::Result<()> {
 // smoke_check
 // ---------------------------------------------------------------------------
 
-fn smoke_check(addr: SocketAddr) -> anyhow::Result<()> {
+fn smoke_check(addr: SocketAddr) -> anyhow::Result<()>
+{
     // ---
     let mut channel = TTcpChannel::new();
     channel.open(addr.to_string())?;
@@ -140,7 +145,8 @@ fn smoke_check(addr: SocketAddr) -> anyhow::Result<()> {
     );
 
     let remote_version = client.get_version()?;
-    if remote_version != IDL_VERSION {
+    if remote_version != IDL_VERSION
+    {
         anyhow::bail!("IDL version mismatch: local={IDL_VERSION:?} remote={remote_version:?}");
     }
     println!("  IDL version: {remote_version} ✓");
