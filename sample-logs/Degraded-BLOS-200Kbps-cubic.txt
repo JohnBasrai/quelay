@@ -1,0 +1,191 @@
+./scripts/link-sim-test.sh Degraded-BLOS --size-mb 1 --congestion cubic --skip-bw-check --bw-cap 200Kbps
+==> Quelay link-sim-test
+    profile         : Degraded-BLOS
+    link-sim profile: Degraded-BLOS.toml
+    bw-cap          : 200Kbps
+    congestion      : cubic
+    e2e args        : --skip-bw-check multi-file --size-mb 1 --bidirectional
+
+... skip ...
+
+ ✔ Container quelay-link-sim-1    Created                                                                                                 0.0s 
+ ✔ Container quelay-e2e-1         Created                                                                                                 0.0s 
+Attaching to quelay-agent-client, quelay-agent-server, e2e-1, link-sim-1
+quelay-agent-client  | 2026-03-06T21:10:42.741888Z  INFO quelay-agent/src/main.rs:209: client mode: connecting to peer agent-server-quic:4433
+quelay-agent-client  | 2026-03-06T21:10:42.743498Z  INFO quelay-agent/src/main.rs:226: client mode: connected to server @agent-server-quic:4433
+quelay-agent-client  | 2026-03-06T21:10:42.743517Z  INFO quelay-agent/src/main.rs:265: Thrift C2I listening on 0.0.0.0:9190
+quelay-agent-server  | 2026-03-06T21:10:42.743683Z  INFO quelay-agent/src/main.rs:265: Thrift C2I listening on 0.0.0.0:9191
+link-sim-1           | link-sim: applying profile: /profiles/Degraded-BLOS.toml
+link-sim-1           | link-sim: interface: eth1
+link-sim-1           | link-sim: tc qdisc add dev eth1 root netem delay 750ms 50ms 1% loss 5% 1% corrupt 1% 1% duplicate 3% 1% rate 100000bps
+link-sim-1           | link-sim: qdisc applied:
+link-sim-1           | qdisc netem 8094: root refcnt 17 limit 1000 delay 750ms  50ms 1% loss 5% 1% duplicate 3% 1% corrupt 1% 1% rate 800Kbit seed 2862501287518836910
+e2e-1                | e2e-test: setting signal handlers for SITTERM and SIGINT (Control-C)
+e2e-1                | === multi-file ===
+e2e-1                | 
+e2e-1                |   ┌── [multi-file-0]  1048576 B  (1024 KiB) ───┐
+quelay-agent-client  | 2026-03-06T21:10:49.013720Z  INFO quelay-agent/src/callback.rs:192: connecting callback endpoint="172.19.0.4:37775"
+quelay-agent-client  | 2026-03-06T21:10:49.013843Z  INFO quelay-agent/src/callback.rs:196: callback socket connected endpoint=172.19.0.4:37775
+quelay-agent-client  | 2026-03-06T21:10:49.014229Z  INFO quelay-agent/src/active_stream.rs:380: uplink: ephemeral TCP port open, firing stream_started uuid=ce5c1d0f-6b76-4de9-b84f-f504110bc850 port=36443
+e2e-1                |  INFO callback: stream_started uuid=ce5c1d0f-6b76-4de9-b84f-f504110bc850 port=36443
+
+quelay-agent-server  | 2026-03-06T21:10:49.013823Z  INFO quelay-agent/src/callback.rs:192: connecting callback endpoint="172.19.0.4:36251"
+quelay-agent-server  | 2026-03-06T21:10:49.013924Z  INFO quelay-agent/src/callback.rs:196: callback socket connected endpoint=172.19.0.4:36251
+e2e-1                |  INFO callback: stream_started uuid=ce5c1d0f-6b76-4de9-b84f-f504110bc850 port=36607
+
+download percent:  97.9%    INFO callback: stream_done uuid=ce5c1d0f-6b76-4de9-b84f-f504110bc850 bytes_transferred=1048576 bytes_wire=0 wire_efficiency="0.000"
+quelay-agent-client  | 2026-03-06T21:11:34.625564Z  INFO quelay-agent/src/active_stream.rs:1194: uplink: stream done uuid=ce5c1d0f-6b76-4de9-b84f-f504110bc850 bytes=1013876 bytes_wire=1167954 wire_efficiency="0.868"
+
+
+e2e-1                |  INFO receiver stream_done bytes=1048576
+e2e-1                |  INFO callback: stream_done uuid=ce5c1d0f-6b76-4de9-b84f-f504110bc850 bytes_transferred=1013876 bytes_wire=1167954 wire_efficiency="0.868"
+e2e-1                |  INFO sender stream_done bytes=1013876
+e2e-1                | 
+e2e-1                |     ============================================================
+e2e-1                |     ---  ce5c1d0f-6b76-4de9-b84f-f504110bc850 complete
+e2e-1                |     ---     Payload Size  : 1.0 MiB
+e2e-1                |     ---     Elapsed time  : 45.612 seconds
+e2e-1                |     ---     Actual BW     : 23.0 kBps - 183.9 kbps
+e2e-1                |     ---     BW Cap        : 200 kbps
+e2e-1                |     ---     BW Utilization: 92.0%
+e2e-1                |     ---     Progress msgs : 14 (snd 6 + rcv 8), 0.3/s
+e2e-1                |     ---     Packet loss   : 7.75% (65 lost / 839 sent)
+e2e-1                |     ---     Lost bytes    : 91354 B
+e2e-1                |     ---     Congestion    : 23 events
+e2e-1                |     ---     RTT (Quinn)   : 834 ms
+e2e-1                |     ---     CWND          : 27 KiB
+e2e-1                |     ============================================================
+e2e-1                | 
+e2e-1                |   [multi-file-0] sha256 ✓
+e2e-1                |   [multi-file-0] BW check skipped (--skip-bw-check): realized 23.0 KB/s, cap 25.0 KB/s (92.0%)
+e2e-1                | 
+e2e-1                |   ┌── [multi-file-0-reverse]  1048576 B  (1024 KiB) ───┐
+quelay-agent-server  | 2026-03-06T21:11:34.649942Z  INFO quelay-agent/src/callback.rs:192: connecting callback endpoint="172.19.0.4:40267"
+quelay-agent-server  | 2026-03-06T21:11:34.650083Z  INFO quelay-agent/src/callback.rs:196: callback socket connected endpoint=172.19.0.4:40267
+quelay-agent-server  | 2026-03-06T21:11:34.650420Z  INFO quelay-agent/src/active_stream.rs:380: uplink: ephemeral TCP port open, firing stream_started uuid=643bdf54-50ea-486c-949b-40c4b99e74ad port=44765
+
+
+quelay-agent-client  | 2026-03-06T21:11:34.650026Z  INFO quelay-agent/src/callback.rs:192: connecting callback endpoint="172.19.0.4:34769"
+e2e-1                |  INFO callback: stream_started uuid=643bdf54-50ea-486c-949b-40c4b99e74ad port=44765
+
+
+quelay-agent-client  | 2026-03-06T21:11:34.650200Z  INFO quelay-agent/src/callback.rs:196: callback socket connected endpoint=172.19.0.4:34769
+e2e-1                |  INFO callback: stream_started uuid=643bdf54-50ea-486c-949b-40c4b99e74ad port=46809
+download percent:  100.0%    INFO callback: stream_done uuid=643bdf54-50ea-486c-949b-40c4b99e74ad bytes_transferred=1048576 bytes_wire=0 wire_efficiency="0.000"
+e2e-1                |  INFO receiver stream_done bytes=1048576
+quelay-agent-server  | 2026-03-06T21:12:15.895649Z  INFO quelay-agent/src/active_stream.rs:1194: uplink: stream done uuid=643bdf54-50ea-486c-949b-40c4b99e74ad bytes=1015000 bytes_wire=1081380 wire_efficiency="0.939"
+e2e-1                |  INFO callback: stream_done uuid=643bdf54-50ea-486c-949b-40c4b99e74ad bytes_transferred=1015000 bytes_wire=1081380 wire_efficiency="0.939"
+e2e-1                |  INFO sender stream_done bytes=1015000
+e2e-1                | 
+e2e-1                |     ============================================================
+e2e-1                |     ---  643bdf54-50ea-486c-949b-40c4b99e74ad complete
+e2e-1                |     ---     Payload Size  : 1.0 MiB
+e2e-1                |     ---     Elapsed time  : 41.246 seconds
+e2e-1                |     ---     Actual BW     : 25.4 kBps - 203.4 kbps
+e2e-1                |     ---     BW Cap        : 200 kbps
+e2e-1                |     ---     BW Utilization: 101.7%
+e2e-1                |     ---     Progress msgs : 15 (snd 7 + rcv 8), 0.4/s
+e2e-1                |     ---     Packet loss   : 0.00% (0 lost / 855 sent)
+e2e-1                |     ---     Lost bytes    : 0 B
+e2e-1                |     ---     Congestion    : 0 events
+e2e-1                |     ---     RTT (Quinn)   : 753 ms
+e2e-1                |     ---     CWND          : 66 KiB
+e2e-1                |     ============================================================
+e2e-1                | 
+e2e-1                |   [multi-file-0-reverse] sha256 ✓
+e2e-1                |   [multi-file-0-reverse] BW check skipped (--skip-bw-check): realized 25.4 KB/s, cap 25.0 KB/s (101.7%)
+e2e-1                | 
+e2e-1                |   ┌── [multi-file-1]  1048576 B  (1024 KiB) ───┐
+quelay-agent-client  | 2026-03-06T21:12:15.920231Z  INFO quelay-agent/src/callback.rs:192: connecting callback endpoint="172.19.0.4:34321"
+quelay-agent-client  | 2026-03-06T21:12:15.920467Z  INFO quelay-agent/src/callback.rs:196: callback socket connected endpoint=172.19.0.4:34321
+quelay-agent-client  | 2026-03-06T21:12:15.920805Z  INFO quelay-agent/src/active_stream.rs:380: uplink: ephemeral TCP port open, firing stream_started uuid=a2590d3f-f35d-415a-9148-683f69a74f46 port=39421
+
+quelay-agent-server  | 2026-03-06T21:12:15.920348Z  INFO quelay-agent/src/callback.rs:192: connecting callback endpoint="172.19.0.4:37207"
+quelay-agent-server  | 2026-03-06T21:12:15.920504Z  INFO quelay-agent/src/callback.rs:196: callback socket connected endpoint=172.19.0.4:37207
+e2e-1                |  INFO callback: stream_started uuid=a2590d3f-f35d-415a-9148-683f69a74f46 port=39421
+e2e-1                |  INFO callback: stream_started uuid=a2590d3f-f35d-415a-9148-683f69a74f46 port=38131
+download percent:  98.9%    INFO callback: stream_done uuid=a2590d3f-f35d-415a-9148-683f69a74f46 bytes_transferred=1048576 bytes_wire=0 wire_efficiency="0.000"
+e2e-1                |  INFO receiver stream_done bytes=1048576
+e2e-1                |  INFO callback: stream_done uuid=a2590d3f-f35d-415a-9148-683f69a74f46 bytes_transferred=1018284 bytes_wire=1132173 wire_efficiency="0.899"
+e2e-1                |  INFO sender stream_done bytes=1018284
+e2e-1                | 
+e2e-1                |     ============================================================
+e2e-1                |     ---  a2590d3f-f35d-415a-9148-683f69a74f46 complete
+e2e-1                |     ---     Payload Size  : 1.0 MiB
+e2e-1                |     ---     Elapsed time  : 37.607 seconds
+e2e-1                |     ---     Actual BW     : 27.9 kBps - 223.1 kbps
+e2e-1                |     ---     BW Cap        : 200 kbps
+e2e-1                |     ---     BW Utilization: 111.5%
+e2e-1                |     ---     Progress msgs : 12 (snd 5 + rcv 7), 0.3/s
+e2e-1                |     ---     Packet loss   : 4.97% (40 lost / 805 sent)
+e2e-1                |     ---     Lost bytes    : 55972 B
+e2e-1                |     ---     Congestion    : 18 events
+e2e-1                |     ---     RTT (Quinn)   : 849 ms
+e2e-1                |     ---     CWND          : 31 KiB
+e2e-1                |     ============================================================
+e2e-1                | 
+e2e-1                |   [multi-file-1] sha256 ✓
+e2e-1                |   [multi-file-1] BW check skipped (--skip-bw-check): realized 27.9 KB/s, cap 25.0 KB/s (111.5%)
+e2e-1                | 
+
+quelay-agent-client  | 2026-03-06T21:12:53.526900Z  INFO quelay-agent/src/active_stream.rs:1194: uplink: stream done uuid=a2590d3f-f35d-415a-9148-683f69a74f46 bytes=1018284 bytes_wire=1132173 wire_efficiency="0.899"
+e2e-1                |   ┌── [multi-file-1-reverse]  1048576 B  (1024 KiB) ───┐
+quelay-agent-server  | 2026-03-06T21:12:53.550565Z  INFO quelay-agent/src/callback.rs:192: connecting callback endpoint="172.19.0.4:35765"
+quelay-agent-server  | 2026-03-06T21:12:53.550671Z  INFO quelay-agent/src/callback.rs:196: callback socket connected endpoint=172.19.0.4:35765
+quelay-agent-server  | 2026-03-06T21:12:53.551061Z  INFO quelay-agent/src/active_stream.rs:380: uplink: ephemeral TCP port open, firing stream_started uuid=89464bfc-f46b-49d1-a070-aa45762b5a48 port=39849
+
+
+quelay-agent-client  | 2026-03-06T21:12:53.550647Z  INFO quelay-agent/src/callback.rs:192: connecting callback endpoint="172.19.0.4:39857"
+e2e-1                |  INFO callback: stream_started uuid=89464bfc-f46b-49d1-a070-aa45762b5a48 port=39849
+
+
+e2e-1                |  INFO callback: stream_started uuid=89464bfc-f46b-49d1-a070-aa45762b5a48 port=44895
+quelay-agent-client  | 2026-03-06T21:12:53.550802Z  INFO quelay-agent/src/callback.rs:196: callback socket connected endpoint=172.19.0.4:39857
+download percent:  97.3%    INFO callback: stream_done uuid=89464bfc-f46b-49d1-a070-aa45762b5a48 bytes_transferred=1048576 bytes_wire=0 wire_efficiency="0.000"
+e2e-1                |  INFO receiver stream_done bytes=1048576
+quelay-agent-server  | 2026-03-06T21:13:37.815806Z  INFO quelay-agent/src/active_stream.rs:1194: uplink: stream done uuid=89464bfc-f46b-49d1-a070-aa45762b5a48 bytes=1012500 bytes_wire=1081670 wire_efficiency="0.936"
+e2e-1                |  INFO callback: stream_done uuid=89464bfc-f46b-49d1-a070-aa45762b5a48 bytes_transferred=1012500 bytes_wire=1081670 wire_efficiency="0.936"
+e2e-1                |  INFO sender stream_done bytes=1012500
+e2e-1                | 
+e2e-1                |     ============================================================
+e2e-1                |     ---  89464bfc-f46b-49d1-a070-aa45762b5a48 complete
+e2e-1                |     ---     Payload Size  : 1.0 MiB
+e2e-1                |     ---     Elapsed time  : 44.265 seconds
+e2e-1                |     ---     Actual BW     : 23.7 kBps - 189.5 kbps
+e2e-1                |     ---     BW Cap        : 200 kbps
+e2e-1                |     ---     BW Utilization: 94.8%
+e2e-1                |     ---     Progress msgs : 15 (snd 7 + rcv 8), 0.3/s
+e2e-1                |     ---     Packet loss   : 0.00% (0 lost / 865 sent)
+e2e-1                |     ---     Lost bytes    : 0 B
+e2e-1                |     ---     Congestion    : 0 events
+e2e-1                |     ---     RTT (Quinn)   : 757 ms
+e2e-1                |     ---     CWND          : 66 KiB
+e2e-1                |     ============================================================
+e2e-1                | 
+e2e-1                |   [multi-file-1-reverse] sha256 ✓
+e2e-1                |   [multi-file-1-reverse] BW check skipped (--skip-bw-check): realized 23.7 KB/s, cap 25.0 KB/s (94.8%)
+e2e-1                |   multi-file PASSED ✓
+e2e-1                | 
+e2e-1 exited with code 0
+Aborting on container exit...
+ Container quelay-e2e-1  Stopping
+ Container quelay-e2e-1  Stopped
+ Container quelay-link-sim-1  Stopping
+ Container quelay-link-sim-1  Stopped
+
+
+ Container quelay-agent-client  Stopping
+link-sim-1 exited with code 0
+quelay-agent-client  | 2026-03-06T21:13:38.030745Z  INFO quelay-agent/src/main.rs:287: agent: shutting down... mode="client"
+ Container quelay-agent-client  Stopped
+
+
+quelay-agent-client exited with code 0
+ Container quelay-agent-server  Stopping
+quelay-agent-server  | 2026-03-06T21:13:38.282315Z  INFO quelay-agent/src/main.rs:287: agent: shutting down... mode="server"
+ Container quelay-agent-server  Stopped
+quelay-agent-server exited with code 0
+
+==> Tearing down containers...
+johnb@Spock:~/Documents/JohnBasrai/github/quelay$ 
+

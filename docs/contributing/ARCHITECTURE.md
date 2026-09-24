@@ -20,13 +20,13 @@ published.
 
 Defines the vocabulary of the system. No implementations live here.
 
-| Module      | Contents |
-|-------------|----------|
-| `error`     | `QueLayError`, `Result<T>` |
-| `priority`  | `Priority` enum (`C2I`, `BulkTransfer`) |
+| Module      | Contents                                                               |
+|-------------|------------------------------------------------------------------------|
+| `error`     | `QueLayError`, `Result<T>`                                             |
+| `priority`  | `Priority` enum (`C2I`, `BulkTransfer`)                                |
 | `transport` | `QueLayStream`, `QueLaySession`, `QueLayTransport` traits; `LinkState` |
-| `scheduler` | `DrrScheduler` — Deficit Round Robin |
-| `session`   | `StreamMeta`, `QueLayHandler`, `TransferProgress`, `Direction` |
+| `scheduler` | `DrrScheduler` — Deficit Round Robin                                   |
+| `session`   | `StreamMeta`, `QueLayHandler`, `TransferProgress`, `Direction`         |
 
 `lib.rs` is the EMBP gateway — it declares all modules privately and
 re-exports only the public API surface.
