@@ -1,7 +1,7 @@
 # Quelay
 
-A quelay in Rust, using QUIC as the transport layer, with support for both file
-transfers and open-ended streams of unknown length.
+A Queue Relay (quelay) in Rust, using QUIC as the transport layer, with support for both
+file transfers and open-ended streams of unknown length.
 
 Licensed under [MIT](LICENSE-MIT) or [Apache-2.0](LICENSE-APACHE), at
 your option.
@@ -83,16 +83,16 @@ will block the client automatically.
 
 ## Documentation
 
-| Document | Description |
-|:---------|:------------|
+| Document                                            | Description                                                   |
+|:----------------------------------------------------|:--------------------------------------------------------------|
 | [Architecture](docs/contributing/ARCHITECTURE.md)   | Crate structure, layering, spool design, bandwidth management |
-| [Quick Start](docs/contributing/QUICK_START.md)     | Build, test, and run in 5 minutes |
-| [Testing](docs/contributing/TESTING.md)             | Test strategy, how to run CI locally |
-| [Code Style](docs/contributing/CODE_STYLE.md)       | Formatting, EMBP, naming conventions |
-| [Local Testing](docs/contributing/LOCAL_TESTING.md) | Running the full CI suite before pushing |
-| [quelay-agent](quelay-agent/README.md)              | Daemon CLI reference, TLS, internal structure |
-| [e2e_test](quelay-agent/src/bin/README.md)          | Integration test design and subcommand reference |
-| [Link Sim Findings](docs/link-sim-findings.md)      | Network impairment test results, architecture, future work |
+| [Quick Start](docs/contributing/QUICK_START.md)     | Build, test, and run in 5 minutes                             |
+| [Testing](docs/contributing/TESTING.md)             | Test strategy, how to run CI locally                          |
+| [Code Style](docs/contributing/CODE_STYLE.md)       | Formatting, EMBP, naming conventions                          |
+| [Local Testing](docs/contributing/LOCAL_TESTING.md) | Running the full CI suite before pushing                      |
+| [quelay-agent](quelay-agent/README.md)              | Daemon CLI reference, TLS, internal structure                 |
+| [e2e_test](quelay-agent/src/bin/README.md)          | Integration test design and subcommand reference              |
+| [Link Sim Findings](docs/link-sim-findings.md)      | Network impairment test results, architecture, future work    |
 
 ---
 
@@ -100,7 +100,7 @@ will block the client automatically.
 
 ```bash
 cargo build --workspace
-cargo test --workspace
+cargo nextest run --workspace
 ```
 
 ---
@@ -115,25 +115,25 @@ host kernel namespaces, no `sudo`.
 
 Impairment profiles live in `docker/link-sim/profiles/`:
 
-| Profile | Description |
-|:--------|:------------|
-| `BLOS-750ms` | Clean satellite: 100 kbps uplink, 750 ms RTT |
-| `LOS-250ms`  | Line-of-sight: 500 kbps uplink, 250 ms RTT, 10 ms jitter |
+| Profile         | Description                                                       |
+|:----------------|:------------------------------------------------------------------|
+| `BLOS-750ms`    | Clean satellite: 100 kbps uplink, 750 ms RTT                      |
+| `LOS-250ms`     | Line-of-sight: 500 kbps uplink, 250 ms RTT, 10 ms jitter          |
 | `Degraded-BLOS` | Stressed satellite: 5% loss, 1% corrupt, 3% duplicate, 750 ms RTT |
-| `clean` | No impairment — baseline |
+| `clean`         | No impairment — baseline                                          |
 
 ```
 ┌─────────────────────────────────────────────────────┐
 │  Docker Compose                                     │
-│                                                     │
-│  ┌────────────┐    ┌──────────┐  quic-net  ┌──────┐ │
-│  │agent-client│◄──►│ link-sim │◄──────────►│agent │ │
-│  └─────┬──────┘    │  (netem) │            │-serv │ │
-│        │           └──────────┘            └──┬───┘ │
-│        │   c2i-net                            │     │
-│        └───────────────┬──────────────────────┘     │
+│                                  quic-              │
+│  ┌────────────┐    ┌──────────┐  net ┌──────────┐   │ 
+│  │agent-client│◄──►│ link-sim │◄────►│agent-serv│   │
+│  └─────┬──────┘    │  (netem) │      └──┬───────┘   │
+│        │           └──────────┘         │           │
+│        │    c2i-net (not impaired)      │           │
+│        └───────────────┬────────────────┘           │
 │                    ┌───┴───┐                        │
-│                    │  e2e  │                        │
+│                    │  e2e  │ (full path end to end) │
 │                    └───────┘                        │
 └─────────────────────────────────────────────────────┘
 ```
