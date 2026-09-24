@@ -123,7 +123,6 @@ const PROGRESS_INTERVAL_SECS: u64 = 5;
 /// The timer task's `Q` pointer is task-local and not stored here.
 pub(crate) struct SpoolBuffer
 {
-    // ---
     buf: VecDeque<u8>,
 
     /// Absolute offset of the oldest byte still retained (`A`).
@@ -141,11 +140,8 @@ pub(crate) struct SpoolBuffer
 
 impl SpoolBuffer
 {
-    // ---
-
     pub(crate) fn new() -> Self
     {
-        // ---
         Self {
             buf: VecDeque::with_capacity(SPOOL_CAPACITY),
             bytes_acked: 0,
@@ -170,7 +166,6 @@ impl SpoolBuffer
     /// the timer task can drain the remaining bytes then detect the sentinel.
     pub(crate) fn head_offset(&self) -> u64
     {
-        // ---
         if self.head == u64::MAX
         {
             self.bytes_acked + self.buf.len() as u64
@@ -186,7 +181,6 @@ impl SpoolBuffer
     /// Append `data`, advancing `T`.  Caller must ensure `data.len() <= available()`.
     pub(crate) fn push(&mut self, data: &[u8])
     {
-        // ---
         debug_assert!(data.len() <= self.available());
         self.buf.extend(data.iter().copied());
         self.head += data.len() as u64;
@@ -197,7 +191,6 @@ impl SpoolBuffer
     /// Advance `A` to `up_to`, freeing buffer space.  Called on `WormholeMsg::Ack`.
     pub(crate) fn ack(&mut self, up_to: u64)
     {
-        // ---
         if up_to <= self.bytes_acked
         {
             return;
@@ -215,7 +208,6 @@ impl SpoolBuffer
     /// callers advance `Q` by the returned slice length and call again.
     pub(crate) fn slice_from(&self, from: u64) -> &[u8]
     {
-        // ---
         debug_assert!(from >= self.bytes_acked);
         debug_assert!(from <= self.head || self.head == u64::MAX);
         let start = (from - self.bytes_acked) as usize;
@@ -240,7 +232,6 @@ impl SpoolBuffer
 /// clippy argument-count limit and the three fields always travel together.
 pub(crate) struct UplinkContext
 {
-    // ---
     /// Allocation ticket receiver — `Some` in capped mode, `None` uncapped.
     pub alloc_rx: Option<mpsc::Receiver<AllocTicket>>,
 
@@ -275,7 +266,6 @@ pub(crate) struct UplinkContext
 /// write half to the pump via `RateCmd::LinkUp`.
 pub struct UplinkHandle
 {
-    // ---
     /// Stable stream identity.  Used by `SessionManager` to deregister the
     /// stream from the [`AggregateRateLimiter`] when the pump exits.
     #[allow(dead_code)]
@@ -305,7 +295,6 @@ pub struct UplinkHandle
 
 impl UplinkHandle
 {
-    // ---
     /// Return the current spool `A` pointer (last byte acknowledged by receiver).
     /// Used by `session_manager::restore_active` to populate `ReconnectHeader`.
     pub async fn bytes_acked(&self) -> u64
@@ -339,7 +328,6 @@ impl UplinkHandle
 /// looks up the handle by UUID, and delivers the fresh stream via `stream_tx`.
 pub struct DownlinkHandle
 {
-    // ---
     /// Deliver a fresh `QueLayStreamPtr` here after reconnect.
     /// Drop the sender to permanently fail the stream.
     pub stream_tx: mpsc::Sender<QueLayStreamPtr>,
@@ -355,7 +343,6 @@ pub struct DownlinkHandle
 
 pub(crate) struct ActiveStream
 {
-    // ---
     uuid: Uuid,
     _info: StreamInfo,
     cb_tx: CallbackTx,
@@ -367,8 +354,6 @@ pub(crate) struct ActiveStream
 
 impl ActiveStream
 {
-    // ---
-
     /// Spawn an uplink (sender-side) pump.
     ///
     /// Binds an ephemeral TCP listener, fires [`CallbackCmd::StreamStarted`],
@@ -393,7 +378,6 @@ impl ActiveStream
         ctx: UplinkContext,
     ) -> anyhow::Result<UplinkHandle>
     {
-        // ---
         let UplinkContext {
             alloc_rx,
             head_offset,
@@ -511,8 +495,6 @@ impl ActiveStream
         cb_tx: CallbackTx,
     ) -> anyhow::Result<DownlinkHandle>
     {
-        // ---
-
         let listener = TcpListener::bind("0.0.0.0:0").await?;
         let port = listener.local_addr()?.port();
 
@@ -568,7 +550,6 @@ impl ActiveStream
         uuid: Uuid,
     )
     {
-        // ---
         let bytes_written = handle.bytes_written.load(Ordering::Acquire);
         if replay_from > bytes_written
         {
@@ -602,7 +583,6 @@ impl ActiveStream
         bytes_written_atomic: Arc<AtomicU64>,
     )
     {
-        // ---
         let uuid = self.uuid;
 
         // Accept the initial QUIC stream from the channel.
@@ -864,7 +844,6 @@ impl ActiveStream
 /// Bundles parameters so call sites stay readable.
 struct TcpReaderCtx
 {
-    // ---
     listener: TcpListener,
     spool: Arc<Mutex<SpoolBuffer>>,
     data_ready: Arc<Notify>,
@@ -879,7 +858,6 @@ async fn run_tcp_reader(
     ctx: TcpReaderCtx,
 )
 {
-    // ---
     let TcpReaderCtx {
         listener,
         spool,
@@ -1026,7 +1004,6 @@ async fn handle_eof(
 /// checks.
 async fn wait_for_spool_space(spool: &Arc<Mutex<SpoolBuffer>>, space_ready: &Notify)
 {
-    // ---
     loop
     {
         if spool.lock().await.available() >= CHUNK_SIZE
@@ -1067,7 +1044,6 @@ enum AckMsg
 /// [`spawn_uplink`]; not publicly visible.
 struct AckTask
 {
-    // ---
     uuid: Uuid,
     spool: Arc<Mutex<SpoolBuffer>>,
     space_ready: Arc<Notify>,
@@ -1105,7 +1081,6 @@ struct AckTask
 /// This keeps the public call site readable and avoids long argument lists.
 struct AckTaskCtx
 {
-    // ---
     spool: Arc<Mutex<SpoolBuffer>>,
     space_ready: Arc<Notify>,
     data_ready: Arc<Notify>,
@@ -1120,15 +1095,12 @@ struct AckTaskCtx
 
 impl AckTask
 {
-    // ---
-
     /// Construct an `AckTask`, spawn the ack-reader sub-task, and deliver
     /// the initial QUIC read half to it.
     ///
     /// Returns `None` if the channel send fails (ack reader already gone).
     async fn new(uuid: Uuid, ctx: AckTaskCtx) -> Option<Self>
     {
-        // ---
         let AckTaskCtx {
             spool,
             space_ready,
@@ -1188,7 +1160,6 @@ impl AckTask
         mpsc::Receiver<AckMsg>,
     )
     {
-        // ---
         let (stream_ack_tx, mut stream_ack_rx) =
             mpsc::channel::<tokio::io::ReadHalf<QueLayStreamPtr>>(1);
         let (ack_tx, ack_rx) = mpsc::channel::<AckMsg>(32);
@@ -1246,7 +1217,6 @@ impl AckTask
     /// then deregisters the stream from the [`AggregateRateLimiter`].
     async fn run(mut self)
     {
-        // ---
         tracing::debug!(%self.uuid, "uplink: ack task starting");
 
         self.run_inner().await;
@@ -1268,7 +1238,6 @@ impl AckTask
 
     async fn run_inner(&mut self)
     {
-        // ---
         loop
         {
             // Always check for TCP EOF regardless of how we wake up.
@@ -1352,7 +1321,6 @@ impl AckTask
     /// `space_ready`, fire progress callbacks.
     async fn on_ack(&mut self, bytes_received: u64)
     {
-        // ---
         let prev = {
             let mut s = self.spool.lock().await;
             let prev = s.bytes_acked;
@@ -1392,7 +1360,6 @@ impl AckTask
     /// Returns `true` to continue the loop, `false` on permanent failure.
     async fn on_stream_error(&mut self, e: String) -> bool
     {
-        // ---
         tracing::warn!(uuid = %self.uuid,
                        "uplink: ACK READER stream error: {e} — waiting for reconnect");
 
@@ -1455,7 +1422,6 @@ impl AckTask
     /// Handle `ack_rx` channel closure (ack reader exited without Done/Error).
     async fn on_reader_gone(&mut self)
     {
-        // ---
         tracing::warn!(uuid = %self.uuid, "uplink: ack reader exited without Done");
         self.try_send_finish().await;
         self.cb_tx
@@ -1473,7 +1439,6 @@ impl AckTask
     /// sent yet, send `RateCmd::Finish` to the timer task.
     async fn try_send_finish(&mut self)
     {
-        // ---
         if self.finish_sent
         {
             return;

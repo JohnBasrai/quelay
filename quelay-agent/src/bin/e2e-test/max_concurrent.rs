@@ -9,7 +9,6 @@ use crate::*;
 #[derive(Debug, Args)]
 pub struct MaxConcurrentArgs
 {
-    // ---
     /// Maximum concurrent streams to configure on the sender agent (default: 2).
     ///
     /// The test queues `stream_count` streams, expects the first `max_concurrent`
@@ -46,7 +45,6 @@ pub struct MaxConcurrentArgs
 /// observing `promote_pending` fire is left to a future extension.
 pub async fn cmd_max_concurrent(ctx: &TestContext, args: &MaxConcurrentArgs) -> anyhow::Result<()>
 {
-    // ---
     println!("=== max-concurrent ===");
 
     ensure_agent_running(ctx.sender_c2i)?;

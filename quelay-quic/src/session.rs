@@ -29,7 +29,6 @@ use crate::{error::QuicError, stream::QuicStream};
 /// managed externally by the session manager layer.
 pub struct QuicSession
 {
-    // ---
     conn: quinn::Connection,
     link_state_tx: watch::Sender<LinkState>,
     link_state_rx: watch::Receiver<LinkState>,
@@ -39,11 +38,9 @@ pub struct QuicSession
 
 impl QuicSession
 {
-    // ---
     /// Wrap an established [`quinn::Connection`] in a `QuicSession`.
     pub fn new(conn: quinn::Connection) -> Self
     {
-        // ---
         let (tx, rx) = watch::channel(LinkState::Normal);
         Self {
             conn,
@@ -57,7 +54,6 @@ impl QuicSession
     /// Update the observable link state and notify all watchers.
     pub fn set_link_state(&self, state: LinkState)
     {
-        // ---
         self.link_state_tx.send_replace(state);
     }
 }
@@ -67,10 +63,8 @@ impl QuicSession
 #[async_trait]
 impl QueLaySession for QuicSession
 {
-    // ---
     async fn open_stream(&self, _priority: Priority) -> Result<QueLayStreamPtr>
     {
-        // ---
         let (send, recv) = self
             .conn
             .open_bi()
@@ -92,7 +86,6 @@ impl QueLaySession for QuicSession
 
     async fn accept_stream(&self) -> Result<QueLayStreamPtr>
     {
-        // ---
         let (send, recv) = self
             .conn
             .accept_bi()
@@ -154,7 +147,6 @@ impl QueLaySession for QuicSession
 
     async fn close(&self) -> Result<()>
     {
-        // ---
         self.set_link_state(LinkState::Failed);
         self.conn.close(quinn::VarInt::from_u32(0), b"closed");
         Ok(())

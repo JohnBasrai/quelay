@@ -18,7 +18,6 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 pub async fn run()
 {
-    // ---
     let payload = b"hello from quelay over QUIC";
 
     // --- server setup -------------------------------------------------------

@@ -56,7 +56,6 @@ use uuid::Uuid;
 #[derive(Debug)]
 pub enum CallbackCmd
 {
-    // ---
     /// (Re)connect to the given endpoint.
     ///
     /// Sent by the Thrift handler when the client calls `set_callback`.
@@ -117,7 +116,6 @@ pub enum CallbackCmd
 #[derive(Clone)]
 pub struct CallbackTx
 {
-    // ---
     tx: mpsc::Sender<CallbackCmd>,
 }
 
@@ -125,7 +123,6 @@ pub struct CallbackTx
 
 impl CallbackTx
 {
-    // ---
     /// Send a command. Returns `false` if the channel has closed (agent exited).
     pub async fn send(&self, cmd: CallbackCmd) -> bool
     {
@@ -148,7 +145,6 @@ impl CallbackTx
 /// for sending commands and a [`PingTimerTx`] handle to start the ping timer.
 pub struct CallbackAgent
 {
-    // ---
     rx: mpsc::Receiver<CallbackCmd>,
 }
 
@@ -156,14 +152,12 @@ pub struct CallbackAgent
 
 impl CallbackAgent
 {
-    // ---
     /// Spawn the callback agent thread and return the sender handle.
     ///
     /// The agent runs on a dedicated `std::thread` so the sync Thrift client
     /// never blocks the tokio runtime.1
     pub fn spawn() -> Result<CallbackTx>
     {
-        // ---
         let (tx, rx) = mpsc::channel(64);
         let agent = CallbackAgent { rx };
 
@@ -179,7 +173,6 @@ impl CallbackAgent
 
     fn run(mut self)
     {
-        // ---
         // `Option<Client>` — `None` until `Register` arrives or after a dead ping.
         let mut client: Option<BoxedCallbackClient> = None;
 
@@ -297,7 +290,6 @@ impl CallbackAgent
 /// The task exits when the channel closes.
 pub fn spawn_ping_timer(tx: CallbackTx, interval: Duration)
 {
-    // ---
     tokio::spawn(async move {
         let mut ticker = tokio::time::interval(interval);
         ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
@@ -331,7 +323,6 @@ type BoxedCallbackClient = QueLayCallbackSyncClient<
 /// on it directly, then wrap it with `TTcpChannel::with_stream`.
 fn connect(endpoint: &str) -> anyhow::Result<BoxedCallbackClient>
 {
-    // ---
     let tcp = std::net::TcpStream::connect(endpoint)?;
     tcp.set_nodelay(true)?;
 

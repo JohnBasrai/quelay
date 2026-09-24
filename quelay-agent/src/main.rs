@@ -108,8 +108,6 @@ pub use thrift_srv::{AgentCmd, AgentHandler, RuntimeConfig, StreamStartResponse}
 #[tokio::main]
 async fn main() -> anyhow::Result<()>
 {
-    // ---
-
     let cfg = Config::parse();
     cfg.validate()?;
 

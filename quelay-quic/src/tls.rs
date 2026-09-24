@@ -20,21 +20,18 @@ use crate::error::QuicError;
 /// the client via the `QuicTransport` constructor so the client can pin it.
 pub struct CertBundle
 {
-    // ---
     pub cert_der: CertificateDer<'static>,
     pub key_der: PrivatePkcs8KeyDer<'static>,
 }
 
 impl CertBundle
 {
-    // ---
     /// Generate a new self-signed certificate valid for `server_name`.
     ///
     /// For the 2-node demo `server_name` can be any string, e.g. `"quelay"`.
     /// The client must use the same string when connecting.
     pub fn generate(server_name: &str) -> Result<Self, QuicError>
     {
-        // ---
         let cert = rcgen::generate_simple_self_signed(vec![server_name.to_string()])
             .map_err(|e| QuicError::Endpoint(e.to_string()))?;
 
@@ -52,7 +49,6 @@ impl CertBundle
 /// Build a `rustls::ServerConfig` from a [`CertBundle`].
 pub fn server_config(bundle: &CertBundle) -> Result<rustls::ServerConfig, QuicError>
 {
-    // ---
     let cfg = rustls::ServerConfig::builder()
         .with_no_client_auth()
         .with_single_cert(
@@ -77,7 +73,6 @@ pub fn client_config(
     server_cert_der: CertificateDer<'static>,
 ) -> Result<rustls::ClientConfig, QuicError>
 {
-    // ---
     let mut roots = rustls::RootCertStore::empty();
     roots
         .add(server_cert_der)

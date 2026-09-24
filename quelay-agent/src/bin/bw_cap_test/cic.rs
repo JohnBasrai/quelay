@@ -96,7 +96,6 @@ pub enum CicMsg
 /// The [`Role`] discriminant in the master map prevents key collisions.
 pub struct TunerPair
 {
-    // ---
     pub sender_uuid: String,
     pub receiver_uuid: String,
 }
@@ -109,7 +108,6 @@ pub struct TunerPair
 #[derive(Clone)]
 pub struct CicHandle
 {
-    // ---
     pub tx: mpsc::Sender<CicMsg>,
 }
 
@@ -120,7 +118,6 @@ pub struct CicHandle
 /// Construction-time configuration for [`Cic`].
 pub struct CicConfig
 {
-    // ---
     pub sender_c2i: SocketAddr,
     pub receiver_c2i: SocketAddr,
 
@@ -140,7 +137,6 @@ type TunerJobKey = (String, Role);
 /// Central Intelligence Controller.
 pub struct Cic
 {
-    // ---
     cfg: CicConfig,
     cic_rx: mpsc::Receiver<CicMsg>,
     cic_tx: mpsc::Sender<CicMsg>,
@@ -171,7 +167,6 @@ impl Cic
     /// callback actors and tuner tasks use to reach CIC.
     pub fn new(cfg: CicConfig) -> (Self, mpsc::Sender<CicMsg>)
     {
-        // ---
         let (tx, rx) = mpsc::channel(256);
         let cic = Self {
             cfg,
@@ -195,7 +190,6 @@ impl Cic
         handle: JoinHandle<anyhow::Result<()>>,
     )
     {
-        // ---
         self.dispatch.insert((uuid.clone(), role), cmd_tx);
         self.handles.push(((uuid, role), handle));
     }
@@ -203,14 +197,12 @@ impl Cic
     /// Register a [`TunerPair`] (once per sender+receiver pair).
     pub fn register_pair(&mut self, pair: TunerPair)
     {
-        // ---
         self.pairs.push(pair);
     }
 
     /// Return a [`CicHandle`] suitable for cloning into tuner tasks.
     pub fn handle(&self) -> CicHandle
     {
-        // ---
         CicHandle {
             tx: self.cic_tx.clone(),
         }
@@ -224,7 +216,6 @@ impl Cic
     /// failsafe timer fires.  Returns collected [`TunerResult`]s.
     pub async fn run(mut self) -> anyhow::Result<Vec<TunerResult>>
     {
-        // ---
         let total_tasks = self.handles.len();
         let duration = self.cfg.duration;
         let kill_after = duration + self.cfg.kill_headroom;
@@ -316,7 +307,6 @@ impl Cic
 
     async fn route(&self, uuid: &str, role: Role, cmd: TunerCmd)
     {
-        // ---
         match self.dispatch.get(&(uuid.to_string(), role))
         {
             Some(tx) =>
@@ -332,7 +322,6 @@ impl Cic
 
     async fn shutdown_senders(&self)
     {
-        // ---
         for pair in &self.pairs
         {
             self.route(&pair.sender_uuid, Role::Sender, TunerCmd::Shutdown)
@@ -344,7 +333,6 @@ impl Cic
     where
         TunerCmd: Clone,
     {
-        // ---
         for ((uuid, role), tx) in &self.dispatch
         {
             if tx.send(cmd.clone()).await.is_err()
@@ -370,7 +358,6 @@ pub fn assert_aggregate_bw(
     tolerance: f64,
 ) -> anyhow::Result<()>
 {
-    // ---
     let total_bytes: u64 = results
         .iter()
         .filter(|r| r.role == Role::Sender)

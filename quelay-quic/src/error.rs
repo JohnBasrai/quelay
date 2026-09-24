@@ -26,7 +26,6 @@ use thiserror::Error;
 #[derive(Debug, Error)]
 pub enum QuicError
 {
-    // ---
     /// Failed to construct the QUIC endpoint.
     ///
     /// Covers socket bind failures, certificate/TLS configuration errors,
@@ -134,7 +133,6 @@ pub enum QuicError
 
 impl From<QuicError> for quelay_domain::QueLayError
 {
-    // ---
     fn from(e: QuicError) -> Self
     {
         quelay_domain::QueLayError::Transport(e.to_string())

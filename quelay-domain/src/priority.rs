@@ -12,13 +12,11 @@ const STRICT_MIN: i8 = 64;
 
 impl Priority
 {
-    // ---
     /// Initial DRR quantum (bytes) assigned when a stream is registered.
     /// C2I gets a large quantum so it drains immediately when it has data.
     /// BulkTransfer starts equal; the scheduler may adjust dynamically.
     pub fn initial_quantum(&self) -> u32
     {
-        // ---
         if self.is_strict()
         {
             65_536_u32
@@ -32,14 +30,12 @@ impl Priority
     /// Map a raw Thrift priority byte (0..=127) to a `Priority` level.
     pub fn from_i8(value: i8) -> Self
     {
-        // ---
         Self(value)
     }
 
     /// Return the raw priority value.
     pub fn as_i8(self) -> i8
     {
-        // ---
         self.0
     }
 
@@ -55,13 +51,11 @@ impl Priority
     /// before any bulk stream.
     pub fn c2i_priority_min() -> Self
     {
-        // ---
         Self(STRICT_MIN)
     }
 
     pub fn bulk_priority_min() -> Self
     {
-        // ---
         Self(0)
     }
 
@@ -71,7 +65,6 @@ impl Priority
     /// bandwidth allows (strict priority).
     pub fn is_strict(&self) -> bool
     {
-        // ---
         self.0 >= 64
     }
 }

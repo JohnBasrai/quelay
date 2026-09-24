@@ -18,7 +18,6 @@ const BULK_QUANTUM_BYTES: u32 = 4 * 1024;
 #[derive(Debug)]
 struct StreamEntry
 {
-    // ---
     /// Operator-visible priority level
     priority: Priority,
 
@@ -51,7 +50,6 @@ struct StreamEntry
 #[derive(Debug, Default)]
 pub struct DrrScheduler
 {
-    // ---
     /// Current active stream table.
     streams: HashMap<Uuid, StreamEntry>,
 
@@ -67,7 +65,6 @@ pub struct DrrScheduler
 
 impl DrrScheduler
 {
-    // ---
     pub fn new() -> Self
     {
         Self::default()
@@ -78,7 +75,6 @@ impl DrrScheduler
     /// Register a new stream with its initial priority and quantum.
     pub fn register(&mut self, id: Uuid, priority: Priority)
     {
-        // ---
         let quantum = priority.initial_quantum();
         self.streams.insert(
             id,
@@ -118,7 +114,6 @@ impl DrrScheduler
     /// Deregister a stream (transfer complete or reset).
     pub fn deregister(&mut self, id: Uuid)
     {
-        // ---
         if let Some(entry) = self.streams.remove(&id)
         {
             if entry.priority.is_strict()
@@ -138,7 +133,6 @@ impl DrrScheduler
     /// Override the DRR quantum for a specific stream.
     pub fn set_quantum(&mut self, id: Uuid, quantum: u32)
     {
-        // ---
         if let Some(entry) = self.streams.get_mut(&id)
         {
             entry.quantum = quantum;
@@ -152,7 +146,6 @@ impl DrrScheduler
     /// Called by the session / spooler as data accumulates or drains.
     pub fn set_backlog(&mut self, id: Uuid, backlog: u64)
     {
-        // ---
         if let Some(entry) = self.streams.get_mut(&id)
         {
             entry.backlog = backlog;
@@ -280,7 +273,6 @@ impl DrrScheduler
     /// called explicitly when operator configuration changes.
     pub fn rebalance(&mut self)
     {
-        // ---
         if self.bulk_order.is_empty()
         {
             return;
@@ -307,8 +299,6 @@ impl DrrScheduler
 #[cfg(test)]
 mod tests
 {
-    // ---
-
     use super::*;
 
     // ---
@@ -340,7 +330,6 @@ mod tests
     #[test]
     fn c2i_drains_before_bulk() -> Result<()>
     {
-        // ---
         let mut sched = DrrScheduler::new();
         let c2i = Uuid::new_v4();
         let bulk = Uuid::new_v4();
@@ -363,7 +352,6 @@ mod tests
     #[test]
     fn bulk_streams_share_budget() -> Result<()>
     {
-        // ---
         let mut sched = DrrScheduler::new();
         let a = Uuid::new_v4();
         let b = Uuid::new_v4();
@@ -393,7 +381,6 @@ mod tests
     #[test]
     fn idle_stream_does_not_accumulate_deficit() -> Result<()>
     {
-        // ---
         let mut sched = DrrScheduler::new();
         let a = Uuid::new_v4();
 
@@ -415,7 +402,6 @@ mod tests
     #[test]
     fn deregister_removes_stream() -> Result<()>
     {
-        // ---
         let mut sched = DrrScheduler::new();
         let a = Uuid::new_v4();
 
@@ -434,7 +420,6 @@ mod tests
     #[test]
     fn schedule_never_exceeds_budget() -> Result<()>
     {
-        // ---
         let mut sched = DrrScheduler::new();
         let a = Uuid::new_v4();
         let b = Uuid::new_v4();
@@ -460,7 +445,6 @@ mod tests
     #[test]
     fn c2i_does_not_starve_when_bulk_present() -> Result<()>
     {
-        // ---
         // C2I backlog is smaller than the quantum, so it should be fully
         // drained in a single schedule call even when bulk streams compete.
         let mut sched = DrrScheduler::new();

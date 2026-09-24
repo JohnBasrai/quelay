@@ -24,7 +24,6 @@ use uuid::Uuid;
 
 pub struct QuicStream
 {
-    // ---
     pub(crate) id: Uuid,
     pub(crate) send: quinn::SendStream,
     pub(crate) recv: quinn::RecvStream,
@@ -33,8 +32,6 @@ pub struct QuicStream
 
 impl QuicStream
 {
-    // ---
-
     /// Consume this stream and split it into a lock-free receive half and
     /// send half.
     ///
@@ -45,7 +42,6 @@ impl QuicStream
     #[allow(dead_code)]
     pub fn into_split(self) -> (QuicRecvHalf, QuicSendHalf)
     {
-        // ---
         let recv_half = QuicRecvHalf { recv: self.recv };
         let send_half = QuicSendHalf {
             send: self.send,
@@ -60,7 +56,6 @@ impl QuicStream
 #[async_trait]
 impl QueLayStream for QuicStream
 {
-    // ---
     fn stream_id(&self) -> Uuid
     {
         self.id
@@ -70,7 +65,6 @@ impl QueLayStream for QuicStream
 
     async fn finish(&mut self) -> Result<()>
     {
-        // ---
         if self.finished
         {
             return Err(QueLayError::AlreadyFinished);
@@ -86,7 +80,6 @@ impl QueLayStream for QuicStream
 
     async fn reset(&mut self, code: u64) -> Result<()>
     {
-        // ---
         self.finished = true;
         let var = quinn::VarInt::from_u64(code).unwrap_or(quinn::VarInt::MAX);
         // reset() returns Result<(), ClosedStream>; ignore ClosedStream.
@@ -99,7 +92,6 @@ impl QueLayStream for QuicStream
 
 impl AsyncRead for QuicStream
 {
-    // ---
     fn poll_read(
         mut self: Pin<&mut Self>,
         cx: &mut Context<'_>,
@@ -114,14 +106,12 @@ impl AsyncRead for QuicStream
 
 impl AsyncWrite for QuicStream
 {
-    // ---
     fn poll_write(
         mut self: Pin<&mut Self>,
         cx: &mut Context<'_>,
         data: &[u8],
     ) -> Poll<io::Result<usize>>
     {
-        // ---
         // quinn SendStream::poll_write returns Poll<Result<usize, WriteError>>.
         // Map WriteError → io::Error.
         match Pin::new(&mut self.send).poll_write(cx, data)
@@ -142,7 +132,6 @@ impl AsyncWrite for QuicStream
 
     fn poll_shutdown(mut self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<io::Result<()>>
     {
-        // ---
         if !self.finished
         {
             self.finished = true;
@@ -161,13 +150,11 @@ impl AsyncWrite for QuicStream
 /// Wraps `quinn::RecvStream` directly — no shared lock with [`QuicSendHalf`].
 pub struct QuicRecvHalf
 {
-    // ---
     pub(crate) recv: quinn::RecvStream,
 }
 
 impl AsyncRead for QuicRecvHalf
 {
-    // ---
     fn poll_read(
         mut self: Pin<&mut Self>,
         cx: &mut Context<'_>,
@@ -200,15 +187,12 @@ impl Unpin for QuicRecvHalf {}
 /// ack-reader task is blocked in `poll_read` on the sibling [`QuicRecvHalf`].
 pub struct QuicSendHalf
 {
-    // ---
     pub(crate) send: quinn::SendStream,
     pub(crate) finished: bool,
 }
 
 impl QuicSendHalf
 {
-    // ---
-
     /// Send a QUIC FIN without waiting for the peer to acknowledge it.
     ///
     /// After this call the remote side will read `Ok(None)` (EOF) on its next
@@ -219,7 +203,6 @@ impl QuicSendHalf
     /// Idempotent: subsequent calls are no-ops.
     pub fn finish_non_blocking(&mut self)
     {
-        // ---
         if !self.finished
         {
             self.finished = true;
@@ -235,14 +218,12 @@ impl QuicSendHalf
 
 impl AsyncWrite for QuicSendHalf
 {
-    // ---
     fn poll_write(
         mut self: Pin<&mut Self>,
         cx: &mut Context<'_>,
         data: &[u8],
     ) -> Poll<io::Result<usize>>
     {
-        // ---
         match Pin::new(&mut self.send).poll_write(cx, data)
         {
             Poll::Ready(Ok(n)) => Poll::Ready(Ok(n)),
@@ -261,7 +242,6 @@ impl AsyncWrite for QuicSendHalf
 
     fn poll_shutdown(mut self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<io::Result<()>>
     {
-        // ---
         // Non-blocking: just call finish() and return Ready immediately.
         // Do NOT await peer acknowledgment — that would deadlock if the
         // ack-reader task holds the peer's read lock.

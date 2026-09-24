@@ -48,7 +48,6 @@ mod thrift_demo;
 )]
 struct Config
 {
-    // ---
     /// TCP address of the agent's C2I interface.
     /// When supplied, a live smoke check runs against the agent.
     #[arg(long)]
@@ -74,7 +73,6 @@ struct Config
 #[tokio::main]
 async fn main() -> anyhow::Result<()>
 {
-    // ---
     let cfg = Config::parse();
 
     // Healthcheck: run smoke_check only, suppress all other output.
@@ -134,7 +132,6 @@ async fn main() -> anyhow::Result<()>
 
 fn smoke_check(addr: SocketAddr) -> anyhow::Result<()>
 {
-    // ---
     let mut channel = TTcpChannel::new();
     channel.open(addr.to_string())?;
 

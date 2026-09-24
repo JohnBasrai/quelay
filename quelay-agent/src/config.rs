@@ -69,7 +69,6 @@ pub enum CongestionAlgo
 #[command(name = "quelay-agent", about = "Quelay relay daemon")]
 pub struct Config
 {
-    // ---
     #[command(subcommand)]
     pub mode: Mode,
 
@@ -148,8 +147,6 @@ pub struct Config
 /// Returns an error string if the value or unit is invalid.
 fn parse_bandwidth(s: &str) -> Result<u64, String>
 {
-    // ---
-
     let s = s.trim();
     let (num, unit) = if let Some(pos) = s.find(|c: char| c.is_alphabetic())
     {
@@ -183,12 +180,9 @@ fn parse_bandwidth(s: &str) -> Result<u64, String>
 
 impl Config
 {
-    // ---
-
     /// Validate config fields that clap cannot express as type constraints.
     pub fn validate(&self) -> anyhow::Result<()>
     {
-        // ---
         if self.chunk_size_bytes == 0 || self.chunk_size_bytes > 65_535
         {
             anyhow::bail!(
@@ -206,7 +200,6 @@ impl Config
     /// Format the bandwidth cap as a human-readable string for logging.
     pub fn bw_cap_display(&self) -> String
     {
-        // ---
         match self.bw_cap_bps
         {
             None => "uncapped".to_string(),
@@ -225,7 +218,6 @@ impl Config
 #[derive(Debug, Subcommand)]
 pub enum Mode
 {
-    // ---
     /// Listen for an incoming QUIC connection (satellite ground station or
     /// server role for this session).
     Server
@@ -238,7 +230,6 @@ pub enum Mode
     /// Connect to a remote Quelay agent (example: 192.168.1.10:5000).
     Client
     {
-        // ---
         /// UDP address or hostname of the remote agent's QUIC endpoint.
         ///
         /// Accepts both numeric IPs (`192.168.1.10:5000`) and hostnames
@@ -267,7 +258,6 @@ pub enum Mode
 #[allow(clippy::needless_borrow)]
 mod tests
 {
-    // ---
     use super::*;
 
     // ------------------------------------------------------------
@@ -291,7 +281,6 @@ mod tests
     #[test]
     fn bw_cap_parses_basic_units()
     {
-        // ---
         let cfg = parse_ok(&["quelay-agent", "--bw-cap-bps", "10Mbps", "server"]);
         assert_eq!(cfg.bw_cap_bps, Some(10_000_000));
 
@@ -305,7 +294,6 @@ mod tests
     #[test]
     fn bw_cap_parses_case_and_whitespace()
     {
-        // ---
         let cfg = parse_ok(&["quelay-agent", "--bw-cap-bps", "10 mbps", "server"]);
         assert_eq!(cfg.bw_cap_bps, Some(10_000_000));
 
@@ -320,31 +308,24 @@ mod tests
     #[test]
     fn bw_cap_rejects_missing_unit()
     {
-        // ---
         parse_err(&["quelay-agent", "--bw-cap-bps", "10", "server"]);
     }
 
     #[test]
     fn bw_cap_rejects_invalid_number()
     {
-        // ---
-
         parse_err(&["quelay-agent", "--bw-cap-bps", "abcMbps", "server"]);
     }
 
     #[test]
     fn bw_cap_rejects_unknown_unit()
     {
-        // ---
-
         parse_err(&["quelay-agent", "--bw-cap-bps", "10Foo", "server"]);
     }
 
     #[test]
     fn bw_cap_rejects_zero()
     {
-        // ---
-
         parse_err(&["quelay-agent", "--bw-cap-bps", "0Mbps", "server"]);
     }
 
@@ -355,8 +336,6 @@ mod tests
     #[test]
     fn validate_rejects_invalid_chunk_size()
     {
-        // ---
-
         let mut cfg = parse_ok(&["quelay-agent", "server"]);
         cfg.chunk_size_bytes = 0;
         assert!(cfg.validate().is_err());
@@ -368,8 +347,6 @@ mod tests
     #[test]
     fn validate_rejects_zero_spool_capacity()
     {
-        // ---
-
         let mut cfg = parse_ok(&["quelay-agent", "server"]);
         cfg.spool_capacity_bytes = 0;
         assert!(cfg.validate().is_err());
@@ -378,8 +355,6 @@ mod tests
     #[test]
     fn validate_accepts_valid_config()
     {
-        // ---
-
         let cfg = parse_ok(&["quelay-agent", "server"]);
         assert!(cfg.validate().is_ok());
     }
@@ -391,8 +366,6 @@ mod tests
     #[test]
     fn bw_cap_display_uncapped()
     {
-        // ---
-
         let cfg = parse_ok(&["quelay-agent", "server"]);
         assert_eq!(cfg.bw_cap_display(), "uncapped");
     }
@@ -400,8 +373,6 @@ mod tests
     #[test]
     fn bw_cap_display_thresholds()
     {
-        // ---
-
         let mut cfg = parse_ok(&["quelay-agent", "server"]);
 
         cfg.bw_cap_bps = Some(500_000);
@@ -421,8 +392,6 @@ mod tests
     #[test]
     fn server_mode_parses_defaults()
     {
-        // ---
-
         let cfg = parse_ok(&["quelay-agent", "server"]);
         assert!(matches!(cfg.mode, crate::Mode::Server { .. }));
     }
@@ -430,8 +399,6 @@ mod tests
     #[test]
     fn client_mode_requires_peer_and_cert()
     {
-        // ---
-
         parse_err(&["quelay-agent", "client", "--peer", "127.0.0.1:5000"]);
 
         parse_err(&["quelay-agent", "client", "--cert", "server.der"]);
@@ -440,8 +407,6 @@ mod tests
     #[test]
     fn client_mode_parses_valid()
     {
-        // ---
-
         // numeric IP
         let cfg = parse_ok(&[
             "quelay-agent",

@@ -101,7 +101,6 @@ pub fn spawn_sender(
     cic: CicHandle,
 ) -> tokio::task::JoinHandle<anyhow::Result<()>>
 {
-    // ---
     tokio::spawn(async move {
         // ---
 
@@ -180,7 +179,6 @@ pub fn spawn_receiver(
     cic: CicHandle,
 ) -> tokio::task::JoinHandle<anyhow::Result<()>>
 {
-    // ---
     tokio::spawn(async move {
         // ---
         let t_start = Instant::now();
@@ -251,7 +249,6 @@ async fn wait_for_port(
     t_start: Instant,
 ) -> Option<u16>
 {
-    // ---
     tracing::debug!(uuid, "wait_for_port");
     loop
     {
@@ -297,8 +294,6 @@ async fn wait_for_shutdown(
     t_start: Instant,
 ) -> Option<u64>
 {
-    // ---
-
     tracing::trace!(%uuid, "sender: wait_for_shutdown, starting...");
 
     loop
@@ -385,7 +380,6 @@ async fn wait_for_agent_done(
     t_start: Instant,
 ) -> Option<(u64, u64)>
 {
-    // ---
     tracing::debug!("wait_for_agent_done: ...");
     loop
     {
@@ -441,8 +435,6 @@ async fn wait_for_receiver_done(
     t_start: Instant,
 ) -> Option<TunerOutcome>
 {
-    // ---
-
     tracing::debug!(%uuid, "wait_for_receiver_done ...");
 
     loop
@@ -493,7 +485,6 @@ async fn async_tcp_writer(
     mut abort_rx: tokio::sync::oneshot::Receiver<()>,
 ) -> anyhow::Result<()>
 {
-    // ---
     use tokio::io::AsyncWriteExt;
     let mut tcp = tokio::net::TcpStream::connect(format!("127.0.0.1:{port}")).await?;
 
@@ -520,7 +511,6 @@ async fn async_tcp_writer(
 /// Intended for use inside `tokio::task::spawn_blocking`.
 fn blocking_tcp_reader(port: u16) -> anyhow::Result<u64>
 {
-    // ---
     use std::io::Read;
     let mut tcp = std::net::TcpStream::connect(format!("127.0.0.1:{port}"))?;
     let mut buf = vec![0u8; 64 * 1024];
@@ -548,7 +538,6 @@ fn blocking_tcp_reader(port: u16) -> anyhow::Result<u64>
 
 async fn finish(cic: &CicHandle, result: TunerResult)
 {
-    // ---
     let _ = cic
         .tx
         .send(CicMsg::TunerFinished {
@@ -561,7 +550,6 @@ async fn finish(cic: &CicHandle, result: TunerResult)
 
 fn fail(uuid: &str, role: Role, reason: String, t_start: Instant) -> TunerResult
 {
-    // ---
     TunerResult {
         uuid: uuid.to_string(),
         role,
@@ -574,14 +562,12 @@ fn fail(uuid: &str, role: Role, reason: String, t_start: Instant) -> TunerResult
 
 fn killed(uuid: &str, role: Role, t_start: Instant) -> TunerResult
 {
-    // ---
     tracing::warn!(%uuid, ?role, "tuner: killed by failsafe");
     fail(uuid, role, "killed by failsafe".into(), t_start)
 }
 
 fn disconnected(uuid: &str, role: Role, t_start: Instant) -> TunerResult
 {
-    // ---
     tracing::warn!(%uuid, ?role, "tuner: CIC channel closed unexpectedly");
     fail(uuid, role, "CIC channel closed".into(), t_start)
 }
