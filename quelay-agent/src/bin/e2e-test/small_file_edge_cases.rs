@@ -9,7 +9,6 @@ use crate::*;
 #[derive(Debug, Args)]
 pub struct SmallFileEdgeCasesArgs
 {
-    // ---
     /// Test both transfer directions for each size.
     #[arg(long, default_value_t = false)]
     bidirectional: bool,
@@ -20,8 +19,6 @@ pub async fn cmd_small_file_edge_cases(
     args: &SmallFileEdgeCasesArgs,
 ) -> anyhow::Result<()>
 {
-    // ---
-
     println!("=== small-file-edge-cases ===");
 
     ensure_agent_running(ctx.sender_c2i)?;

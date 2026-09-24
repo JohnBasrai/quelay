@@ -5,7 +5,6 @@ use thiserror::Error;
 #[derive(Debug, Error)]
 pub enum QueLayError
 {
-    // ---
     #[error("transport error: {0}")]
     Transport(String),
 

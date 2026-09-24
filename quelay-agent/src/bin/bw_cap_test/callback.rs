@@ -30,7 +30,6 @@ use super::CicMsg;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Role
 {
-    // ---
     /// Air-side agent (data source / sender).
     Sender,
 
@@ -48,7 +47,6 @@ pub enum Role
 /// belong to the CIC.
 pub struct CallbackActor
 {
-    // ---
     role: Role,
     cic_tx: Mutex<mpsc::Sender<CicMsg>>,
 }
@@ -57,12 +55,9 @@ pub struct CallbackActor
 
 impl CallbackActor
 {
-    // ---
-
     /// Create a new actor tagged with `role`, forwarding to `cic_tx`.
     pub fn new(role: Role, cic_tx: mpsc::Sender<CicMsg>) -> Self
     {
-        // ---
         Self {
             role,
             cic_tx: Mutex::new(cic_tx),
@@ -71,7 +66,6 @@ impl CallbackActor
 
     fn forward(&self, msg: CicMsg)
     {
-        // ---
         // Best-effort: if CIC has shut down we drop silently.
         let _ = self.cic_tx.lock().unwrap().try_send(msg);
     }
@@ -81,18 +75,14 @@ impl CallbackActor
 
 impl QueLayCallbackSyncHandler for CallbackActor
 {
-    // ---
-
     fn handle_ping(&self) -> thrift::Result<()>
     {
-        // ---
         Ok(())
     }
 
     fn handle_stream_started(&self, uuid: String, info: StreamInfo, port: i32)
         -> thrift::Result<()>
     {
-        // ---
         self.forward(CicMsg::StreamStarted {
             role: self.role,
             uuid,
@@ -104,7 +94,6 @@ impl QueLayCallbackSyncHandler for CallbackActor
 
     fn handle_stream_progress(&self, _uuid: String, _progress: ProgressInfo) -> thrift::Result<()>
     {
-        // ---
         Ok(())
     }
 
@@ -115,7 +104,6 @@ impl QueLayCallbackSyncHandler for CallbackActor
         bytes_wire: i64,
     ) -> thrift::Result<()>
     {
-        // ---
         self.forward(CicMsg::StreamDone {
             role: self.role,
             uuid,
@@ -132,7 +120,6 @@ impl QueLayCallbackSyncHandler for CallbackActor
         reason: String,
     ) -> thrift::Result<()>
     {
-        // ---
         self.forward(CicMsg::StreamFailed {
             role: self.role,
             uuid,
@@ -143,7 +130,6 @@ impl QueLayCallbackSyncHandler for CallbackActor
 
     fn handle_link_status_update(&self, state: LinkState) -> thrift::Result<()>
     {
-        // ---
         self.forward(CicMsg::LinkStatus {
             role: self.role,
             state,
@@ -153,7 +139,6 @@ impl QueLayCallbackSyncHandler for CallbackActor
 
     fn handle_queue_status_update(&self, _status: QueueStatus) -> thrift::Result<()>
     {
-        // ---
         Ok(())
     }
 }

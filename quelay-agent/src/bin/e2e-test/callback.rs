@@ -9,7 +9,6 @@ use crate::*;
 #[derive(Debug)]
 pub enum TestCallbackEvent
 {
-    // ---
     #[allow(unused)]
     Started
     {
@@ -46,8 +45,6 @@ pub struct TestCallbackHandler
 
 impl QueLayCallbackSyncHandler for TestCallbackHandler
 {
-    // ---
-
     fn handle_ping(&self) -> thrift::Result<()>
     {
         Ok(())
@@ -74,8 +71,6 @@ impl QueLayCallbackSyncHandler for TestCallbackHandler
         progress: quelay_thrift::ProgressInfo,
     ) -> thrift::Result<()>
     {
-        // ---
-
         self.progress_count.fetch_add(1, Ordering::Relaxed);
 
         let mut last = self.last_dot.lock().unwrap();
@@ -169,8 +164,6 @@ pub struct TestCallbackServer
 
 impl TestCallbackServer
 {
-    // ---
-
     pub fn bind(advertise_ip: std::net::IpAddr) -> anyhow::Result<Self>
     {
         let listener = std::net::TcpListener::bind("0.0.0.0:0")?;

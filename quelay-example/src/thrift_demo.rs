@@ -26,7 +26,6 @@ use uuid::Uuid;
 
 pub fn run()
 {
-    // ---
     round_trip_link_state();
     round_trip_stream_info();
     round_trip_queue_status();
@@ -37,7 +36,6 @@ pub fn run()
 
 fn round_trip_link_state()
 {
-    // ---
     let cases = [
         DomainLinkState::Connecting,
         DomainLinkState::Normal,
@@ -59,7 +57,6 @@ fn round_trip_link_state()
 
 fn round_trip_stream_info()
 {
-    // ---
     let original = DomainStreamInfo {
         size_bytes: Some(1024 * 1024),
         attrs: HashMap::from([
@@ -86,7 +83,6 @@ fn round_trip_stream_info()
 
 fn round_trip_queue_status()
 {
-    // ---
     let uuids = vec![Uuid::new_v4(), Uuid::new_v4(), Uuid::new_v4()];
 
     let original = DomainQueueStatus {
@@ -115,7 +111,6 @@ fn round_trip_queue_status()
 
 fn round_trip_progress()
 {
-    // ---
     let progress = TransferProgress {
         uuid: Uuid::new_v4(),
         bytes_transferred: 512_000,

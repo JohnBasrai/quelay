@@ -17,7 +17,6 @@ use super::{Priority, Result};
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LinkState
 {
-    // ---
     /// Attempting to establish or re-establish the connection.
     Connecting,
 
@@ -48,7 +47,6 @@ pub enum LinkState
 #[async_trait]
 pub trait QueLayStream: AsyncRead + AsyncWrite + Send + Unpin
 {
-    // ---
     /// Stable identifier for this stream. Survives reconnection.
     fn stream_id(&self) -> Uuid;
 
@@ -78,7 +76,6 @@ pub type QueLayStreamPtr = Box<dyn QueLayStream>;
 #[async_trait]
 impl QueLayStream for Box<dyn QueLayStream>
 {
-    // ---
     fn stream_id(&self) -> Uuid
     {
         (**self).stream_id()
@@ -111,7 +108,6 @@ impl QueLayStream for Box<dyn QueLayStream>
 #[derive(Debug, Clone, Copy, Default)]
 pub struct ConnStats
 {
-    // ---
     /// Total packets sent, including retransmits.
     pub sent_packets: u64,
 
@@ -152,7 +148,6 @@ pub type QueLaySessionPtr = Arc<dyn QueLaySession>;
 #[async_trait]
 pub trait QueLaySession: Send + Sync
 {
-    // ---
     /// Open a new outbound stream.
     ///
     /// Priority is recorded by the DRR scheduler above the transport;
@@ -214,7 +209,6 @@ pub trait QueLaySession: Send + Sync
 #[async_trait]
 pub trait QueLayTransport: Send + Sync
 {
-    // ---
     type Session: QueLaySession + 'static;
 
     /// Connect to a remote Quelay endpoint and return a live session.

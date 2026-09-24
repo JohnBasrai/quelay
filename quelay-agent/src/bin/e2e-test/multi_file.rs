@@ -9,7 +9,6 @@ use crate::*;
 #[derive(Debug, Args)]
 pub struct MultiFileArgs
 {
-    // ---
     /// Transfer 3 large files: 30 MiB, 2 MiB, 500 KiB.
     #[arg(long, conflicts_with_all = ["small", "size_mb", "duration_secs"])]
     large: bool,
@@ -52,8 +51,6 @@ pub struct MultiFileArgs
 
 pub async fn cmd_multi_file(ctx: &TestContext, args: &MultiFileArgs) -> anyhow::Result<()>
 {
-    // ---
-
     println!("=== multi-file ===");
 
     ensure_agent_running(ctx.sender_c2i)?;

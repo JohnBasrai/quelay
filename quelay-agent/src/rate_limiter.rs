@@ -98,7 +98,6 @@ const MAX_INTERVAL_MS: u64 = 100;
 /// - bytes 8..10: `payload.len()` as `u16`
 pub(crate) fn encode_chunk(stream_offset: u64, payload: &[u8]) -> Vec<u8>
 {
-    // ---
     use crate::CHUNK_HEADER_LEN;
     let mut buf = Vec::with_capacity(CHUNK_HEADER_LEN + payload.len());
     buf.extend_from_slice(&stream_offset.to_be_bytes());
@@ -128,7 +127,6 @@ pub(crate) struct AllocTicket
 /// Control commands sent to the [`StreamPump`] via [`RateLimiter::cmd_tx`].
 pub(crate) enum RateCmd
 {
-    // ---
     /// Link went down.  Pump rewinds `q = spool.bytes_acked`, then blocks
     /// waiting for [`RateCmd::LinkUp`].
     LinkDown,
@@ -149,7 +147,6 @@ pub(crate) enum RateCmd
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct RateParams
 {
-    // ---
     /// Aggregate timer wake-up period.
     pub interval: Duration,
 
@@ -162,7 +159,6 @@ impl RateParams
     /// `rate_bps` is in **bits per second** (e.g. 100_000_000 for 100 Mbit/s).
     pub(crate) fn from_rate_bps(rate_bps: u64, chunk_size: usize) -> Self
     {
-        // ---
         let rate_bytes_per_sec = rate_bps / 8;
 
         let ideal_bytes_per_tick = (CHUNKS_PER_TICK * chunk_size) as u64;
@@ -192,7 +188,6 @@ impl RateParams
 
 struct StreamEntry
 {
-    // ---
     /// Allocation ticket channel to the pump task.
     alloc_tx: mpsc::Sender<AllocTicket>,
 
@@ -226,11 +221,8 @@ struct AggregateTimerTask
 
 impl AggregateTimerTask
 {
-    // ---
-
     async fn run(self)
     {
-        // ---
         let mut ticker = interval(self.interval);
         ticker.set_missed_tick_behavior(MissedTickBehavior::Skip);
 
@@ -420,7 +412,6 @@ impl AggregateTimerTask
 /// or removed between ticks are picked up on the next wake.
 pub struct AggregateRateLimiter
 {
-    // ---
     scheduler: Arc<Mutex<DrrScheduler>>,
     streams: Arc<Mutex<HashMap<Uuid, StreamEntry>>>,
     /// Stored for uncapped detection by callers; `None` = uncapped.
@@ -436,8 +427,6 @@ pub struct AggregateRateLimiter
 
 impl AggregateRateLimiter
 {
-    // ---
-
     /// Construct and start the aggregate rate limiter.
     ///
     /// - `rate_bps = None`: uncapped.  No timer task is spawned.
@@ -446,7 +435,6 @@ impl AggregateRateLimiter
     /// - `rate_bps = Some(n)`: spawns the aggregate timer task.
     pub fn new(rate_bps: Option<u64>, initial_session: QueLaySessionPtr) -> Self
     {
-        // ---
         use super::CHUNK_SIZE;
 
         let scheduler = Arc::new(Mutex::new(DrrScheduler::new()));
@@ -490,7 +478,6 @@ impl AggregateRateLimiter
     /// computes a delta relative to the new connection only.
     pub async fn set_session(&self, new_session: QueLaySessionPtr)
     {
-        // ---
         let baseline = new_session.wire_bytes_sent();
         *self.session.lock().await = Some(new_session);
         self.wire_baseline.store(baseline, Ordering::Release);
@@ -508,7 +495,6 @@ impl AggregateRateLimiter
     /// Returns 0 when no session is installed.
     pub async fn wire_bytes_absolute(&self) -> u64
     {
-        // ---
         self.session
             .lock()
             .await
@@ -535,7 +521,6 @@ impl AggregateRateLimiter
         Arc<AtomicU64>,
     )
     {
-        // ---
         let head_offset = Arc::new(AtomicU64::new(0));
         let q_atomic = Arc::new(AtomicU64::new(0));
 
@@ -569,7 +554,6 @@ impl AggregateRateLimiter
     /// Deregister a stream — called when the pump exits (done or failed).
     pub async fn deregister(&self, uuid: Uuid)
     {
-        // ---
         tracing::trace!(%uuid, "ATT:deregister, ...");
         self.scheduler.lock().await.deregister(uuid);
         self.streams.lock().await.remove(&uuid);
@@ -589,7 +573,6 @@ impl AggregateRateLimiter
 /// Concurrently selects on `cmd_rx` for link lifecycle events.
 struct StreamPump
 {
-    // ---
     spool: Arc<Mutex<SpoolBuffer>>,
 
     /// Q pointer — absolute byte offset of the next byte to send.
@@ -605,10 +588,8 @@ struct StreamPump
 
 impl StreamPump
 {
-    // ---
     async fn run(mut self)
     {
-        // ---
         use super::CHUNK_SIZE;
 
         tracing::trace!("stream pump: task started, entering select loop");
@@ -686,7 +667,6 @@ impl StreamPump
     /// current data for the next tick.
     async fn drain_alloc(&mut self, budget: u64, chunk_size: usize)
     {
-        // ---
         let mut remaining = budget;
 
         tracing::trace!(budget, q = self.q, "drain_alloc: enter");
@@ -783,7 +763,6 @@ impl StreamPump
     /// Returns `true` if link came back up, `false` if cmd channel closed.
     async fn wait_for_link_up(&mut self) -> bool
     {
-        // ---
         loop
         {
             tokio::select! {
@@ -838,15 +817,12 @@ impl StreamPump
 /// lifecycle (LinkDown / LinkUp / Finish) in both modes.
 pub struct RateLimiter
 {
-    // ---
     /// Command channel to the [`StreamPump`].
     cmd_tx: Option<mpsc::Sender<RateCmd>>,
 }
 
 impl RateLimiter
 {
-    // ---
-
     /// Construct a `RateLimiter` for one uplink stream.
     ///
     /// - `alloc_rx = Some(rx)`: capped mode.  Spawns a [`StreamPump`] gated
@@ -864,7 +840,6 @@ impl RateLimiter
         data_ready: Arc<Notify>,
     ) -> Self
     {
-        // ---
         let (alloc_rx, _) = match alloc_rx
         {
             Some(rx) => (rx, false),
@@ -947,7 +922,6 @@ impl RateLimiter
     /// Hand the pump a fresh QUIC write half after reconnect.
     pub async fn link_up(&mut self, new_tx: WriteHalf<QueLayStreamPtr>) -> io::Result<()>
     {
-        // ---
         if let Some(cmd_tx) = &self.cmd_tx
         {
             cmd_tx
@@ -966,7 +940,6 @@ impl RateLimiter
     /// Tell the pump to drain remaining spool data, send FIN, then exit.
     pub async fn finish(&mut self) -> io::Result<()>
     {
-        // ---
         if let Some(cmd_tx) = &self.cmd_tx
         {
             cmd_tx

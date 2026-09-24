@@ -129,7 +129,6 @@ const BW_TOLERANCE: f64 = 0.10;
 #[command(name = "bw-cap-test")]
 struct Cli
 {
-    // ---
     /// C2I address of the sending agent (air side).
     ///
     /// Accepts hostnames (`agent-client:9190`) or numeric IPs.
@@ -164,7 +163,6 @@ struct Cli
 #[tokio::main]
 async fn main()
 {
-    // ---
     if let Err(e) = real_main().await
     {
         eprintln!("\nERROR: {e:#}\n");
@@ -174,7 +172,6 @@ async fn main()
 
 async fn real_main() -> anyhow::Result<()>
 {
-    // ---
     let cli = Cli::parse();
 
     let log_level = if cli.debug { "debug" } else { "info" };
@@ -270,7 +267,6 @@ async fn real_main() -> anyhow::Result<()>
 
     for (i, payload) in payloads.into_iter().enumerate()
     {
-        // ---
         let uuid = Uuid::new_v4().to_string();
 
         // --- sender tuner ---
@@ -386,7 +382,6 @@ async fn real_main() -> anyhow::Result<()>
 
 fn bind_callback_server(role: Role, cic_tx: mpsc::Sender<CicMsg>) -> anyhow::Result<SocketAddr>
 {
-    // ---
     let listener = std::net::TcpListener::bind("127.0.0.1:0")?;
     let addr = listener.local_addr()?;
     let addr_str = addr.to_string();
@@ -442,7 +437,6 @@ fn resolve_addr(host_port: &str) -> anyhow::Result<SocketAddr>
 
 fn connect_agent(addr: &str) -> anyhow::Result<impl TQueLayAgentSyncClient>
 {
-    // ---
     let mut ch = TTcpChannel::new();
     ch.open(addr)?;
     let (rx, tx) = ch.split()?;
@@ -454,7 +448,6 @@ fn connect_agent(addr: &str) -> anyhow::Result<impl TQueLayAgentSyncClient>
 
 fn ensure_agent_running(addr: &str) -> anyhow::Result<()>
 {
-    // ---
     let sock_addr = resolve_addr(addr)?;
     match std::net::TcpStream::connect_timeout(&sock_addr, Duration::from_millis(300))
     {
@@ -465,7 +458,6 @@ fn ensure_agent_running(addr: &str) -> anyhow::Result<()>
 
 fn query_cap(addr: &str) -> anyhow::Result<Option<u64>>
 {
-    // ---
     let mut agent = connect_agent(addr)?;
 
     let cap_bps = agent.get_bandwidth_cap_bps()?;
@@ -488,7 +480,6 @@ fn query_cap(addr: &str) -> anyhow::Result<Option<u64>>
 
 fn generate_payload(n: usize, seed: u64) -> Vec<u8>
 {
-    // ---
     let mut rng = rand::rngs::SmallRng::seed_from_u64(seed);
     let mut buf = vec![0u8; n];
     rng.fill_bytes(&mut buf);
@@ -498,7 +489,6 @@ fn generate_payload(n: usize, seed: u64) -> Vec<u8>
 /// Format the bandwidth cap as a human-readable string for logging.
 fn bw_cap_display(bw_cap_bps: Option<u64>) -> String
 {
-    // ---
     match bw_cap_bps
     {
         None => "uncapped".to_string(),
@@ -518,7 +508,6 @@ fn bw_cap_display(bw_cap_bps: Option<u64>) -> String
 #[cfg(test)]
 mod tests
 {
-    // ---
     use clap::CommandFactory;
 
     use super::*;
@@ -528,21 +517,18 @@ mod tests
     #[test]
     fn cli_verify()
     {
-        // ---
         Cli::command().debug_assert();
     }
 
     #[test]
     fn defaults_parse_cleanly()
     {
-        // ---
         Cli::try_parse_from(["bw-cap-test"]).expect("default parse failed");
     }
 
     #[test]
     fn custom_args_parse()
     {
-        // ---
         // Numeric IPs still work; hostnames also accepted (resolved at connect time)
         Cli::try_parse_from([
             "bw-cap-test",

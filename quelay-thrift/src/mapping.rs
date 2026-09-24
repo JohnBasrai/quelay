@@ -36,7 +36,6 @@ use crate::gen::{
 
 impl From<DomainConnStats> for WireConnStats
 {
-    // ---
     fn from(d: DomainConnStats) -> Self
     {
         WireConnStats {
@@ -52,7 +51,6 @@ impl From<DomainConnStats> for WireConnStats
 
 impl From<WireConnStats> for DomainConnStats
 {
-    // ---
     fn from(w: WireConnStats) -> Self
     {
         DomainConnStats {
@@ -72,10 +70,8 @@ impl From<WireConnStats> for DomainConnStats
 
 impl From<WireLinkState> for DomainLinkState
 {
-    // ---
     fn from(w: WireLinkState) -> Self
     {
-        // ---
         match w
         {
             WireLinkState::CONNECTING => DomainLinkState::Connecting,
@@ -89,10 +85,8 @@ impl From<WireLinkState> for DomainLinkState
 
 impl From<DomainLinkState> for WireLinkState
 {
-    // ---
     fn from(d: DomainLinkState) -> Self
     {
-        // ---
         match d
         {
             DomainLinkState::Connecting => WireLinkState::CONNECTING,
@@ -109,10 +103,8 @@ impl From<DomainLinkState> for WireLinkState
 
 impl From<WireStreamInfo> for DomainStreamInfo
 {
-    // ---
     fn from(w: WireStreamInfo) -> Self
     {
-        // ---
         DomainStreamInfo {
             size_bytes: w.size_bytes.map(|v| v as u64),
             // attrs is Option<BTreeMap> in generated code; domain uses HashMap.
@@ -128,10 +120,8 @@ impl From<WireStreamInfo> for DomainStreamInfo
 
 impl From<DomainStreamInfo> for WireStreamInfo
 {
-    // ---
     fn from(d: DomainStreamInfo) -> Self
     {
-        // ---
         WireStreamInfo {
             size_bytes: d.size_bytes.map(|v| v as i64),
             attrs: Some(d.attrs.into_iter().collect()),
@@ -154,7 +144,6 @@ impl From<DomainStreamInfo> for WireStreamInfo
 pub fn progress_from_wire(uuid: Uuid, w: WireProgressInfo, throughput_bps: f64)
     -> TransferProgress
 {
-    // ---
     TransferProgress {
         uuid,
         bytes_transferred: w.bytes_transferred.unwrap_or(0) as u64,
@@ -168,7 +157,6 @@ pub fn progress_from_wire(uuid: Uuid, w: WireProgressInfo, throughput_bps: f64)
 /// `throughput_bps` is dropped — it is not in the IDL.
 pub fn progress_to_wire(d: &TransferProgress) -> WireProgressInfo
 {
-    // ---
     WireProgressInfo {
         bytes_transferred: Some(d.bytes_transferred as i64),
         size_bytes: None, // not tracked in TransferProgress; caller may set
@@ -182,10 +170,8 @@ pub fn progress_to_wire(d: &TransferProgress) -> WireProgressInfo
 
 impl From<WireQueueStatus> for DomainQueueStatus
 {
-    // ---
     fn from(w: WireQueueStatus) -> Self
     {
-        // ---
         DomainQueueStatus {
             active_count: w.active_count.unwrap_or(0),
             max_concurrent: w.max_concurrent.unwrap_or(0),
@@ -202,10 +188,8 @@ impl From<WireQueueStatus> for DomainQueueStatus
 
 impl From<DomainQueueStatus> for WireQueueStatus
 {
-    // ---
     fn from(d: DomainQueueStatus) -> Self
     {
-        // ---
         WireQueueStatus {
             active_count: Some(d.active_count),
             max_concurrent: Some(d.max_concurrent),
@@ -223,7 +207,6 @@ impl std::fmt::Display for WireLinkState
 {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result
     {
-        // ---
         let s = match *self
         {
             WireLinkState::CONNECTING => "Connecting",

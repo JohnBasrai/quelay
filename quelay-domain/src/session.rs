@@ -21,7 +21,6 @@ use super::{LinkState, Priority, Result};
 #[derive(Debug, Clone)]
 pub struct StreamInfo
 {
-    // ---
     /// Known size in bytes. `None` for open-ended or unknown-length streams.
     /// When present, enables `percent_done` in progress callbacks.
     pub size_bytes: Option<u64>,
@@ -38,7 +37,6 @@ pub struct StreamInfo
 #[derive(Debug, Clone)]
 pub struct StreamMeta
 {
-    // ---
     /// Stable identifier. Persists across reconnections.
     pub uuid: Uuid,
 
@@ -57,7 +55,6 @@ pub struct StreamMeta
 #[derive(Debug, Clone)]
 pub struct TransferProgress
 {
-    // ---
     pub uuid: Uuid,
 
     pub bytes_transferred: u64,
@@ -83,7 +80,6 @@ pub struct TransferProgress
 #[derive(Debug, Clone)]
 pub struct QueueStatus
 {
-    // ---
     /// Streams currently transferring.
     pub active_count: i32,
 
@@ -109,7 +105,6 @@ pub struct QueueStatus
 #[async_trait]
 pub trait QueLayHandler: Send + Sync
 {
-    // ---
     /// Called when a stream becomes active (reaches the head of the queue).
     ///
     /// `port` is the ephemeral TCP port the client connects to for I/O.

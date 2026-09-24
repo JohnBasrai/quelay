@@ -37,7 +37,6 @@ pub enum CongestionAlgo
 /// Build a `quinn::TransportConfig` with the requested congestion controller.
 fn make_transport_config(algo: &CongestionAlgo) -> quinn::TransportConfig
 {
-    // ---
     let mut tc = quinn::TransportConfig::default();
 
     // Satellite links have high RTT and reconnect windows that far exceed
@@ -73,7 +72,6 @@ fn make_transport_config(algo: &CongestionAlgo) -> quinn::TransportConfig
 
 pub struct QuicTransport
 {
-    // ---
     endpoint: quinn::Endpoint,
     server_name: Option<String>,
 }
@@ -82,7 +80,6 @@ pub struct QuicTransport
 
 impl QuicTransport
 {
-    // ---
     /// Create a server-side transport bound to `bind_addr`.
     pub fn server(bundle: CertBundle, bind_addr: SocketAddr, algo: CongestionAlgo) -> Result<Self>
     {
@@ -116,7 +113,6 @@ impl QuicTransport
         algo: CongestionAlgo,
     ) -> Result<Self>
     {
-        // ---
         let tls = client_config(server_cert_der).map_err(QueLayError::from)?;
 
         let quinn_tls = quinn::crypto::rustls::QuicClientConfig::try_from(tls)
@@ -145,7 +141,6 @@ impl QuicTransport
     /// Return the local address the endpoint is bound to.
     pub fn local_addr(&self) -> std::io::Result<SocketAddr>
     {
-        // ---
         self.endpoint.local_addr()
     }
 }
@@ -155,12 +150,10 @@ impl QuicTransport
 #[async_trait]
 impl QueLayTransport for QuicTransport
 {
-    // ---
     type Session = QuicSession;
 
     async fn connect(&self, remote: SocketAddr) -> Result<QuicSession>
     {
-        // ---
         let server_name = self.server_name.as_deref().ok_or_else(|| {
             QueLayError::Transport("connect() called on server-side transport".into())
         })?;
@@ -179,7 +172,6 @@ impl QueLayTransport for QuicTransport
 
     async fn listen(&self, _bind: SocketAddr) -> Result<mpsc::Receiver<QuicSession>>
     {
-        // ---
         let endpoint = self.endpoint.clone();
         let (tx, rx) = mpsc::channel(16);
 

@@ -28,26 +28,24 @@ cargo clippy --all-targets -- -D warnings
 ## Section Separators
 
 Use `// ---` to separate logical sections within a file — between top-level
-items, between `use` groups, and inside blocks.  This creates visual rhythm
-without relying on blank lines alone.  See the sep being used between
-the stuct and the unrelated `impl` block.
+items, between `use` groups, and between substantial groups inside a type or
+block. This creates visual rhythm without relying on blank lines alone. Do not
+use a bare `// ---` solely as the first item after an opening brace: the
+Allman brace style already provides that separation.
 
 ```rust
-pub struct Foo {
-
+pub struct Foo
+{
     x: u32,
 }
 
 // ---
 
-impl Foo {
-
+impl Foo
+{
     pub fn new(x: u32) -> Self { Self { x } }
 }
 ```
-
-Trivial structs and their `impl` blocks do not require an opening `// ---`;
-the rule is described under **Opening separator** below.
 
 ## Import Grouping
 
@@ -113,61 +111,39 @@ banner comment.  The long-dash banner is the standard form:
 Shorter inline banners are used inside `enum` and `struct` bodies to label
 sub-groups (see **Enum variants** below).
 
-### Opening separator
-
-Place `// ---` as the first line inside `struct`, `enum`, and `impl` opening
-braces.  This visually separates the opening brace from the first item and
-makes the block boundary clear at a glance:
-
-```rust
-pub struct Cic {
-    // ---
-    cfg: CicConfig,
-    cic_rx: mpsc::Receiver<CicMsg>,
-}
-
-impl Cic {
-    // ---
-
-    pub fn new(cfg: CicConfig) -> Self { /* ... */ }
-}
-```
-
-**Exceptions — omit `// ---` when:**
-
-- The struct is trivial (one or two fields, no grouping needed):
-  ```rust
-  pub struct TunerPair {
-      pub sender_uuid: String,
-      pub receiver_uuid: String,
-  }
-  ```
-- The first item inside an `impl` block already carries a doc comment; the
-  doc comment itself creates sufficient visual separation:
-  ```rust
-  impl Cic {
-      /// Run the dispatch loop until all tuners finish.
-      pub async fn run(mut self) -> anyhow::Result<Vec<TunerResult>> { /* ... */ }
-  }
-  ```
-
 ### Enum variants
 
 Separate enum variants with a blank line.  Use short inline comments to
 label logical sub-groups:
 
 ```rust
-pub enum CicMsg {
+pub enum CicMsg
+{
     // --- from callbacks (UUID-bearing → routed to the matching tuner) ---
     /// Agent opened an ephemeral port for this stream.
-    StreamStarted { role: Role, uuid: String, port: u16 },
+    StreamStarted
+    {
+        role: Role,
+        uuid: String,
+        port: u16,
+    },
 
     /// Agent finished transferring this stream normally.
-    StreamDone { role: Role, uuid: String, bytes: u64 },
+    StreamDone
+    {
+        role: Role,
+        uuid: String,
+        bytes: u64,
+    },
 
     // --- from tuner tasks ---
     /// A tuner task has completed and is about to exit.
-    TunerFinished { uuid: String, role: Role, result: TunerResult },
+    TunerFinished
+    {
+        uuid: String,
+        role: Role,
+        result: TunerResult,
+    },
 }
 ```
 
@@ -177,8 +153,8 @@ Separate logically distinct field groups with a blank line.  When every
 field carries a doc comment, precede each doc comment with a blank line:
 
 ```rust
-pub struct Cic {
-    // ---
+pub struct Cic
+{
     cfg: CicConfig,
     cic_rx: mpsc::Receiver<CicMsg>,
     cic_tx: mpsc::Sender<CicMsg>,
@@ -194,26 +170,6 @@ pub struct Cic {
 }
 ```
 
-### Function body opening
-
-Place `// ---` as the first statement inside non-trivial function bodies.
-This visually separates the function signature from the start of the body,
-which is especially helpful when the signature spans multiple lines:
-
-```rust
-pub fn register(
-    &mut self,
-    uuid: String,
-    role: Role,
-    cmd_tx: mpsc::Sender<TunerCmd>,
-) {
-    // ---
-    self.dispatch.insert((uuid.clone(), role), cmd_tx);
-}
-```
-
-Short single-expression functions and closures may omit it.
-
 ### Inline step comments
 
 Use plain `//` comments to label distinct processing phases inside a
@@ -221,7 +177,8 @@ function body:
 
 ```rust
 // Join all handles for cleanup; results already collected via channel.
-for ((uuid, role), handle) in self.handles {
+for ((uuid, role), handle) in self.handles
+{
     // ...
 }
 ```

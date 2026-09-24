@@ -153,7 +153,6 @@ const SPOOL_FILL_FRACTION: f64 = 0.50;
 )]
 struct Cli
 {
-    // ---
     /// C2I address of the sending agent.
     ///
     /// Accepts hostnames (`agent-client:9190`) or numeric IPs (`127.0.0.1:9090`).
@@ -193,7 +192,6 @@ struct Cli
 #[derive(Debug, Subcommand)]
 enum Command
 {
-    // ---
     /// Multi-file transfer: large files, small files, link outage, link failure.
     MultiFile(MultiFileArgs),
 
@@ -215,7 +213,6 @@ enum Command
 
 fn connect_agent(addr: SocketAddr) -> anyhow::Result<impl TQueLayAgentSyncClient>
 {
-    // ---
     let mut ch = TTcpChannel::new();
     ch.open(addr.to_string())?;
     let (rx, tx) = ch.split()?;
@@ -231,7 +228,6 @@ fn connect_agent(addr: SocketAddr) -> anyhow::Result<impl TQueLayAgentSyncClient
 
 fn generate_test_data(n: usize) -> Vec<u8>
 {
-    // ---
     let mut rng = rand::rngs::SmallRng::seed_from_u64(0xDEAD_BEEF_CAFE_1234);
     let mut buf = vec![0u8; n];
     rng.fill_bytes(&mut buf);
@@ -240,7 +236,6 @@ fn generate_test_data(n: usize) -> Vec<u8>
 
 fn sha256_hex(data: &[u8]) -> String
 {
-    // ---
     Sha256::digest(data)
         .iter()
         .map(|b| format!("{b:02x}"))
@@ -260,8 +255,6 @@ fn print_transfer_report(
     conn_stats_delta: Option<&ConnStats>,
 )
 {
-    // ---
-
     let elapsed_s = elapsed.as_secs_f64();
     let kbps = (bytes as f64 / 1_000.0) / elapsed_s;
     let kbits_s = kbps * 8.0;
@@ -277,7 +270,6 @@ fn print_transfer_report(
 
     if let Some(cap) = cap_bps
     {
-        // ---
         let cap_kbits = cap as f64 / 1_000.0; // bits/sec → kbps
         let cap_kbps = cap as f64 / 8_000.0; // bits/sec → KB/s
         let utilize = kbps / cap_kbps * 100.0;
@@ -313,7 +305,6 @@ fn print_transfer_report(
 
 fn transfer_timeout(bytes: usize, cap_bps: Option<u64>) -> Duration
 {
-    // ---
     let secs = match cap_bps
     {
         Some(cap) =>
@@ -332,7 +323,6 @@ fn transfer_timeout(bytes: usize, cap_bps: Option<u64>) -> Duration
 /// Thrift has no u64; the IDL field is i64. We treat any value <= 0 as uncapped.
 fn query_cap(sender_c2i: SocketAddr) -> anyhow::Result<Option<u64>>
 {
-    // ---
     let mut agent = connect_agent(sender_c2i).context("connect_agent(sender_c2i) failed")?;
     let cap_bps = agent.get_bandwidth_cap_bps()?;
 
@@ -356,7 +346,6 @@ fn query_cap(sender_c2i: SocketAddr) -> anyhow::Result<Option<u64>>
 /// Returns `None` if the RPC fails (agent may be unconfigured or down).
 fn query_conn_stats(sender_c2i: SocketAddr) -> Option<ConnStats>
 {
-    // ---
     connect_agent(sender_c2i)
         .ok()
         .and_then(|mut a| a.get_conn_stats().ok())
@@ -367,7 +356,6 @@ fn query_conn_stats(sender_c2i: SocketAddr) -> Option<ConnStats>
 /// Subtract two `ConnStats` snapshots to get per-transfer deltas.
 fn diff_conn_stats(before: ConnStats, after: ConnStats) -> ConnStats
 {
-    // ---
     ConnStats {
         sent_packets: Some(after.sent_packets.unwrap_or(0) - before.sent_packets.unwrap_or(0)),
         lost_packets: Some(after.lost_packets.unwrap_or(0) - before.lost_packets.unwrap_or(0)),
@@ -403,7 +391,6 @@ enum LinkInject
 
 struct TransferStats
 {
-    // ---
     sha256_sent: String,
     sha256_rcvd: String,
     rate_bytes_per_sec: f64,
@@ -438,7 +425,6 @@ async fn run_transfer(
     timeout: Duration,
 ) -> anyhow::Result<TransferStats>
 {
-    // ---
     let sender_c2i = ctx.sender_c2i;
     let receiver_c2i = ctx.receiver_c2i;
     let callback_ip = ctx.callback_ip;
@@ -616,7 +602,6 @@ async fn run_transfer(
 
 fn assert_bw_within_tolerance(stats: &TransferStats, cap_bps: u64) -> anyhow::Result<()>
 {
-    // ---
     let cap_bytes_per_sec = cap_bps as f64 / 8.0;
     let low = cap_bytes_per_sec * BW_TOLERANCE_LOW;
     let high = cap_bytes_per_sec * BW_TOLERANCE_HIGH;
@@ -699,8 +684,6 @@ async fn run_multi_file_link_outage(
     cap_bps: Option<u64>,
 ) -> anyhow::Result<()>
 {
-    // ---
-
     let rate_bytes_ps = cap_bps.map(|c| c as f64 / 8.0);
 
     let link_down_secs = rate_bytes_ps
@@ -756,8 +739,6 @@ async fn run_multi_file_link_fail(
     receiver_c2i: SocketAddr,
 ) -> anyhow::Result<()>
 {
-    // ---
-
     println!("  link-fail: (stub — implement once --link-fail-timeout is a tunable agent CLI arg)");
     // TODO: sequence:
     //   1. stream_start a file (~2s at cap)
@@ -843,7 +824,6 @@ async fn real_main() -> anyhow::Result<()>
 /// units with one decimal place. Intended for human-readable output.
 fn bytes_display(bytes: usize) -> String
 {
-    // ---
     const KIB: f64 = 1024.0;
     const MIB: f64 = 1024.0 * 1024.0;
     const GIB: f64 = 1024.0 * 1024.0 * 1024.0;

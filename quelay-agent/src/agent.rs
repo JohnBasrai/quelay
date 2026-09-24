@@ -16,7 +16,6 @@ use super::{AgentCmd, SessionCommand, SessionCommandQueue};
 
 pub struct Agent
 {
-    // ---
     cmd_rx: mpsc::Receiver<AgentCmd>,
     sm_cmd_tx: SessionCommandQueue,
 }
@@ -25,7 +24,6 @@ pub struct Agent
 
 impl Agent
 {
-    // ---
     pub fn new(cmd_rx: mpsc::Receiver<AgentCmd>, sm_cmd_tx: SessionCommandQueue) -> Self
     {
         Self { cmd_rx, sm_cmd_tx }
@@ -35,7 +33,6 @@ impl Agent
 
     pub async fn run(mut self)
     {
-        // ---
         while let Some(cmd) = self.cmd_rx.recv().await
         {
             match cmd
@@ -47,7 +44,6 @@ impl Agent
                     reply_tx,
                 } =>
                 {
-                    // ---
                     tracing::debug!(%uuid, ?priority, "stream_start → session manager");
 
                     let _ = self

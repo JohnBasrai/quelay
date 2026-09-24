@@ -67,7 +67,6 @@ use crate::{
 /// Commands the SessionManger actor
 pub(crate) enum SessionCommand
 {
-    // ---
     StreamStart
     {
         uuid: Uuid,
@@ -109,7 +108,6 @@ pub(crate) type SessionCommandQueue = mpsc::Sender<SessionCommand>;
 /// reconnect (which would spawn a competing accept loop on the same endpoint).
 pub enum TransportConfig
 {
-    // ---
     /// Server mode: hold the existing accept-loop receiver and `recv()` again
     /// after each disconnection.
     Server
@@ -144,7 +142,6 @@ pub enum TransportConfig
 #[derive(Debug)]
 struct PendingStream
 {
-    // ---
     uuid: Uuid,
     info: DomainStreamInfo,
     priority: Priority,
@@ -160,7 +157,6 @@ struct PendingStream
 /// this to a `HashMap<RemoteId, RemoteState>` in `SessionManager`.
 struct RemoteState
 {
-    // ---
     /// Live QUIC session.  `None` while reconnecting.
     session: Option<QueLaySessionPtr>,
 
@@ -194,11 +190,8 @@ struct RemoteState
 
 impl RemoteState
 {
-    // ---
-
     fn new(session: QueLaySessionPtr, max_concurrent: Option<usize>, max_pending: usize) -> Self
     {
-        // ---
         Self {
             session: Some(session),
             pending: Vec::new(),
@@ -216,7 +209,6 @@ impl RemoteState
     /// Returns the 1-based position in the queue (1 = next to be promoted).
     fn enqueue(&mut self, pending_stream: PendingStream) -> usize
     {
-        // ---
         let pri = pending_stream.priority;
 
         // Find insertion point: first entry whose raw_priority is
@@ -236,7 +228,6 @@ impl RemoteState
     /// Send queue status update to client callback.
     async fn send_queue_status(&self, cb_tx: &CallbackTx)
     {
-        // ---
         let status = QueueStatus {
             active_count: self.active_uplinks.len() as i32,
             max_concurrent: self.max_concurrent.unwrap_or(0) as i32,
@@ -252,7 +243,6 @@ impl RemoteState
     /// True if another active stream can be opened.
     fn has_active_slot(&self) -> bool
     {
-        // ---
         match self.max_concurrent
         {
             Some(max_concurrent) => self.active_uplinks.len() < max_concurrent,
@@ -262,14 +252,12 @@ impl RemoteState
 
     fn pending_queue_full(&self) -> bool
     {
-        // ---
         self.pending.len() >= self.max_pending
     }
 
     #[allow(dead_code)]
     fn is_unlimited(&self) -> bool
     {
-        // ---
         self.max_concurrent.is_none()
     }
 }
@@ -286,7 +274,6 @@ pub(crate) struct SessionManagerConfig
 
 pub(crate) struct SessionManager
 {
-    // ---
     /// Single remote peer.
     ///
     /// Future: `HashMap<RemoteId, RemoteState>`
@@ -330,8 +317,6 @@ pub(crate) struct SessionManager
 
 impl SessionManager
 {
-    // ---
-
     /// Create a new `SessionManager` with an already-established session.
     pub fn new(
         session: QueLaySessionPtr,
@@ -342,7 +327,6 @@ impl SessionManager
         config: SessionManagerConfig,
     ) -> (Self, SessionCommandQueue, mpsc::Receiver<SessionCommand>)
     {
-        // ---
         // Depth of 64 matches the AgentCmd channel — enough to absorb bursts
         // from the Thrift thread pool without back-pressuring callers.
         let (cmd_tx, cmd_rx) = mpsc::channel(64);
@@ -399,8 +383,6 @@ impl SessionManager
         priority: Priority,
     )
     {
-        // ---
-
         use WireStreamStartStatus as Status;
 
         let mut guard = self.remote.lock().await;
@@ -460,7 +442,6 @@ impl SessionManager
 
         if remote.pending_queue_full()
         {
-            // ---
             tracing::warn!(
                 %uuid, max_pending = remote.max_pending,
                 "stream_start: pending queue is full — rejecting stream");
@@ -492,7 +473,6 @@ impl SessionManager
     ///    re-armed via `session_restored` after each reconnect.
     pub async fn run(self: Arc<Self>, mut cmd_rx: mpsc::Receiver<SessionCommand>)
     {
-        // ---
         let mut state_rx = {
             let guard = self.remote.lock().await;
             match guard.as_ref().and_then(|r| r.session.as_ref())
@@ -663,7 +643,6 @@ impl SessionManager
     /// waits on `session_restored` before resuming with the new session.
     async fn accept_loop(self: Arc<Self>)
     {
-        // ---
         use super::{read_stream_open, StreamOpen};
 
         loop
@@ -810,7 +789,6 @@ impl SessionManager
     /// `accept_loop` deliver fresh streams after reconnect.
     async fn on_link_failed(&self)
     {
-        // ---
         tracing::warn!("link failed — clearing dead session, pausing active streams");
 
         let mut guard = self.remote.lock().await;
@@ -832,7 +810,6 @@ impl SessionManager
     /// Returns when a new live session is available.
     async fn reconnect_loop(&self) -> QueLaySessionPtr
     {
-        // ---
         let mut backoff = Duration::from_secs(1);
         const MAX_BACKOFF: Duration = Duration::from_secs(30);
 
@@ -862,7 +839,6 @@ impl SessionManager
     /// Single attempt to (re)establish the session based on `transport_cfg`.
     async fn try_connect(&self) -> anyhow::Result<QueLaySessionPtr>
     {
-        // ---
         let mut cfg_guard = self.transport_cfg.lock().await;
         match &mut *cfg_guard
         {
@@ -921,7 +897,6 @@ impl SessionManager
     #[cfg(feature = "test-hooks")]
     async fn link_enable(&self, enabled: bool)
     {
-        // ---
         tracing::info!(enabled, "link_enable");
 
         if !enabled
@@ -965,7 +940,6 @@ impl SessionManager
         session_cmd_tx: SessionCommandQueue,
     )
     {
-        // ---
         let session = match remote.session.as_ref()
         {
             Some(s) => s.clone(),
@@ -1024,7 +998,6 @@ impl SessionManager
         session_cmd_tx: SessionCommandQueue,
     )
     {
-        // ---
         if remote.pending.is_empty() || !remote.has_active_slot()
         {
             return;
@@ -1085,7 +1058,6 @@ impl SessionManager
         session_cmd_tx: SessionCommandQueue,
     ) -> anyhow::Result<super::UplinkHandle>
     {
-        // ---
         let mut stream = session.open_stream(pending.priority).await?;
 
         let header = StreamHeader {
@@ -1132,7 +1104,6 @@ impl SessionManager
     /// Handles whose pump has already exited are pruned.
     async fn restore_active(remote: &mut RemoteState)
     {
-        // ---
         let session = match remote.session.as_ref()
         {
             Some(s) => s,

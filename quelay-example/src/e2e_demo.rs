@@ -57,7 +57,6 @@ use uuid::Uuid;
 #[derive(Debug)]
 enum CallbackEvent
 {
-    // ---
     Started
     {
         port: u16
@@ -83,8 +82,6 @@ struct CallbackHandler
 
 impl QueLayCallbackSyncHandler for CallbackHandler
 {
-    // ---
-
     fn handle_ping(&self) -> thrift::Result<()>
     {
         Ok(())
@@ -97,7 +94,6 @@ impl QueLayCallbackSyncHandler for CallbackHandler
         port: i32,
     ) -> thrift::Result<()>
     {
-        // ---
         let _ = self
             .tx
             .lock()
@@ -166,8 +162,6 @@ struct CallbackServer
 
 impl CallbackServer
 {
-    // ---
-
     fn bind() -> anyhow::Result<Self>
     {
         let listener = std::net::TcpListener::bind("127.0.0.1:0")?;

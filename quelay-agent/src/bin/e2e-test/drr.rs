@@ -9,7 +9,6 @@ use crate::*;
 #[derive(Debug, Args)]
 pub struct DrrArgs
 {
-    // ---
     /// Number of priority-varied files to queue behind the anchor file (default: 3).
     #[arg(long, default_value_t = 3)]
     file_count: usize,
@@ -17,8 +16,6 @@ pub struct DrrArgs
 
 pub async fn cmd_drr(ctx: &TestContext, args: &DrrArgs) -> anyhow::Result<()>
 {
-    // ---
-
     println!("=== drr ===");
 
     ensure_agent_running(ctx.sender_c2i)?;
@@ -78,7 +75,6 @@ pub async fn cmd_drr(ctx: &TestContext, args: &DrrArgs) -> anyhow::Result<()>
 
         for (pri, label) in priorities.iter()
         {
-            // ---
             let small = 4 * 1024usize;
             let mut attrs = BTreeMap::new();
             attrs.insert("label".to_string(), label.to_string());
