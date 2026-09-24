@@ -7,14 +7,16 @@ use clap::Args;
 use crate::*;
 
 #[derive(Debug, Args)]
-pub struct DrrArgs {
+pub struct DrrArgs
+{
     // ---
     /// Number of priority-varied files to queue behind the anchor file (default: 3).
     #[arg(long, default_value_t = 3)]
     file_count: usize,
 }
 
-pub async fn cmd_drr(ctx: &TestContext, args: &DrrArgs) -> anyhow::Result<()> {
+pub async fn cmd_drr(ctx: &TestContext, args: &DrrArgs) -> anyhow::Result<()>
+{
     // ---
 
     println!("=== drr ===");
@@ -74,7 +76,8 @@ pub async fn cmd_drr(ctx: &TestContext, args: &DrrArgs) -> anyhow::Result<()> {
         );
         println!("  anchor queued (priority 0, {} KiB)", anchor_bytes / 1024);
 
-        for (pri, label) in priorities.iter() {
+        for (pri, label) in priorities.iter()
+        {
             // ---
             let small = 4 * 1024usize;
             let mut attrs = BTreeMap::new();
@@ -111,7 +114,8 @@ pub async fn cmd_drr(ctx: &TestContext, args: &DrrArgs) -> anyhow::Result<()> {
     let sender_ip = ctx.sender_c2i.ip();
     let receiver_ip = ctx.receiver_c2i.ip();
 
-    let anchor_port = match anchor_cb.recv_event_for(&anchor_uuid, timeout)? {
+    let anchor_port = match anchor_cb.recv_event_for(&anchor_uuid, timeout)?
+    {
         TestCallbackEvent::Started { port, .. } => port,
         other => anyhow::bail!("drr anchor: expected Started, got {other:?}"),
     };
@@ -123,7 +127,8 @@ pub async fn cmd_drr(ctx: &TestContext, args: &DrrArgs) -> anyhow::Result<()> {
         Ok(())
     });
 
-    let receiver_port = match receiver_cb.recv_event_for(&anchor_uuid, timeout)? {
+    let receiver_port = match receiver_cb.recv_event_for(&anchor_uuid, timeout)?
+    {
         TestCallbackEvent::Started { port, .. } => port,
         other => anyhow::bail!("drr anchor receiver: expected Started, got {other:?}"),
     };
@@ -135,16 +140,22 @@ pub async fn cmd_drr(ctx: &TestContext, args: &DrrArgs) -> anyhow::Result<()> {
         tcp.read_to_end(&mut received)?;
     }
 
-    match receiver_cb.recv_event_for(&anchor_uuid, timeout)? {
-        TestCallbackEvent::Done { .. } => {}
-        TestCallbackEvent::Failed { reason, .. } => {
+    match receiver_cb.recv_event_for(&anchor_uuid, timeout)?
+    {
+        TestCallbackEvent::Done { .. } =>
+        {}
+        TestCallbackEvent::Failed { reason, .. } =>
+        {
             anyhow::bail!("drr anchor receiver stream_failed: {reason}")
         }
         other => anyhow::bail!("drr anchor receiver: expected Done, got {other:?}"),
     }
-    match anchor_cb.recv_event_for(&anchor_uuid, timeout)? {
-        TestCallbackEvent::Done { .. } => {}
-        TestCallbackEvent::Failed { reason, .. } => {
+    match anchor_cb.recv_event_for(&anchor_uuid, timeout)?
+    {
+        TestCallbackEvent::Done { .. } =>
+        {}
+        TestCallbackEvent::Failed { reason, .. } =>
+        {
             anyhow::bail!("drr anchor sender stream_failed: {reason}")
         }
         other => anyhow::bail!("drr anchor sender: expected Done, got {other:?}"),

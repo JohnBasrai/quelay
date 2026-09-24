@@ -22,6 +22,12 @@ jobs:
         with:
           components: clippy, rustfmt
 
+      - name: Install cargo-binstall
+        uses: cargo-bins/cargo-binstall@main
+
+      - name: Install Cargo tools
+        run: cargo binstall --no-confirm cargo-nextest cargo-xfmt
+
       - name: Cache cargo registry
         uses: actions/cache@v4
         with:
@@ -40,13 +46,13 @@ jobs:
         run: ./scripts/thrift-compile.sh
 
       - name: Format check
-        run: cargo fmt --all -- --check
+        run: cargo xfmt --check
 
       - name: Clippy
         run: cargo clippy --workspace -- -D warnings
 
       - name: Unit tests
-        run: cargo test --workspace
+        run: cargo nextest run --workspace
 
       - name: Smoke test
         run: ./scripts/ci-smoke-test.sh

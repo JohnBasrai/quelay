@@ -21,12 +21,6 @@
 use std::time::Duration;
 
 // ---
-
-use tokio::sync::mpsc;
-use uuid::Uuid;
-
-// ---
-
 use quelay_domain::{
     //
     LinkState,
@@ -35,9 +29,7 @@ use quelay_domain::{
     Result,
     StreamInfo,
 };
-
 // ---
-
 use quelay_thrift::{
     // ---
     FailReason,
@@ -50,10 +42,11 @@ use quelay_thrift::{
     TQueLayCallbackSyncClient,
     TTcpChannel,
 };
-
 // ---
-
 use thrift::transport::{ReadHalf, WriteHalf};
+// ---
+use tokio::sync::mpsc;
+use uuid::Uuid;
 
 // ---------------------------------------------------------------------------
 // CallbackCmd
@@ -61,7 +54,8 @@ use thrift::transport::{ReadHalf, WriteHalf};
 
 /// Commands sent to the [`CallbackAgent`] thread via [`CallbackTx`].
 #[derive(Debug)]
-pub enum CallbackCmd {
+pub enum CallbackCmd
+{
     // ---
     /// (Re)connect to the given endpoint.
     ///
@@ -77,19 +71,22 @@ pub enum CallbackCmd {
     Ping,
 
     // --- stream lifecycle ---------------------------------------------------
-    StreamStarted {
+    StreamStarted
+    {
         uuid: Uuid,
         info: StreamInfo,
         port: u16,
     },
 
-    StreamProgress {
+    StreamProgress
+    {
         uuid: Uuid,
         bytes: u64,
         percent: Option<f64>,
     },
 
-    StreamDone {
+    StreamDone
+    {
         uuid: Uuid,
         bytes: u64,
         /// Total UDP wire bytes sent for this stream (including QUIC retransmits).
@@ -98,7 +95,8 @@ pub enum CallbackCmd {
         bytes_wire: u64,
     },
 
-    StreamFailed {
+    StreamFailed
+    {
         uuid: Uuid,
         code: FailReason,
         reason: String,
@@ -117,18 +115,22 @@ pub enum CallbackCmd {
 /// Cheap-clone sender handle.  Cloned into `AgentHandler`, `SessionManager`,
 /// `ActiveStream` actors, and the ping timer.
 #[derive(Clone)]
-pub struct CallbackTx {
+pub struct CallbackTx
+{
     // ---
     tx: mpsc::Sender<CallbackCmd>,
 }
 
 // ---
 
-impl CallbackTx {
+impl CallbackTx
+{
     // ---
     /// Send a command. Returns `false` if the channel has closed (agent exited).
-    pub async fn send(&self, cmd: CallbackCmd) -> bool {
-        if self.tx.send(cmd).await.is_err() {
+    pub async fn send(&self, cmd: CallbackCmd) -> bool
+    {
+        if self.tx.send(cmd).await.is_err()
+        {
             tracing::info!("CallbackAgent channel closed — dropping callback event");
             return false;
         }
@@ -144,20 +146,23 @@ impl CallbackTx {
 ///
 /// Constructed via [`CallbackAgent::spawn`], which returns a [`CallbackTx`]
 /// for sending commands and a [`PingTimerTx`] handle to start the ping timer.
-pub struct CallbackAgent {
+pub struct CallbackAgent
+{
     // ---
     rx: mpsc::Receiver<CallbackCmd>,
 }
 
 // ---
 
-impl CallbackAgent {
+impl CallbackAgent
+{
     // ---
     /// Spawn the callback agent thread and return the sender handle.
     ///
     /// The agent runs on a dedicated `std::thread` so the sync Thrift client
     /// never blocks the tokio runtime.1
-    pub fn spawn() -> Result<CallbackTx> {
+    pub fn spawn() -> Result<CallbackTx>
+    {
         // ---
         let (tx, rx) = mpsc::channel(64);
         let agent = CallbackAgent { rx };
@@ -172,39 +177,51 @@ impl CallbackAgent {
 
     // ---
 
-    fn run(mut self) {
+    fn run(mut self)
+    {
         // ---
         // `Option<Client>` — `None` until `Register` arrives or after a dead ping.
         let mut client: Option<BoxedCallbackClient> = None;
 
-        loop {
+        loop
+        {
             // Block on the async channel from a sync thread.
-            let cmd = match self.rx.blocking_recv() {
+            let cmd = match self.rx.blocking_recv()
+            {
                 Some(cmd) => cmd,
-                None => {
+                None =>
+                {
                     tracing::debug!("callback channel closed — agent exiting");
                     return;
                 }
             };
 
-            match cmd {
-                CallbackCmd::Register(endpoint) => {
+            match cmd
+            {
+                CallbackCmd::Register(endpoint) =>
+                {
                     tracing::info!(endpoint, "connecting callback");
                     client = None; // drop existing connection first
-                    match connect(&endpoint) {
-                        Ok(c) => {
+                    match connect(&endpoint)
+                    {
+                        Ok(c) =>
+                        {
                             tracing::info!(%endpoint, "callback socket connected");
                             client = Some(c);
                         }
-                        Err(e) => {
+                        Err(e) =>
+                        {
                             tracing::warn!(%endpoint, "callback connect failed: {e}");
                         }
                     }
                 }
 
-                CallbackCmd::Ping => {
-                    if let Some(ref mut c) = client {
-                        if let Err(e) = c.ping() {
+                CallbackCmd::Ping =>
+                {
+                    if let Some(ref mut c) = client
+                    {
+                        if let Err(e) = c.ping()
+                        {
                             tracing::info!("callback ping failed ({e}) — marking client dead");
                             client = None;
                         }
@@ -212,7 +229,8 @@ impl CallbackAgent {
                     // If no client, ping is silently dropped — nothing to probe.
                 }
 
-                CallbackCmd::StreamStarted { uuid, info, port } => {
+                CallbackCmd::StreamStarted { uuid, info, port } =>
+                {
                     fire(&mut client, |c| {
                         let wire_info = quelay_thrift::StreamInfo::from(info);
                         c.stream_started(uuid.to_string(), wire_info, port as i32)
@@ -223,7 +241,8 @@ impl CallbackAgent {
                     uuid,
                     bytes,
                     percent,
-                } => {
+                } =>
+                {
                     fire(&mut client, |c| {
                         let progress = quelay_thrift::ProgressInfo {
                             bytes_transferred: Some(bytes as i64),
@@ -238,24 +257,28 @@ impl CallbackAgent {
                     uuid,
                     bytes,
                     bytes_wire,
-                } => {
+                } =>
+                {
                     fire(&mut client, |c| {
                         c.stream_done(uuid.to_string(), bytes as i64, bytes_wire as i64)
                     });
                 }
 
-                CallbackCmd::StreamFailed { uuid, code, reason } => {
+                CallbackCmd::StreamFailed { uuid, code, reason } =>
+                {
                     fire(&mut client, |c| {
                         c.stream_failed(uuid.to_string(), code, reason.clone())
                     });
                 }
 
-                CallbackCmd::LinkStatus(state) => {
+                CallbackCmd::LinkStatus(state) =>
+                {
                     let wire: quelay_thrift::LinkState = state.into();
                     fire(&mut client, |c| c.link_status_update(wire));
                 }
 
-                CallbackCmd::QueueStatus(status) => {
+                CallbackCmd::QueueStatus(status) =>
+                {
                     let wire: quelay_thrift::QueueStatus = status.into();
                     fire(&mut client, |c| c.queue_status_update(wire));
                 }
@@ -272,14 +295,17 @@ impl CallbackAgent {
 ///
 /// Sends [`CallbackCmd::Ping`] every `interval` (default 60 s) via `tx`.
 /// The task exits when the channel closes.
-pub fn spawn_ping_timer(tx: CallbackTx, interval: Duration) {
+pub fn spawn_ping_timer(tx: CallbackTx, interval: Duration)
+{
     // ---
     tokio::spawn(async move {
         let mut ticker = tokio::time::interval(interval);
         ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
-        loop {
+        loop
+        {
             ticker.tick().await;
-            if !tx.send(CallbackCmd::Ping).await {
+            if !tx.send(CallbackCmd::Ping).await
+            {
                 break; // CallbackAgent has exited
             }
         }
@@ -303,7 +329,8 @@ type BoxedCallbackClient = QueLayCallbackSyncClient<
 /// `TTcpChannel::set_nodelay` was not added until thrift 0.23 (THRIFT-5739).
 /// On 0.17 we must build a `std::net::TcpStream` first, set `TCP_NODELAY`
 /// on it directly, then wrap it with `TTcpChannel::with_stream`.
-fn connect(endpoint: &str) -> anyhow::Result<BoxedCallbackClient> {
+fn connect(endpoint: &str) -> anyhow::Result<BoxedCallbackClient>
+{
     // ---
     let tcp = std::net::TcpStream::connect(endpoint)?;
     tcp.set_nodelay(true)?;
@@ -328,17 +355,21 @@ fn fire<F>(client: &mut Option<BoxedCallbackClient>, f: F)
 where
     F: FnOnce(&mut BoxedCallbackClient) -> thrift::Result<()>,
 {
-    let dead = match client.as_mut() {
+    let dead = match client.as_mut()
+    {
         None => return, // no client registered yet
-        Some(c) => match f(c) {
+        Some(c) => match f(c)
+        {
             Ok(()) => false,
-            Err(e) => {
+            Err(e) =>
+            {
                 tracing::warn!("callback send failed ({e}) — marking client dead");
                 true
             }
         },
     };
-    if dead {
+    if dead
+    {
         *client = None;
     }
 }

@@ -1,20 +1,20 @@
 //! [`QuicTransport`] — factory for [`QuicSession`]s.
 
-use std::net::SocketAddr;
-use std::sync::Arc;
+use std::{net::SocketAddr, sync::Arc};
 
 use async_trait::async_trait;
-use tokio::sync::mpsc;
-
 use quelay_domain::{
     // ---
     QueLayError,
     QueLayTransport,
     Result,
 };
+use tokio::sync::mpsc;
 
-use crate::session::QuicSession;
-use crate::tls::{client_config, server_config, CertBundle};
+use crate::{
+    session::QuicSession,
+    tls::{client_config, server_config, CertBundle},
+};
 
 // ---------------------------------------------------------------------------
 // CongestionAlgo
@@ -26,7 +26,8 @@ use crate::tls::{client_config, server_config, CertBundle};
 /// free of a direct dependency on the agent crate.  Callers convert with
 /// `.into()` or pass the value directly.
 #[derive(Debug, Clone, Default)]
-pub enum CongestionAlgo {
+pub enum CongestionAlgo
+{
     #[default]
     NewReno,
     Bbr,
@@ -34,7 +35,8 @@ pub enum CongestionAlgo {
 }
 
 /// Build a `quinn::TransportConfig` with the requested congestion controller.
-fn make_transport_config(algo: &CongestionAlgo) -> quinn::TransportConfig {
+fn make_transport_config(algo: &CongestionAlgo) -> quinn::TransportConfig
+{
     // ---
     let mut tc = quinn::TransportConfig::default();
 
@@ -47,14 +49,18 @@ fn make_transport_config(algo: &CongestionAlgo) -> quinn::TransportConfig {
             .into(),
     ));
 
-    match algo {
-        CongestionAlgo::NewReno => {
+    match algo
+    {
+        CongestionAlgo::NewReno =>
+        {
             tc.congestion_controller_factory(Arc::new(quinn::congestion::NewRenoConfig::default()));
         }
-        CongestionAlgo::Bbr => {
+        CongestionAlgo::Bbr =>
+        {
             tc.congestion_controller_factory(Arc::new(quinn::congestion::BbrConfig::default()));
         }
-        CongestionAlgo::Cubic => {
+        CongestionAlgo::Cubic =>
+        {
             tc.congestion_controller_factory(Arc::new(quinn::congestion::CubicConfig::default()));
         }
     }
@@ -65,7 +71,8 @@ fn make_transport_config(algo: &CongestionAlgo) -> quinn::TransportConfig {
 // QuicTransport
 // ---------------------------------------------------------------------------
 
-pub struct QuicTransport {
+pub struct QuicTransport
+{
     // ---
     endpoint: quinn::Endpoint,
     server_name: Option<String>,
@@ -73,10 +80,12 @@ pub struct QuicTransport {
 
 // ---
 
-impl QuicTransport {
+impl QuicTransport
+{
     // ---
     /// Create a server-side transport bound to `bind_addr`.
-    pub fn server(bundle: CertBundle, bind_addr: SocketAddr, algo: CongestionAlgo) -> Result<Self> {
+    pub fn server(bundle: CertBundle, bind_addr: SocketAddr, algo: CongestionAlgo) -> Result<Self>
+    {
         let tls = server_config(&bundle).map_err(QueLayError::from)?;
 
         let quinn_tls = quinn::crypto::rustls::QuicServerConfig::try_from(tls)
@@ -105,7 +114,8 @@ impl QuicTransport {
         server_cert_der: rustls_pki_types::CertificateDer<'static>,
         server_name: String,
         algo: CongestionAlgo,
-    ) -> Result<Self> {
+    ) -> Result<Self>
+    {
         // ---
         let tls = client_config(server_cert_der).map_err(QueLayError::from)?;
 
@@ -133,7 +143,8 @@ impl QuicTransport {
     // ---
 
     /// Return the local address the endpoint is bound to.
-    pub fn local_addr(&self) -> std::io::Result<SocketAddr> {
+    pub fn local_addr(&self) -> std::io::Result<SocketAddr>
+    {
         // ---
         self.endpoint.local_addr()
     }
@@ -142,11 +153,13 @@ impl QuicTransport {
 // ---
 
 #[async_trait]
-impl QueLayTransport for QuicTransport {
+impl QueLayTransport for QuicTransport
+{
     // ---
     type Session = QuicSession;
 
-    async fn connect(&self, remote: SocketAddr) -> Result<QuicSession> {
+    async fn connect(&self, remote: SocketAddr) -> Result<QuicSession>
+    {
         // ---
         let server_name = self.server_name.as_deref().ok_or_else(|| {
             QueLayError::Transport("connect() called on server-side transport".into())
@@ -164,21 +177,26 @@ impl QueLayTransport for QuicTransport {
 
     // ---
 
-    async fn listen(&self, _bind: SocketAddr) -> Result<mpsc::Receiver<QuicSession>> {
+    async fn listen(&self, _bind: SocketAddr) -> Result<mpsc::Receiver<QuicSession>>
+    {
         // ---
         let endpoint = self.endpoint.clone();
         let (tx, rx) = mpsc::channel(16);
 
         tokio::spawn(async move {
-            while let Some(incoming) = endpoint.accept().await {
+            while let Some(incoming) = endpoint.accept().await
+            {
                 let tx = tx.clone();
                 tokio::spawn(async move {
-                    match incoming.await {
-                        Ok(conn) => {
+                    match incoming.await
+                    {
+                        Ok(conn) =>
+                        {
                             let session = QuicSession::new(conn);
                             tx.send(session).await.ok();
                         }
-                        Err(e) => {
+                        Err(e) =>
+                        {
                             tracing::warn!("incoming connection failed: {e}");
                         }
                     }

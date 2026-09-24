@@ -4,9 +4,6 @@
 //! management live above this layer in the session manager (future crate).
 
 use async_trait::async_trait;
-use tokio::sync::watch;
-use uuid::Uuid;
-
 use quelay_domain::{
     // ---
     ConnStats,
@@ -17,9 +14,10 @@ use quelay_domain::{
     QueLayStreamPtr,
     Result,
 };
+use tokio::sync::watch;
+use uuid::Uuid;
 
-use crate::error::QuicError;
-use crate::stream::QuicStream;
+use crate::{error::QuicError, stream::QuicStream};
 
 // ---------------------------------------------------------------------------
 // QuicSession
@@ -29,7 +27,8 @@ use crate::stream::QuicStream;
 ///
 /// One `QuicSession` per remote peer. Multiple peers → multiple sessions,
 /// managed externally by the session manager layer.
-pub struct QuicSession {
+pub struct QuicSession
+{
     // ---
     conn: quinn::Connection,
     link_state_tx: watch::Sender<LinkState>,
@@ -38,10 +37,12 @@ pub struct QuicSession {
 
 // ---
 
-impl QuicSession {
+impl QuicSession
+{
     // ---
     /// Wrap an established [`quinn::Connection`] in a `QuicSession`.
-    pub fn new(conn: quinn::Connection) -> Self {
+    pub fn new(conn: quinn::Connection) -> Self
+    {
         // ---
         let (tx, rx) = watch::channel(LinkState::Normal);
         Self {
@@ -54,7 +55,8 @@ impl QuicSession {
     // ---
 
     /// Update the observable link state and notify all watchers.
-    pub fn set_link_state(&self, state: LinkState) {
+    pub fn set_link_state(&self, state: LinkState)
+    {
         // ---
         self.link_state_tx.send_replace(state);
     }
@@ -63,9 +65,11 @@ impl QuicSession {
 // ---
 
 #[async_trait]
-impl QueLaySession for QuicSession {
+impl QueLaySession for QuicSession
+{
     // ---
-    async fn open_stream(&self, _priority: Priority) -> Result<QueLayStreamPtr> {
+    async fn open_stream(&self, _priority: Priority) -> Result<QueLayStreamPtr>
+    {
         // ---
         let (send, recv) = self
             .conn
@@ -86,7 +90,8 @@ impl QueLaySession for QuicSession {
 
     // ---
 
-    async fn accept_stream(&self) -> Result<QueLayStreamPtr> {
+    async fn accept_stream(&self) -> Result<QueLayStreamPtr>
+    {
         // ---
         let (send, recv) = self
             .conn
@@ -107,13 +112,15 @@ impl QueLaySession for QuicSession {
 
     // ---
 
-    fn link_state(&self) -> LinkState {
+    fn link_state(&self) -> LinkState
+    {
         *self.link_state_rx.borrow()
     }
 
     // ---
 
-    fn link_state_rx(&self) -> watch::Receiver<LinkState> {
+    fn link_state_rx(&self) -> watch::Receiver<LinkState>
+    {
         self.link_state_rx.clone()
     }
 
@@ -121,7 +128,8 @@ impl QueLaySession for QuicSession {
 
     /// Returns cumulative UDP bytes sent on the wire for this connection,
     /// including all QUIC retransmits.  Resets to zero on each new connection.
-    fn wire_bytes_sent(&self) -> u64 {
+    fn wire_bytes_sent(&self) -> u64
+    {
         self.conn.stats().udp_tx.bytes
     }
 
@@ -129,7 +137,8 @@ impl QueLaySession for QuicSession {
 
     /// Returns a snapshot of QUIC path statistics for this connection.
     /// All counters reset to zero on each new connection.
-    fn conn_stats(&self) -> ConnStats {
+    fn conn_stats(&self) -> ConnStats
+    {
         let s = self.conn.stats();
         ConnStats {
             sent_packets: s.path.sent_packets,
@@ -143,7 +152,8 @@ impl QueLaySession for QuicSession {
 
     // ---
 
-    async fn close(&self) -> Result<()> {
+    async fn close(&self) -> Result<()>
+    {
         // ---
         self.set_link_state(LinkState::Failed);
         self.conn.close(quinn::VarInt::from_u32(0), b"closed");

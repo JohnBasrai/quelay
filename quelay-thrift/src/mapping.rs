@@ -11,8 +11,6 @@
 
 use std::collections::HashMap;
 
-use uuid::Uuid;
-
 use quelay_domain::{
     // ---
     ConnStats as DomainConnStats,
@@ -21,6 +19,7 @@ use quelay_domain::{
     StreamInfo as DomainStreamInfo,
     TransferProgress,
 };
+use uuid::Uuid;
 
 use crate::gen::{
     // ---
@@ -35,9 +34,11 @@ use crate::gen::{
 // ConnStats
 // ---------------------------------------------------------------------------
 
-impl From<DomainConnStats> for WireConnStats {
+impl From<DomainConnStats> for WireConnStats
+{
     // ---
-    fn from(d: DomainConnStats) -> Self {
+    fn from(d: DomainConnStats) -> Self
+    {
         WireConnStats {
             sent_packets: Some(d.sent_packets as i64),
             lost_packets: Some(d.lost_packets as i64),
@@ -49,9 +50,11 @@ impl From<DomainConnStats> for WireConnStats {
     }
 }
 
-impl From<WireConnStats> for DomainConnStats {
+impl From<WireConnStats> for DomainConnStats
+{
     // ---
-    fn from(w: WireConnStats) -> Self {
+    fn from(w: WireConnStats) -> Self
+    {
         DomainConnStats {
             sent_packets: w.sent_packets.unwrap_or(0) as u64,
             lost_packets: w.lost_packets.unwrap_or(0) as u64,
@@ -67,11 +70,14 @@ impl From<WireConnStats> for DomainConnStats {
 // LinkState
 // ---------------------------------------------------------------------------
 
-impl From<WireLinkState> for DomainLinkState {
+impl From<WireLinkState> for DomainLinkState
+{
     // ---
-    fn from(w: WireLinkState) -> Self {
+    fn from(w: WireLinkState) -> Self
+    {
         // ---
-        match w {
+        match w
+        {
             WireLinkState::CONNECTING => DomainLinkState::Connecting,
             WireLinkState::NORMAL => DomainLinkState::Normal,
             WireLinkState::DEGRADED => DomainLinkState::Degraded,
@@ -81,11 +87,14 @@ impl From<WireLinkState> for DomainLinkState {
     }
 }
 
-impl From<DomainLinkState> for WireLinkState {
+impl From<DomainLinkState> for WireLinkState
+{
     // ---
-    fn from(d: DomainLinkState) -> Self {
+    fn from(d: DomainLinkState) -> Self
+    {
         // ---
-        match d {
+        match d
+        {
             DomainLinkState::Connecting => WireLinkState::CONNECTING,
             DomainLinkState::Normal => WireLinkState::NORMAL,
             DomainLinkState::Degraded => WireLinkState::DEGRADED,
@@ -98,9 +107,11 @@ impl From<DomainLinkState> for WireLinkState {
 // StreamInfo
 // ---------------------------------------------------------------------------
 
-impl From<WireStreamInfo> for DomainStreamInfo {
+impl From<WireStreamInfo> for DomainStreamInfo
+{
     // ---
-    fn from(w: WireStreamInfo) -> Self {
+    fn from(w: WireStreamInfo) -> Self
+    {
         // ---
         DomainStreamInfo {
             size_bytes: w.size_bytes.map(|v| v as u64),
@@ -115,9 +126,11 @@ impl From<WireStreamInfo> for DomainStreamInfo {
     }
 }
 
-impl From<DomainStreamInfo> for WireStreamInfo {
+impl From<DomainStreamInfo> for WireStreamInfo
+{
     // ---
-    fn from(d: DomainStreamInfo) -> Self {
+    fn from(d: DomainStreamInfo) -> Self
+    {
         // ---
         WireStreamInfo {
             size_bytes: d.size_bytes.map(|v| v as i64),
@@ -138,11 +151,9 @@ impl From<DomainStreamInfo> for WireStreamInfo {
 /// fields that live outside the struct on the wire (`uuid`, `throughput_bps`).
 // Used by the callback push path — not yet wired.
 #[allow(dead_code)]
-pub fn progress_from_wire(
-    uuid: Uuid,
-    w: WireProgressInfo,
-    throughput_bps: f64,
-) -> TransferProgress {
+pub fn progress_from_wire(uuid: Uuid, w: WireProgressInfo, throughput_bps: f64)
+    -> TransferProgress
+{
     // ---
     TransferProgress {
         uuid,
@@ -155,7 +166,8 @@ pub fn progress_from_wire(
 /// Build a [`WireProgressInfo`] from a [`TransferProgress`].
 ///
 /// `throughput_bps` is dropped — it is not in the IDL.
-pub fn progress_to_wire(d: &TransferProgress) -> WireProgressInfo {
+pub fn progress_to_wire(d: &TransferProgress) -> WireProgressInfo
+{
     // ---
     WireProgressInfo {
         bytes_transferred: Some(d.bytes_transferred as i64),
@@ -168,9 +180,11 @@ pub fn progress_to_wire(d: &TransferProgress) -> WireProgressInfo {
 // QueueStatus
 // ---------------------------------------------------------------------------
 
-impl From<WireQueueStatus> for DomainQueueStatus {
+impl From<WireQueueStatus> for DomainQueueStatus
+{
     // ---
-    fn from(w: WireQueueStatus) -> Self {
+    fn from(w: WireQueueStatus) -> Self
+    {
         // ---
         DomainQueueStatus {
             active_count: w.active_count.unwrap_or(0),
@@ -186,9 +200,11 @@ impl From<WireQueueStatus> for DomainQueueStatus {
     }
 }
 
-impl From<DomainQueueStatus> for WireQueueStatus {
+impl From<DomainQueueStatus> for WireQueueStatus
+{
     // ---
-    fn from(d: DomainQueueStatus) -> Self {
+    fn from(d: DomainQueueStatus) -> Self
+    {
         // ---
         WireQueueStatus {
             active_count: Some(d.active_count),
@@ -203,10 +219,13 @@ impl From<DomainQueueStatus> for WireQueueStatus {
 // Display for wire types
 // ---------------------------------------------------------------------------
 
-impl std::fmt::Display for WireLinkState {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl std::fmt::Display for WireLinkState
+{
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result
+    {
         // ---
-        let s = match *self {
+        let s = match *self
+        {
             WireLinkState::CONNECTING => "Connecting",
             WireLinkState::NORMAL => "Normal",
             WireLinkState::DEGRADED => "Degraded",

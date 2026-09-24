@@ -6,8 +6,6 @@
 
 use std::collections::HashMap;
 
-use uuid::Uuid;
-
 use quelay_domain::{
     // ---
     LinkState as DomainLinkState,
@@ -22,10 +20,12 @@ use quelay_thrift::{
     QueueStatus as WireQueueStatus,
     StreamInfo as WireStreamInfo,
 };
+use uuid::Uuid;
 
 // ---
 
-pub fn run() {
+pub fn run()
+{
     // ---
     round_trip_link_state();
     round_trip_stream_info();
@@ -35,7 +35,8 @@ pub fn run() {
 
 // ---------------------------------------------------------------------------
 
-fn round_trip_link_state() {
+fn round_trip_link_state()
+{
     // ---
     let cases = [
         DomainLinkState::Connecting,
@@ -44,7 +45,8 @@ fn round_trip_link_state() {
         DomainLinkState::Failed,
     ];
 
-    for original in cases {
+    for original in cases
+    {
         let wire: WireLinkState = original.into();
         let restored: DomainLinkState = wire.into();
         assert_eq!(original, restored);
@@ -55,7 +57,8 @@ fn round_trip_link_state() {
 
 // ---------------------------------------------------------------------------
 
-fn round_trip_stream_info() {
+fn round_trip_stream_info()
+{
     // ---
     let original = DomainStreamInfo {
         size_bytes: Some(1024 * 1024),
@@ -81,7 +84,8 @@ fn round_trip_stream_info() {
 
 // ---------------------------------------------------------------------------
 
-fn round_trip_queue_status() {
+fn round_trip_queue_status()
+{
     // ---
     let uuids = vec![Uuid::new_v4(), Uuid::new_v4(), Uuid::new_v4()];
 
@@ -109,7 +113,8 @@ fn round_trip_queue_status() {
 
 // ---------------------------------------------------------------------------
 
-fn round_trip_progress() {
+fn round_trip_progress()
+{
     // ---
     let progress = TransferProgress {
         uuid: Uuid::new_v4(),

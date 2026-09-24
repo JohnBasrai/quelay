@@ -1,13 +1,13 @@
-use std::net::SocketAddr;
-use std::sync::Arc;
+use std::{net::SocketAddr, sync::Arc};
 
 use async_trait::async_trait;
-use tokio::io::{AsyncRead, AsyncWrite};
-use tokio::sync::watch;
+use tokio::{
+    io::{AsyncRead, AsyncWrite},
+    sync::watch,
+};
 use uuid::Uuid;
 
-use super::Priority;
-use super::Result;
+use super::{Priority, Result};
 
 // ---------------------------------------------------------------------------
 // LinkState
@@ -15,7 +15,8 @@ use super::Result;
 
 /// Observable state of the underlying link.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum LinkState {
+pub enum LinkState
+{
     // ---
     /// Attempting to establish or re-establish the connection.
     Connecting,
@@ -45,7 +46,8 @@ pub enum LinkState {
 /// `#[async_trait]` is required here so that `finish` and `reset` are
 /// dyn-compatible, allowing `QueLayStreamPtr = Box<dyn QueLayStream>` to compile.
 #[async_trait]
-pub trait QueLayStream: AsyncRead + AsyncWrite + Send + Unpin {
+pub trait QueLayStream: AsyncRead + AsyncWrite + Send + Unpin
+{
     // ---
     /// Stable identifier for this stream. Survives reconnection.
     fn stream_id(&self) -> Uuid;
@@ -74,17 +76,21 @@ pub type QueLayStreamPtr = Box<dyn QueLayStream>;
 // the `S: QueLayStream` bound in its own `QueLayStream` impl, enabling
 // the session manager to box it as a new `QueLayStreamPtr`.
 #[async_trait]
-impl QueLayStream for Box<dyn QueLayStream> {
+impl QueLayStream for Box<dyn QueLayStream>
+{
     // ---
-    fn stream_id(&self) -> Uuid {
+    fn stream_id(&self) -> Uuid
+    {
         (**self).stream_id()
     }
 
-    async fn finish(&mut self) -> Result<()> {
+    async fn finish(&mut self) -> Result<()>
+    {
         (**self).finish().await
     }
 
-    async fn reset(&mut self, code: u64) -> Result<()> {
+    async fn reset(&mut self, code: u64) -> Result<()>
+    {
         (**self).reset(code).await
     }
 }
@@ -103,7 +109,8 @@ impl QueLayStream for Box<dyn QueLayStream> {
 /// loopback transports) should return a zeroed `ConnStats`.  Zero values
 /// disable the corresponding reporting in callers.
 #[derive(Debug, Clone, Copy, Default)]
-pub struct ConnStats {
+pub struct ConnStats
+{
     // ---
     /// Total packets sent, including retransmits.
     pub sent_packets: u64,
@@ -143,7 +150,8 @@ pub type QueLaySessionPtr = Arc<dyn QueLaySession>;
 /// the session layer reconnects transparently and maps in-flight streams
 /// back to their UUIDs via the spool.
 #[async_trait]
-pub trait QueLaySession: Send + Sync {
+pub trait QueLaySession: Send + Sync
+{
     // ---
     /// Open a new outbound stream.
     ///
@@ -204,7 +212,8 @@ pub trait QueLaySession: Send + Sync {
 ///
 /// Implementations: `quelay_quic::QuicTransport`.
 #[async_trait]
-pub trait QueLayTransport: Send + Sync {
+pub trait QueLayTransport: Send + Sync
+{
     // ---
     type Session: QueLaySession + 'static;
 

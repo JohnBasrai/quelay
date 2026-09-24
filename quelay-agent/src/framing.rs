@@ -70,14 +70,11 @@
 use std::collections::HashMap;
 
 // ---
-
+use quelay_domain::{QueLayError, Result};
+// ---
 use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use uuid::Uuid;
-
-// ---
-
-use quelay_domain::{QueLayError, Result};
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -135,7 +132,8 @@ pub const ACK_INTERVAL: u64 = 64 * 1024; // 64 KiB
 /// file name, checksum, and other file-level metadata in `attrs` rather than
 /// a dedicated field.  Common keys: `"filename"`, `"sha256"`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct StreamHeader {
+pub struct StreamHeader
+{
     // ---
     /// Stable stream identity.  Survives reconnections.
     pub uuid: Uuid,
@@ -169,7 +167,8 @@ pub struct StreamHeader {
 /// receiver never saw — an unrecoverable gap — and the receiver fails the
 /// stream.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ReconnectHeader {
+pub struct ReconnectHeader
+{
     // ---
     /// Stable stream identity — matches the original [`StreamHeader::uuid`].
     pub uuid: Uuid,
@@ -185,7 +184,8 @@ pub struct ReconnectHeader {
 
 /// Decoded result of [`read_stream_open`]: new stream or reconnect.
 #[derive(Debug)]
-pub enum StreamOpen {
+pub enum StreamOpen
+{
     // ---
     /// New transfer — full metadata in the header.
     New(StreamHeader),
@@ -210,7 +210,8 @@ where
     let payload = serde_json::to_vec(header)
         .map_err(|e| QueLayError::Transport(format!("framing serialize error: {e}")))?;
 
-    if payload.len() > MAX_JSON_PAYLOAD {
+    if payload.len() > MAX_JSON_PAYLOAD
+    {
         return Err(QueLayError::Transport(format!(
             "framing payload {} exceeds max {MAX_JSON_PAYLOAD}",
             payload.len()
@@ -257,7 +258,8 @@ where
     let payload = serde_json::to_vec(header)
         .map_err(|e| QueLayError::Transport(format!("framing serialize error: {e}")))?;
 
-    if payload.len() > MAX_JSON_PAYLOAD {
+    if payload.len() > MAX_JSON_PAYLOAD
+    {
         return Err(QueLayError::Transport(format!(
             "framing payload {} exceeds max {MAX_JSON_PAYLOAD}",
             payload.len()
@@ -311,7 +313,8 @@ where
 
     let header = FixedHeader::parse(&fixed)?;
 
-    if header.payload_len as usize > MAX_JSON_PAYLOAD {
+    if header.payload_len as usize > MAX_JSON_PAYLOAD
+    {
         return Err(QueLayError::Transport(format!(
             "framing payload_len {} exceeds max {MAX_JSON_PAYLOAD}",
             header.payload_len
@@ -324,13 +327,16 @@ where
         .await
         .map_err(|e| QueLayError::Transport(format!("framing read payload: {e}")))?;
 
-    match header.opcode {
-        OP_NEW_STREAM => {
+    match header.opcode
+    {
+        OP_NEW_STREAM =>
+        {
             let header: StreamHeader = serde_json::from_slice(&payload)
                 .map_err(|e| QueLayError::Transport(format!("framing deserialize error: {e}")))?;
             Ok(StreamOpen::New(header))
         }
-        OP_RECONNECT => {
+        OP_RECONNECT =>
+        {
             let header: ReconnectHeader = serde_json::from_slice(&payload)
                 .map_err(|e| QueLayError::Transport(format!("framing deserialize error: {e}")))?;
             Ok(StreamOpen::Reconnect(header))
@@ -357,11 +363,15 @@ where
 /// [`ACK_INTERVAL`] bytes written to its client socket.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type")]
-pub enum WormholeMsg {
+pub enum WormholeMsg
+{
     // ---
     /// Periodic acknowledgement — receiver has written this many bytes to its
     /// client socket.  Sender advances spool `A` and frees buffer space.
-    Ack { bytes_received: u64 },
+    Ack
+    {
+        bytes_received: u64
+    },
 
     /// Receiver finished writing all bytes successfully (sent after QUIC FIN).
     Done,
@@ -369,7 +379,10 @@ pub enum WormholeMsg {
     /// Receiver encountered a fatal error.
     ///
     /// `code` maps to [`quelay_thrift::FailReason`] wire values.
-    Error { code: u32, reason: String },
+    Error
+    {
+        code: u32, reason: String
+    },
 }
 
 // ---
@@ -386,7 +399,8 @@ where
     let payload = serde_json::to_vec(msg)
         .map_err(|e| QueLayError::Transport(format!("wormhole serialize error: {e}")))?;
 
-    if payload.len() > MAX_JSON_PAYLOAD {
+    if payload.len() > MAX_JSON_PAYLOAD
+    {
         return Err(QueLayError::Transport(format!(
             "wormhole payload {} exceeds max {MAX_JSON_PAYLOAD}",
             payload.len()
@@ -435,7 +449,8 @@ where
     let header = FixedHeader::parse(&fixed)?;
     let payload_len = header.payload_len as usize;
 
-    if payload_len > MAX_JSON_PAYLOAD {
+    if payload_len > MAX_JSON_PAYLOAD
+    {
         return Err(QueLayError::Transport(format!(
             "wormhole payload_len {payload_len} exceeds max {MAX_JSON_PAYLOAD}"
         )));
@@ -509,7 +524,8 @@ where
 
 /// One decoded chunk read from the QUIC stream.
 #[derive(Debug)]
-pub struct Chunk {
+pub struct Chunk
+{
     // ---
     /// Absolute byte offset of the first payload byte in the logical stream.
     pub stream_offset: u64,
@@ -533,9 +549,11 @@ where
     let mut hdr = [0u8; CHUNK_HEADER_LEN];
 
     // Peek at the first byte to distinguish clean EOF from a real header.
-    match stream.read(&mut hdr[..1]).await {
+    match stream.read(&mut hdr[..1]).await
+    {
         Ok(0) => return Ok(None), // clean EOF / FIN
-        Ok(_) => {}
+        Ok(_) =>
+        {}
         Err(e) => return Err(QueLayError::Transport(format!("chunk read header[0]: {e}"))),
     }
 
@@ -551,7 +569,8 @@ where
 
     let payload_len = u16::from_be_bytes([hdr[8], hdr[9]]) as usize;
 
-    if payload_len > CHUNK_SIZE {
+    if payload_len > CHUNK_SIZE
+    {
         return Err(QueLayError::Transport(format!(
             "chunk payload_len {payload_len} exceeds CHUNK_SIZE {CHUNK_SIZE}"
         )));
@@ -569,26 +588,31 @@ where
     }))
 }
 
-struct FixedHeader {
+struct FixedHeader
+{
     // ---
     opcode: u8,
     payload_len: u32,
 }
 
-impl FixedHeader {
+impl FixedHeader
+{
     // ---
 
-    fn parse(buf: &[u8; FIXED_HEADER_LEN]) -> Result<Self> {
+    fn parse(buf: &[u8; FIXED_HEADER_LEN]) -> Result<Self>
+    {
         // ---
 
-        if buf[0] != MAGIC {
+        if buf[0] != MAGIC
+        {
             return Err(QueLayError::Transport(format!(
                 "framing bad magic: expected 0x{MAGIC:02X}, got 0x{:02X}",
                 buf[0]
             )));
         }
 
-        if buf[1] != VERSION {
+        if buf[1] != VERSION
+        {
             return Err(QueLayError::Transport(format!(
                 "framing unsupported version: expected 0x{VERSION:02X}, got 0x{:02X}",
                 buf[1]
@@ -601,7 +625,8 @@ impl FixedHeader {
 
         let payload_len = u32::from_be_bytes([buf[4], buf[5], buf[6], buf[7]]) as usize;
 
-        if payload_len > MAX_JSON_PAYLOAD {
+        if payload_len > MAX_JSON_PAYLOAD
+        {
             return Err(QueLayError::Transport(format!(
                 "framing payload_len {payload_len} exceeds max {MAX_JSON_PAYLOAD}"
             )));
@@ -613,7 +638,8 @@ impl FixedHeader {
         })
     }
 
-    fn bytes(&self) -> [u8; FIXED_HEADER_LEN] {
+    fn bytes(&self) -> [u8; FIXED_HEADER_LEN]
+    {
         // ---
         let mut buf = [0u8; FIXED_HEADER_LEN];
 
@@ -639,7 +665,8 @@ impl FixedHeader {
     clippy::panic,
     clippy::panic_in_result_fn
 )]
-mod tests {
+mod tests
+{
     // ---
     use std::io::Cursor;
 
@@ -651,7 +678,8 @@ mod tests {
 
     /// Round-trip a new-stream header through write_connect_header / read_stream_open.
     #[tokio::test]
-    async fn round_trip_new_stream() {
+    async fn round_trip_new_stream()
+    {
         // ---
         let original = StreamHeader {
             uuid: Uuid::new_v4(),
@@ -672,7 +700,8 @@ mod tests {
 
         let mut reader = BufReader::new(Cursor::new(buf));
         let open = read_stream_open(&mut reader).await.unwrap();
-        let recovered = match open {
+        let recovered = match open
+        {
             StreamOpen::New(h) => h,
             other => panic!("expected New, got {other:?}"),
         };
@@ -695,7 +724,8 @@ mod tests {
 
     /// Round-trip a reconnect header through write_reconnect_header / read_stream_open.
     #[tokio::test]
-    async fn round_trip_reconnect() {
+    async fn round_trip_reconnect()
+    {
         // ---
         let original = ReconnectHeader {
             uuid: Uuid::new_v4(),
@@ -707,7 +737,8 @@ mod tests {
 
         let mut reader = BufReader::new(Cursor::new(buf));
         let open = read_stream_open(&mut reader).await.unwrap();
-        let recovered = match open {
+        let recovered = match open
+        {
             StreamOpen::Reconnect(h) => h,
             other => panic!("expected Reconnect, got {other:?}"),
         };
@@ -720,7 +751,8 @@ mod tests {
 
     /// Payload at the limit is accepted; one byte over is rejected before allocation.
     #[tokio::test]
-    async fn payload_size_clamped() {
+    async fn payload_size_clamped()
+    {
         // ---
         // Exactly at the limit — passes the size check (fails JSON parse, not size).
         let len = MAX_JSON_PAYLOAD as u32;
@@ -751,7 +783,8 @@ mod tests {
     // ---
 
     #[tokio::test]
-    async fn bad_magic_rejected() {
+    async fn bad_magic_rejected()
+    {
         // ---
         let buf = vec![0xFFu8, VERSION, OP_NEW_STREAM, 0x00, 0, 0, 0, 2, b'{', b'}'];
         let mut reader = BufReader::new(Cursor::new(buf));
@@ -762,7 +795,8 @@ mod tests {
     // ---
 
     #[tokio::test]
-    async fn unknown_opcode_rejected() {
+    async fn unknown_opcode_rejected()
+    {
         // ---
         let buf = vec![MAGIC, VERSION, 0xFFu8, 0x00, 0, 0, 0, 2, b'{', b'}'];
         let mut reader = BufReader::new(Cursor::new(buf));
@@ -774,7 +808,8 @@ mod tests {
 
     /// Round-trip a chunk through write_chunk / read_chunk.
     #[tokio::test]
-    async fn round_trip_chunk() {
+    async fn round_trip_chunk()
+    {
         // ---
         let offset = 131_072u64;
         let data = b"hello quelay chunk";
@@ -795,7 +830,8 @@ mod tests {
 
     /// Clean EOF on chunk read returns None.
     #[tokio::test]
-    async fn chunk_eof_returns_none() {
+    async fn chunk_eof_returns_none()
+    {
         // ---
         let mut reader = BufReader::new(Cursor::new(vec![]));
         let result = read_chunk(&mut reader).await.unwrap();
@@ -806,7 +842,8 @@ mod tests {
 
     /// Chunk payload_len exceeding CHUNK_SIZE is rejected before allocation.
     #[tokio::test]
-    async fn chunk_oversize_rejected() {
+    async fn chunk_oversize_rejected()
+    {
         // ---
         let bad_len = (CHUNK_SIZE + 1) as u16;
         let mut buf = vec![0u8; CHUNK_HEADER_LEN];

@@ -45,6 +45,17 @@ mod tuner;
 // Gateway re-exports
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// Imports
+// ---------------------------------------------------------------------------
+use std::{
+    collections::BTreeMap,
+    net::SocketAddr,
+    time::{Duration, Instant},
+};
+
+// ---
+use anyhow::Context as _;
 pub use callback::{CallbackActor, Role};
 pub use cic::{
     // ---
@@ -55,33 +66,8 @@ pub use cic::{
     CicMsg,
     TunerPair,
 };
-pub use tuner::{
-    // ---
-    spawn_receiver,
-    spawn_sender,
-    TunerCmd,
-    TunerOutcome,
-    TunerResult,
-};
-use uuid::Uuid;
-
-// ---------------------------------------------------------------------------
-// Imports
-// ---------------------------------------------------------------------------
-
-use std::collections::BTreeMap;
-use std::net::SocketAddr;
-use std::time::{Duration, Instant};
-
-// ---
-
-use anyhow::Context as _;
 use clap::Parser;
-use rand::{RngCore, SeedableRng};
-use tokio::sync::mpsc;
-
 // ---
-
 use quelay_thrift::{
     // ---
     QueLayAgentSyncClient,
@@ -101,6 +87,17 @@ use quelay_thrift::{
     TServer,
     TTcpChannel,
 };
+use rand::{RngCore, SeedableRng};
+use tokio::sync::mpsc;
+pub use tuner::{
+    // ---
+    spawn_receiver,
+    spawn_sender,
+    TunerCmd,
+    TunerOutcome,
+    TunerResult,
+};
+use uuid::Uuid;
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -130,7 +127,8 @@ const BW_TOLERANCE: f64 = 0.10;
 /// streams to the configured aggregate cap.
 #[derive(Debug, Parser)]
 #[command(name = "bw-cap-test")]
-struct Cli {
+struct Cli
+{
     // ---
     /// C2I address of the sending agent (air side).
     ///
@@ -164,15 +162,18 @@ struct Cli {
 // ---------------------------------------------------------------------------
 
 #[tokio::main]
-async fn main() {
+async fn main()
+{
     // ---
-    if let Err(e) = real_main().await {
+    if let Err(e) = real_main().await
+    {
         eprintln!("\nERROR: {e:#}\n");
         std::process::exit(1);
     }
 }
 
-async fn real_main() -> anyhow::Result<()> {
+async fn real_main() -> anyhow::Result<()>
+{
     // ---
     let cli = Cli::parse();
 
@@ -227,7 +228,8 @@ async fn real_main() -> anyhow::Result<()> {
     // --- generate all payloads sequentially before any transfer starts ---
     tracing::info!("  - generating {} payloads...", cli.count);
     let mut payloads = Vec::with_capacity(cli.count);
-    for i in 0..cli.count {
+    for i in 0..cli.count
+    {
         let seed = 0xDEAD_BEEF_0000_0000u64 | i as u64;
         let p = tokio::task::spawn_blocking(move || generate_payload(payload_bytes, seed)).await?;
         payloads.push(p);
@@ -266,7 +268,8 @@ async fn real_main() -> anyhow::Result<()> {
 
     let t_wall = Instant::now();
 
-    for (i, payload) in payloads.into_iter().enumerate() {
+    for (i, payload) in payloads.into_iter().enumerate()
+    {
         // ---
         let uuid = Uuid::new_v4().to_string();
 
@@ -324,14 +327,19 @@ async fn real_main() -> anyhow::Result<()> {
     // --- per-tuner summary ---
     tracing::info!("");
     tracing::info!("  ┌── per-stream results ───────────────┐");
-    for r in &results {
-        let status = match &r.outcome {
+    for r in &results
+    {
+        let status = match &r.outcome
+        {
             TunerOutcome::Pass => "✓  │".to_string(),
             TunerOutcome::Fail { reason } => format!("✗  │ {reason}"),
         };
-        let wire_eff_str = if r.role == Role::Sender && r.bytes_wire > 0 {
+        let wire_eff_str = if r.role == Role::Sender && r.bytes_wire > 0
+        {
             format!("  wire_eff={:.3}", r.bytes as f64 / r.bytes_wire as f64)
-        } else {
+        }
+        else
+        {
             String::new()
         };
         tracing::info!(
@@ -349,9 +357,12 @@ async fn real_main() -> anyhow::Result<()> {
         .filter(|r| matches!(r.outcome, TunerOutcome::Fail { .. }))
         .collect();
 
-    if !failures.is_empty() {
-        for f in &failures {
-            if let TunerOutcome::Fail { reason } = &f.outcome {
+    if !failures.is_empty()
+    {
+        for f in &failures
+        {
+            if let TunerOutcome::Fail { reason } = &f.outcome
+            {
                 tracing::info!("  FAIL  {:?}  {}  — {reason}", f.role, f.uuid);
             }
         }
@@ -359,7 +370,8 @@ async fn real_main() -> anyhow::Result<()> {
     }
 
     // --- aggregate BW assertion ---
-    match cap_bps {
+    match cap_bps
+    {
         Some(cap) => assert_aggregate_bw(&results, cap, wall_elapsed, BW_TOLERANCE)?,
         None => tracing::info!("  BW assertion skipped (no cap configured)"),
     }
@@ -372,7 +384,8 @@ async fn real_main() -> anyhow::Result<()> {
 // Callback server
 // ---------------------------------------------------------------------------
 
-fn bind_callback_server(role: Role, cic_tx: mpsc::Sender<CicMsg>) -> anyhow::Result<SocketAddr> {
+fn bind_callback_server(role: Role, cic_tx: mpsc::Sender<CicMsg>) -> anyhow::Result<SocketAddr>
+{
     // ---
     let listener = std::net::TcpListener::bind("127.0.0.1:0")?;
     let addr = listener.local_addr()?;
@@ -395,7 +408,8 @@ fn bind_callback_server(role: Role, cic_tx: mpsc::Sender<CicMsg>) -> anyhow::Res
                 8,
             );
             let _ = ready_tx.send(());
-            if let Err(e) = server.listen(&addr_str) {
+            if let Err(e) = server.listen(&addr_str)
+            {
                 tracing::warn!("callback server {role:?} exiting: {e}");
             }
         })?;
@@ -412,7 +426,8 @@ fn bind_callback_server(role: Role, cic_tx: mpsc::Sender<CicMsg>) -> anyhow::Res
 // Address resolution
 // ---------------------------------------------------------------------------
 
-fn resolve_addr(host_port: &str) -> anyhow::Result<SocketAddr> {
+fn resolve_addr(host_port: &str) -> anyhow::Result<SocketAddr>
+{
     use std::net::ToSocketAddrs;
     host_port
         .to_socket_addrs()
@@ -425,7 +440,8 @@ fn resolve_addr(host_port: &str) -> anyhow::Result<SocketAddr> {
 // Agent C2I helpers
 // ---------------------------------------------------------------------------
 
-fn connect_agent(addr: &str) -> anyhow::Result<impl TQueLayAgentSyncClient> {
+fn connect_agent(addr: &str) -> anyhow::Result<impl TQueLayAgentSyncClient>
+{
     // ---
     let mut ch = TTcpChannel::new();
     ch.open(addr)?;
@@ -436,33 +452,42 @@ fn connect_agent(addr: &str) -> anyhow::Result<impl TQueLayAgentSyncClient> {
     ))
 }
 
-fn ensure_agent_running(addr: &str) -> anyhow::Result<()> {
+fn ensure_agent_running(addr: &str) -> anyhow::Result<()>
+{
     // ---
     let sock_addr = resolve_addr(addr)?;
-    match std::net::TcpStream::connect_timeout(&sock_addr, Duration::from_millis(300)) {
+    match std::net::TcpStream::connect_timeout(&sock_addr, Duration::from_millis(300))
+    {
         Ok(_) => Ok(()),
         Err(_) => anyhow::bail!("agent not reachable at {addr} (is it running?)"),
     }
 }
 
-fn query_cap(addr: &str) -> anyhow::Result<Option<u64>> {
+fn query_cap(addr: &str) -> anyhow::Result<Option<u64>>
+{
     // ---
     let mut agent = connect_agent(addr)?;
 
     let cap_bps = agent.get_bandwidth_cap_bps()?;
 
-    Ok(if cap_bps <= 0 {
-        None
-    } else {
-        Some(cap_bps as u64)
-    })
+    Ok(
+        if cap_bps <= 0
+        {
+            None
+        }
+        else
+        {
+            Some(cap_bps as u64)
+        },
+    )
 }
 
 // ---------------------------------------------------------------------------
 // Test data generation
 // ---------------------------------------------------------------------------
 
-fn generate_payload(n: usize, seed: u64) -> Vec<u8> {
+fn generate_payload(n: usize, seed: u64) -> Vec<u8>
+{
     // ---
     let mut rng = rand::rngs::SmallRng::seed_from_u64(seed);
     let mut buf = vec![0u8; n];
@@ -471,11 +496,14 @@ fn generate_payload(n: usize, seed: u64) -> Vec<u8> {
 }
 
 /// Format the bandwidth cap as a human-readable string for logging.
-fn bw_cap_display(bw_cap_bps: Option<u64>) -> String {
+fn bw_cap_display(bw_cap_bps: Option<u64>) -> String
+{
     // ---
-    match bw_cap_bps {
+    match bw_cap_bps
+    {
         None => "uncapped".to_string(),
-        Some(bps) if bps >= 1_000_000_000 => {
+        Some(bps) if bps >= 1_000_000_000 =>
+        {
             format!("{:.1} Gbps", bps as f64 / 1_000_000_000.0)
         }
         Some(bps) if bps >= 1_000_000 => format!("{:.1} Mbps", bps as f64 / 1_000_000.0),
@@ -488,27 +516,32 @@ fn bw_cap_display(bw_cap_bps: Option<u64>) -> String {
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
-mod tests {
+mod tests
+{
     // ---
-    use super::*;
     use clap::CommandFactory;
+
+    use super::*;
 
     // ---
 
     #[test]
-    fn cli_verify() {
+    fn cli_verify()
+    {
         // ---
         Cli::command().debug_assert();
     }
 
     #[test]
-    fn defaults_parse_cleanly() {
+    fn defaults_parse_cleanly()
+    {
         // ---
         Cli::try_parse_from(["bw-cap-test"]).expect("default parse failed");
     }
 
     #[test]
-    fn custom_args_parse() {
+    fn custom_args_parse()
+    {
         // ---
         // Numeric IPs still work; hostnames also accepted (resolved at connect time)
         Cli::try_parse_from([

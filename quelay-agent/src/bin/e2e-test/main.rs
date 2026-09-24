@@ -23,22 +23,18 @@
 #![allow(clippy::expect_used)]
 #![allow(clippy::panic)]
 
-use anyhow::{bail, Result};
-use std::collections::BTreeMap;
-use std::net::SocketAddr;
-use std::sync::{mpsc, Arc, Mutex};
-use std::time::{Duration, Instant};
+use std::{
+    collections::BTreeMap,
+    net::SocketAddr,
+    sync::{mpsc, Arc, Mutex},
+    time::{Duration, Instant},
+};
 
 // ---
-
 use anyhow::Context as _;
+use anyhow::{bail, Result};
 use clap::{Parser, Subcommand};
-use rand::{RngCore, SeedableRng};
-use sha2::{Digest, Sha256};
-use uuid::Uuid;
-
 // ---
-
 #[allow(unused)]
 use quelay_thrift::{
     // ---
@@ -64,6 +60,9 @@ use quelay_thrift::{
     TServer,
     TTcpChannel,
 };
+use rand::{RngCore, SeedableRng};
+use sha2::{Digest, Sha256};
+use uuid::Uuid;
 
 // ---------------------------------------------------------------------------
 // Sub command modules
@@ -83,7 +82,8 @@ use max_concurrent::*;
 use multi_file::*;
 use small_file_edge_cases::*;
 
-fn resolve_addr(host_port: &str) -> anyhow::Result<SocketAddr> {
+fn resolve_addr(host_port: &str) -> anyhow::Result<SocketAddr>
+{
     use std::net::ToSocketAddrs;
     host_port
         .to_socket_addrs()
@@ -92,9 +92,11 @@ fn resolve_addr(host_port: &str) -> anyhow::Result<SocketAddr> {
         .ok_or_else(|| anyhow::anyhow!("no addresses found for '{host_port}'"))
 }
 
-fn ensure_agent_running(addr: SocketAddr) -> Result<()> {
+fn ensure_agent_running(addr: SocketAddr) -> Result<()>
+{
     let timeout = Duration::from_secs(5);
-    match std::net::TcpStream::connect_timeout(&addr, timeout) {
+    match std::net::TcpStream::connect_timeout(&addr, timeout)
+    {
         Ok(_) => Ok(()),
         Err(_) => bail!("Agent not reachable at {addr} (is it running?)"),
     }
@@ -149,7 +151,8 @@ const SPOOL_FILL_FRACTION: f64 = 0.50;
     name = "e2e_test",
     after_help = "Full design notes: quelay-agent/src/bin/README.md"
 )]
-struct Cli {
+struct Cli
+{
     // ---
     /// C2I address of the sending agent.
     ///
@@ -188,7 +191,8 @@ struct Cli {
 }
 
 #[derive(Debug, Subcommand)]
-enum Command {
+enum Command
+{
     // ---
     /// Multi-file transfer: large files, small files, link outage, link failure.
     MultiFile(MultiFileArgs),
@@ -209,7 +213,8 @@ enum Command {
 // Agent C2I client
 // ---------------------------------------------------------------------------
 
-fn connect_agent(addr: SocketAddr) -> anyhow::Result<impl TQueLayAgentSyncClient> {
+fn connect_agent(addr: SocketAddr) -> anyhow::Result<impl TQueLayAgentSyncClient>
+{
     // ---
     let mut ch = TTcpChannel::new();
     ch.open(addr.to_string())?;
@@ -224,7 +229,8 @@ fn connect_agent(addr: SocketAddr) -> anyhow::Result<impl TQueLayAgentSyncClient
 // Test data generation
 // ---------------------------------------------------------------------------
 
-fn generate_test_data(n: usize) -> Vec<u8> {
+fn generate_test_data(n: usize) -> Vec<u8>
+{
     // ---
     let mut rng = rand::rngs::SmallRng::seed_from_u64(0xDEAD_BEEF_CAFE_1234);
     let mut buf = vec![0u8; n];
@@ -232,7 +238,8 @@ fn generate_test_data(n: usize) -> Vec<u8> {
     buf
 }
 
-fn sha256_hex(data: &[u8]) -> String {
+fn sha256_hex(data: &[u8]) -> String
+{
     // ---
     Sha256::digest(data)
         .iter()
@@ -251,7 +258,8 @@ fn print_transfer_report(
     cap_bps: Option<u64>,
     progress_msgs: (usize, usize),
     conn_stats_delta: Option<&ConnStats>,
-) {
+)
+{
     // ---
 
     let elapsed_s = elapsed.as_secs_f64();
@@ -267,7 +275,8 @@ fn print_transfer_report(
     println!("    ---\t   Elapsed time  : {elapsed_s:.3} seconds");
     println!("    ---\t   Actual BW     : {kbps:.1} kBps - {kbits_s:.1} kbps");
 
-    if let Some(cap) = cap_bps {
+    if let Some(cap) = cap_bps
+    {
         // ---
         let cap_kbits = cap as f64 / 1_000.0; // bits/sec → kbps
         let cap_kbps = cap as f64 / 8_000.0; // bits/sec → KB/s
@@ -277,8 +286,10 @@ fn print_transfer_report(
     }
     println!("    ---\t   Progress msgs : {total_prog} (snd {snd} + rcv {rcv}), {prog_rate:.1}/s");
 
-    if let Some(cs) = conn_stats_delta {
-        if cs.sent_packets.unwrap_or(0) > 0 {
+    if let Some(cs) = conn_stats_delta
+    {
+        if cs.sent_packets.unwrap_or(0) > 0
+        {
             let sent = cs.sent_packets.unwrap_or(0);
             let lost = cs.lost_packets.unwrap_or(0);
             let lost_bytes = cs.lost_bytes.unwrap_or(0);
@@ -300,10 +311,13 @@ fn print_transfer_report(
 // Helpers
 // ---------------------------------------------------------------------------
 
-fn transfer_timeout(bytes: usize, cap_bps: Option<u64>) -> Duration {
+fn transfer_timeout(bytes: usize, cap_bps: Option<u64>) -> Duration
+{
     // ---
-    let secs = match cap_bps {
-        Some(cap) => {
+    let secs = match cap_bps
+    {
+        Some(cap) =>
+        {
             let bytes_per_sec = cap as f64 / 8.0;
             let expected = bytes as f64 / bytes_per_sec;
             ((expected * TIMEOUT_HEADROOM) as u64).max(TIMEOUT_MIN_SECS)
@@ -316,25 +330,32 @@ fn transfer_timeout(bytes: usize, cap_bps: Option<u64>) -> Duration {
 /// Query the sender agent's BW cap. Returns None if uncapped (0).
 ///
 /// Thrift has no u64; the IDL field is i64. We treat any value <= 0 as uncapped.
-fn query_cap(sender_c2i: SocketAddr) -> anyhow::Result<Option<u64>> {
+fn query_cap(sender_c2i: SocketAddr) -> anyhow::Result<Option<u64>>
+{
     // ---
     let mut agent = connect_agent(sender_c2i).context("connect_agent(sender_c2i) failed")?;
     let cap_bps = agent.get_bandwidth_cap_bps()?;
 
     tracing::debug!(cap_bps, "e2e-test:main.rs:query_cap");
 
-    Ok(if cap_bps <= 0 {
-        None
-    } else {
-        Some(cap_bps as u64)
-    })
+    Ok(
+        if cap_bps <= 0
+        {
+            None
+        }
+        else
+        {
+            Some(cap_bps as u64)
+        },
+    )
 }
 
 // ---
 
 /// Snapshot QUIC connection statistics from the sender agent.
 /// Returns `None` if the RPC fails (agent may be unconfigured or down).
-fn query_conn_stats(sender_c2i: SocketAddr) -> Option<ConnStats> {
+fn query_conn_stats(sender_c2i: SocketAddr) -> Option<ConnStats>
+{
     // ---
     connect_agent(sender_c2i)
         .ok()
@@ -344,7 +365,8 @@ fn query_conn_stats(sender_c2i: SocketAddr) -> Option<ConnStats> {
 // ---
 
 /// Subtract two `ConnStats` snapshots to get per-transfer deltas.
-fn diff_conn_stats(before: ConnStats, after: ConnStats) -> ConnStats {
+fn diff_conn_stats(before: ConnStats, after: ConnStats) -> ConnStats
+{
     // ---
     ConnStats {
         sent_packets: Some(after.sent_packets.unwrap_or(0) - before.sent_packets.unwrap_or(0)),
@@ -364,9 +386,11 @@ fn diff_conn_stats(before: ConnStats, after: ConnStats) -> ConnStats {
 // Link injection
 // ---------------------------------------------------------------------------
 
-enum LinkInject {
+enum LinkInject
+{
     None,
-    Drop {
+    Drop
+    {
         drop_after: usize,
         link_down_secs: f64,
         sender_c2i: SocketAddr,
@@ -377,7 +401,8 @@ enum LinkInject {
 // TransferStats
 // ---------------------------------------------------------------------------
 
-struct TransferStats {
+struct TransferStats
+{
     // ---
     sha256_sent: String,
     sha256_rcvd: String,
@@ -391,7 +416,8 @@ struct TransferStats {
 // ---------------------------------------------------------------------------
 
 #[derive(Clone, Copy)]
-struct TestContext {
+struct TestContext
+{
     sender_c2i: SocketAddr,
     receiver_c2i: SocketAddr,
     callback_ip: std::net::IpAddr,
@@ -410,7 +436,8 @@ async fn run_transfer(
     inject: LinkInject,
     cap_bps: Option<u64>,
     timeout: Duration,
-) -> anyhow::Result<TransferStats> {
+) -> anyhow::Result<TransferStats>
+{
     // ---
     let sender_c2i = ctx.sender_c2i;
     let receiver_c2i = ctx.receiver_c2i;
@@ -456,7 +483,8 @@ async fn run_transfer(
     let sender_ip = ctx.sender_c2i.ip();
     let receiver_ip = ctx.receiver_c2i.ip();
 
-    let sender_port = match sender_cb.recv_event(timeout)? {
+    let sender_port = match sender_cb.recv_event(timeout)?
+    {
         TestCallbackEvent::Started { port, .. } => port,
         other => anyhow::bail!("sender: expected Started, got {other:?}"),
     };
@@ -465,15 +493,18 @@ async fn run_transfer(
         use std::io::Write;
         let mut tcp = std::net::TcpStream::connect(SocketAddr::new(sender_ip, sender_port))?;
 
-        match inject {
-            LinkInject::None => {
+        match inject
+        {
+            LinkInject::None =>
+            {
                 tcp.write_all(&payload)?;
             }
             LinkInject::Drop {
                 drop_after,
                 link_down_secs,
                 sender_c2i,
-            } => {
+            } =>
+            {
                 tcp.write_all(&payload[..drop_after])?;
                 tcp.flush()?;
                 tracing::info!(
@@ -487,7 +518,8 @@ async fn run_transfer(
                 std::thread::spawn(move || {
                     std::thread::sleep(Duration::from_secs_f64(link_down_secs));
                     tracing::info!("link_enable(true) [background]");
-                    if let Ok(mut s2) = connect_agent(sender_c2i) {
+                    if let Ok(mut s2) = connect_agent(sender_c2i)
+                    {
                         let _ = s2.link_enable(true);
                     }
                 });
@@ -500,7 +532,8 @@ async fn run_transfer(
         Ok(())
     });
 
-    let receiver_port = match receiver_cb.recv_event(timeout)? {
+    let receiver_port = match receiver_cb.recv_event(timeout)?
+    {
         TestCallbackEvent::Started { port, .. } => port,
         other => anyhow::bail!("receiver: expected Started, got {other:?}"),
     };
@@ -513,31 +546,40 @@ async fn run_transfer(
         tcp.read_to_end(&mut received)?;
     }
 
-    match receiver_cb.recv_event(timeout)? {
+    match receiver_cb.recv_event(timeout)?
+    {
         TestCallbackEvent::Done { bytes, .. } => tracing::info!(bytes, "receiver stream_done"),
-        TestCallbackEvent::Failed { reason, .. } => {
+        TestCallbackEvent::Failed { reason, .. } =>
+        {
             anyhow::bail!("receiver stream_failed: {reason}")
         }
         other => anyhow::bail!("receiver: expected Done, got {other:?}"),
     }
-    loop {
-        match sender_cb.recv_event(timeout)? {
-            TestCallbackEvent::Done { bytes, .. } => {
+    loop
+    {
+        match sender_cb.recv_event(timeout)?
+        {
+            TestCallbackEvent::Done { bytes, .. } =>
+            {
                 tracing::info!(bytes, "sender stream_done");
                 break;
             }
-            TestCallbackEvent::Failed { reason, .. } => {
+            TestCallbackEvent::Failed { reason, .. } =>
+            {
                 anyhow::bail!("sender stream_failed: {reason}")
             }
-            TestCallbackEvent::QueueStatus(_) => {
+            TestCallbackEvent::QueueStatus(_) =>
+            {
                 // Ignore queue updates while waiting for completion.
                 continue;
             }
-            TestCallbackEvent::Started { .. } => {
+            TestCallbackEvent::Started { .. } =>
+            {
                 // Should not happen here, but harmless.
                 continue;
             }
-            TestCallbackEvent::LinkState(_) => {
+            TestCallbackEvent::LinkState(_) =>
+            {
                 continue;
             }
         }
@@ -572,7 +614,8 @@ async fn run_transfer(
 // BW validation
 // ---------------------------------------------------------------------------
 
-fn assert_bw_within_tolerance(stats: &TransferStats, cap_bps: u64) -> anyhow::Result<()> {
+fn assert_bw_within_tolerance(stats: &TransferStats, cap_bps: u64) -> anyhow::Result<()>
+{
     // ---
     let cap_bytes_per_sec = cap_bps as f64 / 8.0;
     let low = cap_bytes_per_sec * BW_TOLERANCE_LOW;
@@ -603,7 +646,8 @@ async fn run_single_transfer(
     bytes: usize,
     label: &str,
     cap_bps: Option<u64>,
-) -> anyhow::Result<()> {
+) -> anyhow::Result<()>
+{
     println!();
     println!("  ┌── [{label}]  {} B  ({} KiB) ───┐", bytes, bytes / 1024);
     let payload = tokio::task::spawn_blocking(move || generate_test_data(bytes)).await?;
@@ -620,8 +664,10 @@ async fn run_single_transfer(
     );
     println!("  [{label}] sha256 ✓");
 
-    if let Some(cap) = cap_bps {
-        if ctx.skip_bw_check {
+    if let Some(cap) = cap_bps
+    {
+        if ctx.skip_bw_check
+        {
             println!(
                 "  [{label}] BW check skipped (--skip-bw-check): \
                  realized {:.1} KB/s, cap {:.1} KB/s ({:.1}%)",
@@ -629,9 +675,13 @@ async fn run_single_transfer(
                 cap as f64 / 8_000.0,
                 stats.rate_bytes_per_sec / (cap as f64 / 8.0) * 100.0,
             );
-        } else if bytes >= MIN_BW_TEST_BYTES && stats.elapsed >= MIN_BW_TEST_ELAPSED {
+        }
+        else if bytes >= MIN_BW_TEST_BYTES && stats.elapsed >= MIN_BW_TEST_ELAPSED
+        {
             assert_bw_within_tolerance(&stats, cap)?;
-        } else {
+        }
+        else
+        {
             println!(
                 "  [{label}] BW check skipped (transfer too short for reliable measurement: \
                  {} B, {:.0?})",
@@ -647,7 +697,8 @@ async fn run_multi_file_link_outage(
     ctx: &TestContext,
     file_sizes: &[usize],
     cap_bps: Option<u64>,
-) -> anyhow::Result<()> {
+) -> anyhow::Result<()>
+{
     // ---
 
     let rate_bytes_ps = cap_bps.map(|c| c as f64 / 8.0);
@@ -703,7 +754,8 @@ async fn run_multi_file_link_outage(
 async fn run_multi_file_link_fail(
     sender_c2i: SocketAddr,
     receiver_c2i: SocketAddr,
-) -> anyhow::Result<()> {
+) -> anyhow::Result<()>
+{
     // ---
 
     println!("  link-fail: (stub — implement once --link-fail-timeout is a tunable agent CLI arg)");
@@ -722,7 +774,8 @@ async fn run_multi_file_link_fail(
 // ---------------------------------------------------------------------------
 
 #[tokio::main]
-async fn main() {
+async fn main()
+{
     use tokio::signal::unix::{signal, SignalKind};
 
     let mut sigterm = signal(SignalKind::terminate()).expect("failed to install SIGTERM handler");
@@ -748,7 +801,8 @@ async fn main() {
     }
 }
 
-async fn real_main() -> anyhow::Result<()> {
+async fn real_main() -> anyhow::Result<()>
+{
     let cli = Cli::parse();
 
     let log_level = if cli.debug { "debug" } else { "info" };
@@ -772,7 +826,8 @@ async fn real_main() -> anyhow::Result<()> {
         skip_bw_check: cli.skip_bw_check,
     };
 
-    match &cli.command {
+    match &cli.command
+    {
         Command::MultiFile(args) => cmd_multi_file(&ctx, args).await?,
         Command::Drr(args) => cmd_drr(&ctx, args).await?,
         Command::SmallFileEdgeCases(args) => cmd_small_file_edge_cases(&ctx, args).await?,
@@ -786,7 +841,8 @@ async fn real_main() -> anyhow::Result<()> {
 ///
 /// Values < 1024 are shown in bytes. Larger values use base-1024
 /// units with one decimal place. Intended for human-readable output.
-fn bytes_display(bytes: usize) -> String {
+fn bytes_display(bytes: usize) -> String
+{
     // ---
     const KIB: f64 = 1024.0;
     const MIB: f64 = 1024.0 * 1024.0;
@@ -794,13 +850,20 @@ fn bytes_display(bytes: usize) -> String {
 
     let b = bytes as f64;
 
-    if b >= GIB {
+    if b >= GIB
+    {
         format!("{:.1} GiB", b / GIB)
-    } else if b >= MIB {
+    }
+    else if b >= MIB
+    {
         format!("{:.1} MiB", b / MIB)
-    } else if b >= KIB {
+    }
+    else if b >= KIB
+    {
         format!("{:.1} KiB", b / KIB)
-    } else {
+    }
+    else
+    {
         format!("{bytes} B")
     }
 }
@@ -810,17 +873,21 @@ fn bytes_display(bytes: usize) -> String {
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
-mod tests {
-    use super::*;
+mod tests
+{
     use clap::CommandFactory;
 
+    use super::*;
+
     #[test]
-    fn cli_verify() {
+    fn cli_verify()
+    {
         Cli::command().debug_assert();
     }
 
     #[test]
-    fn multi_file_size_flags_are_mutually_exclusive() {
+    fn multi_file_size_flags_are_mutually_exclusive()
+    {
         let result = Cli::try_parse_from([
             "e2e_test",
             "--sender-c2i",
@@ -838,7 +905,8 @@ mod tests {
     }
 
     #[test]
-    fn multi_file_link_outage_and_fail_are_mutually_exclusive() {
+    fn multi_file_link_outage_and_fail_are_mutually_exclusive()
+    {
         let result =
             Cli::try_parse_from(["e2e_test", "multi-file", "--link-outage", "--link-fail"]);
         assert!(
@@ -848,8 +916,10 @@ mod tests {
     }
 
     #[test]
-    fn defaults_parse_cleanly() {
-        for sub in ["drr", "small-file-edge-cases", "max-concurrent"] {
+    fn defaults_parse_cleanly()
+    {
+        for sub in ["drr", "small-file-edge-cases", "max-concurrent"]
+        {
             Cli::try_parse_from(["e2e_test", sub])
                 .unwrap_or_else(|e| panic!("{sub} default parse failed: {e}"));
         }

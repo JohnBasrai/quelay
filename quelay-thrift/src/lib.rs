@@ -6,15 +6,14 @@
 // Generated code lives here. Run scripts/thrift-compile.sh to regenerate.
 // Do not edit files under gen/ by hand.
 #[allow(dead_code, unused_imports, unused_extern_crates, clippy::all)]
-mod gen {
+mod gen
+{
     include!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/gen/quelay.rs"));
 }
 
 mod mapping;
 
 // ---
-
-pub use mapping::progress_to_wire;
 
 pub use gen::{
     //
@@ -36,9 +35,8 @@ pub use gen::{
     TQueLayCallbackSyncClient,
     IDL_VERSION,
 };
-
+pub use mapping::progress_to_wire;
 // ---
-
 pub use ordered_float::OrderedFloat;
 // so that crate consumers import only from `quelay_thrift::` and never drill
 // into `thrift::protocol`, `thrift::server`, or `thrift::transport` directly.

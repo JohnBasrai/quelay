@@ -16,7 +16,8 @@ const BULK_QUANTUM_BYTES: u32 = 4 * 1024;
 // ---------------------------------------------------------------------------
 
 #[derive(Debug)]
-struct StreamEntry {
+struct StreamEntry
+{
     // ---
     /// Operator-visible priority level
     priority: Priority,
@@ -48,7 +49,8 @@ struct StreamEntry {
 /// The AIMD pacer (not yet implemented) sits above this and provides the
 /// total byte budget passed to [`DrrScheduler::schedule`] each tick.
 #[derive(Debug, Default)]
-pub struct DrrScheduler {
+pub struct DrrScheduler
+{
     // ---
     /// Current active stream table.
     streams: HashMap<Uuid, StreamEntry>,
@@ -63,16 +65,19 @@ pub struct DrrScheduler {
 
 // ---
 
-impl DrrScheduler {
+impl DrrScheduler
+{
     // ---
-    pub fn new() -> Self {
+    pub fn new() -> Self
+    {
         Self::default()
     }
 
     // ---
 
     /// Register a new stream with its initial priority and quantum.
-    pub fn register(&mut self, id: Uuid, priority: Priority) {
+    pub fn register(&mut self, id: Uuid, priority: Priority)
+    {
         // ---
         let quantum = priority.initial_quantum();
         self.streams.insert(
@@ -85,7 +90,8 @@ impl DrrScheduler {
             },
         );
 
-        if priority.is_strict() {
+        if priority.is_strict()
+        {
             // Keep strict queue in priority-desc order.
             let insert_at = self
                 .c2i_queue
@@ -99,7 +105,9 @@ impl DrrScheduler {
                 })
                 .unwrap_or(self.c2i_queue.len());
             self.c2i_queue.insert(insert_at, id);
-        } else {
+        }
+        else
+        {
             self.bulk_order.push_back(id);
             self.rebalance();
         }
@@ -108,12 +116,17 @@ impl DrrScheduler {
     // ---
 
     /// Deregister a stream (transfer complete or reset).
-    pub fn deregister(&mut self, id: Uuid) {
+    pub fn deregister(&mut self, id: Uuid)
+    {
         // ---
-        if let Some(entry) = self.streams.remove(&id) {
-            if entry.priority.is_strict() {
+        if let Some(entry) = self.streams.remove(&id)
+        {
+            if entry.priority.is_strict()
+            {
                 self.c2i_queue.retain(|&x| x != id);
-            } else {
+            }
+            else
+            {
                 self.bulk_order.retain(|&x| x != id);
                 self.rebalance();
             }
@@ -123,9 +136,11 @@ impl DrrScheduler {
     // ---
 
     /// Override the DRR quantum for a specific stream.
-    pub fn set_quantum(&mut self, id: Uuid, quantum: u32) {
+    pub fn set_quantum(&mut self, id: Uuid, quantum: u32)
+    {
         // ---
-        if let Some(entry) = self.streams.get_mut(&id) {
+        if let Some(entry) = self.streams.get_mut(&id)
+        {
             entry.quantum = quantum;
         }
     }
@@ -135,9 +150,11 @@ impl DrrScheduler {
     /// Update the known backlog for a stream.
     ///
     /// Called by the session / spooler as data accumulates or drains.
-    pub fn set_backlog(&mut self, id: Uuid, backlog: u64) {
+    pub fn set_backlog(&mut self, id: Uuid, backlog: u64)
+    {
         // ---
-        if let Some(entry) = self.streams.get_mut(&id) {
+        if let Some(entry) = self.streams.get_mut(&id)
+        {
             entry.backlog = backlog;
         }
     }
@@ -149,12 +166,15 @@ impl DrrScheduler {
     ///
     /// C2I streams consume from the budget first. The remaining budget is
     /// distributed across BulkTransfer streams via DRR.
-    pub fn schedule(&mut self, mut budget: u64) -> Result<Vec<(Uuid, u64)>> {
+    pub fn schedule(&mut self, mut budget: u64) -> Result<Vec<(Uuid, u64)>>
+    {
         let mut result = Vec::new();
 
         // --- strict priority: drain C2I first ---
-        for &id in &self.c2i_queue {
-            if budget == 0 {
+        for &id in &self.c2i_queue
+        {
+            if budget == 0
+            {
                 break;
             }
             let entry = self
@@ -162,7 +182,8 @@ impl DrrScheduler {
                 .get_mut(&id)
                 .ok_or(QueLayError::StreamNotFound(id))?;
             let send = budget.min(entry.backlog).min(entry.quantum as u64);
-            if send > 0 {
+            if send > 0
+            {
                 result.push((id, send));
                 budget = budget.saturating_sub(send);
             }
@@ -170,7 +191,8 @@ impl DrrScheduler {
 
         // --- DRR: bulk transfers ---
         let n = self.bulk_order.len();
-        if n == 0 || budget == 0 {
+        if n == 0 || budget == 0
+        {
             return Ok(result);
         }
 
@@ -178,12 +200,15 @@ impl DrrScheduler {
 
         // Phase 1: Give **every** bulk stream exactly one turn (mandatory fair round)
         // This ensures that with small budgets, no stream is completely skipped.
-        for _ in 0..n {
-            if budget == 0 {
+        for _ in 0..n
+        {
+            if budget == 0
+            {
                 break;
             }
 
-            if let Some(id) = self.bulk_order.front().copied() {
+            if let Some(id) = self.bulk_order.front().copied()
+            {
                 let entry = self
                     .streams
                     .get_mut(&id)
@@ -192,11 +217,14 @@ impl DrrScheduler {
                 entry.deficit += entry.quantum;
 
                 let send = budget.min(entry.deficit as u64).min(entry.backlog);
-                if send > 0 {
+                if send > 0
+                {
                     entry.deficit -= send as u32;
                     *bulk_allocs.entry(id).or_insert(0) += send;
                     budget = budget.saturating_sub(send);
-                } else {
+                }
+                else
+                {
                     // Idle → prevent deficit accumulation
                     entry.deficit = 0;
                 }
@@ -208,8 +236,10 @@ impl DrrScheduler {
         // Phase 2: Continue giving extra turns to active streams while budget remains
         // (this handles cases where budget >> total quantum × n)
         let mut consecutive_idle = 0;
-        while budget > 0 && consecutive_idle < n {
-            if let Some(id) = self.bulk_order.front().copied() {
+        while budget > 0 && consecutive_idle < n
+        {
+            if let Some(id) = self.bulk_order.front().copied()
+            {
                 let entry = self
                     .streams
                     .get_mut(&id)
@@ -218,12 +248,15 @@ impl DrrScheduler {
                 entry.deficit += entry.quantum;
 
                 let send = budget.min(entry.deficit as u64).min(entry.backlog);
-                if send > 0 {
+                if send > 0
+                {
                     entry.deficit -= send as u32;
                     *bulk_allocs.entry(id).or_insert(0) += send;
                     budget = budget.saturating_sub(send);
                     consecutive_idle = 0;
-                } else {
+                }
+                else
+                {
                     entry.deficit = 0;
                     consecutive_idle += 1;
                 }
@@ -245,16 +278,20 @@ impl DrrScheduler {
     ///
     /// Called automatically on `register` / `deregister`. May also be
     /// called explicitly when operator configuration changes.
-    pub fn rebalance(&mut self) {
+    pub fn rebalance(&mut self)
+    {
         // ---
-        if self.bulk_order.is_empty() {
+        if self.bulk_order.is_empty()
+        {
             return;
         }
 
         let quantum = BULK_QUANTUM_BYTES;
 
-        for id in self.bulk_order.iter() {
-            if let Some(entry) = self.streams.get_mut(id) {
+        for id in self.bulk_order.iter()
+        {
+            if let Some(entry) = self.streams.get_mut(id)
+            {
                 entry.quantum = quantum;
             }
         }
@@ -268,7 +305,8 @@ impl DrrScheduler {
 #[allow(clippy::unwrap_used)]
 #[allow(clippy::panic_in_result_fn)]
 #[cfg(test)]
-mod tests {
+mod tests
+{
     // ---
 
     use super::*;
@@ -300,7 +338,8 @@ mod tests {
     /// | 10| Throughput measurement vs. BW cap           | ✅ integration |
 
     #[test]
-    fn c2i_drains_before_bulk() -> Result<()> {
+    fn c2i_drains_before_bulk() -> Result<()>
+    {
         // ---
         let mut sched = DrrScheduler::new();
         let c2i = Uuid::new_v4();
@@ -322,7 +361,8 @@ mod tests {
     // ---
 
     #[test]
-    fn bulk_streams_share_budget() -> Result<()> {
+    fn bulk_streams_share_budget() -> Result<()>
+    {
         // ---
         let mut sched = DrrScheduler::new();
         let a = Uuid::new_v4();
@@ -351,7 +391,8 @@ mod tests {
     // ---
 
     #[test]
-    fn idle_stream_does_not_accumulate_deficit() -> Result<()> {
+    fn idle_stream_does_not_accumulate_deficit() -> Result<()>
+    {
         // ---
         let mut sched = DrrScheduler::new();
         let a = Uuid::new_v4();
@@ -372,7 +413,8 @@ mod tests {
     // ---
 
     #[test]
-    fn deregister_removes_stream() -> Result<()> {
+    fn deregister_removes_stream() -> Result<()>
+    {
         // ---
         let mut sched = DrrScheduler::new();
         let a = Uuid::new_v4();
@@ -390,7 +432,8 @@ mod tests {
     }
 
     #[test]
-    fn schedule_never_exceeds_budget() -> Result<()> {
+    fn schedule_never_exceeds_budget() -> Result<()>
+    {
         // ---
         let mut sched = DrrScheduler::new();
         let a = Uuid::new_v4();
@@ -415,7 +458,8 @@ mod tests {
     // ---
 
     #[test]
-    fn c2i_does_not_starve_when_bulk_present() -> Result<()> {
+    fn c2i_does_not_starve_when_bulk_present() -> Result<()>
+    {
         // ---
         // C2I backlog is smaller than the quantum, so it should be fully
         // drained in a single schedule call even when bulk streams compete.

@@ -21,6 +21,7 @@ Run the full CI check locally:
 - Keep commits focused and descriptive
 - Add tests for new features
 - Update `CHANGELOG.md` under `[Unreleased]` if behaviour changes
+- Run `cargo xfmt` after changing Rust code
 - Verify all CI checks pass locally before pushing
 
 We follow [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) and
@@ -38,10 +39,10 @@ We follow [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) and
 
 | Task         | Command           |
 |--------------|-------------------|
-| Format       | `cargo fmt --all` |
-| Format check | `cargo fmt --all -- --check` |
+| Format       | `cargo xfmt` |
+| Format check | `cargo xfmt --check` |
 | Lint         | `cargo clippy --workspace -- -D warnings` |
-| Unit tests   | `cargo test --workspace` |
+| Unit tests   | `cargo nextest run --workspace` |
 | Smoke test   | `./scripts/ci-smoke-test.sh` |
 | Integration  | `./scripts/ci-integration-test.sh` |
 | Build docs   | `cargo doc --workspace --no-deps --open` |

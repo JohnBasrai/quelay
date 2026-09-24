@@ -7,11 +7,6 @@
 use std::sync::Mutex;
 
 // ---
-
-use tokio::sync::mpsc;
-
-// ---
-
 use quelay_thrift::{
     // ---
     FailReason,
@@ -21,9 +16,10 @@ use quelay_thrift::{
     QueueStatus,
     StreamInfo,
 };
+// ---
+use tokio::sync::mpsc;
 
 // ---
-
 use super::CicMsg;
 
 // ---------------------------------------------------------------------------
@@ -32,7 +28,8 @@ use super::CicMsg;
 
 /// Identifies which side of the link a callback or tuner task belongs to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum Role {
+pub enum Role
+{
     // ---
     /// Air-side agent (data source / sender).
     Sender,
@@ -49,7 +46,8 @@ pub enum Role {
 ///
 /// Acts as a pure conduit: no logic, no filtering — all routing decisions
 /// belong to the CIC.
-pub struct CallbackActor {
+pub struct CallbackActor
+{
     // ---
     role: Role,
     cic_tx: Mutex<mpsc::Sender<CicMsg>>,
@@ -57,11 +55,13 @@ pub struct CallbackActor {
 
 // ---
 
-impl CallbackActor {
+impl CallbackActor
+{
     // ---
 
     /// Create a new actor tagged with `role`, forwarding to `cic_tx`.
-    pub fn new(role: Role, cic_tx: mpsc::Sender<CicMsg>) -> Self {
+    pub fn new(role: Role, cic_tx: mpsc::Sender<CicMsg>) -> Self
+    {
         // ---
         Self {
             role,
@@ -69,7 +69,8 @@ impl CallbackActor {
         }
     }
 
-    fn forward(&self, msg: CicMsg) {
+    fn forward(&self, msg: CicMsg)
+    {
         // ---
         // Best-effort: if CIC has shut down we drop silently.
         let _ = self.cic_tx.lock().unwrap().try_send(msg);
@@ -78,20 +79,19 @@ impl CallbackActor {
 
 // ---
 
-impl QueLayCallbackSyncHandler for CallbackActor {
+impl QueLayCallbackSyncHandler for CallbackActor
+{
     // ---
 
-    fn handle_ping(&self) -> thrift::Result<()> {
+    fn handle_ping(&self) -> thrift::Result<()>
+    {
         // ---
         Ok(())
     }
 
-    fn handle_stream_started(
-        &self,
-        uuid: String,
-        info: StreamInfo,
-        port: i32,
-    ) -> thrift::Result<()> {
+    fn handle_stream_started(&self, uuid: String, info: StreamInfo, port: i32)
+        -> thrift::Result<()>
+    {
         // ---
         self.forward(CicMsg::StreamStarted {
             role: self.role,
@@ -102,7 +102,8 @@ impl QueLayCallbackSyncHandler for CallbackActor {
         Ok(())
     }
 
-    fn handle_stream_progress(&self, _uuid: String, _progress: ProgressInfo) -> thrift::Result<()> {
+    fn handle_stream_progress(&self, _uuid: String, _progress: ProgressInfo) -> thrift::Result<()>
+    {
         // ---
         Ok(())
     }
@@ -112,7 +113,8 @@ impl QueLayCallbackSyncHandler for CallbackActor {
         uuid: String,
         bytes_transferred: i64,
         bytes_wire: i64,
-    ) -> thrift::Result<()> {
+    ) -> thrift::Result<()>
+    {
         // ---
         self.forward(CicMsg::StreamDone {
             role: self.role,
@@ -128,7 +130,8 @@ impl QueLayCallbackSyncHandler for CallbackActor {
         uuid: String,
         _code: FailReason,
         reason: String,
-    ) -> thrift::Result<()> {
+    ) -> thrift::Result<()>
+    {
         // ---
         self.forward(CicMsg::StreamFailed {
             role: self.role,
@@ -138,7 +141,8 @@ impl QueLayCallbackSyncHandler for CallbackActor {
         Ok(())
     }
 
-    fn handle_link_status_update(&self, state: LinkState) -> thrift::Result<()> {
+    fn handle_link_status_update(&self, state: LinkState) -> thrift::Result<()>
+    {
         // ---
         self.forward(CicMsg::LinkStatus {
             role: self.role,
@@ -147,7 +151,8 @@ impl QueLayCallbackSyncHandler for CallbackActor {
         Ok(())
     }
 
-    fn handle_queue_status_update(&self, _status: QueueStatus) -> thrift::Result<()> {
+    fn handle_queue_status_update(&self, _status: QueueStatus) -> thrift::Result<()>
+    {
         // ---
         Ok(())
     }

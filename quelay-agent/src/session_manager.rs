@@ -29,21 +29,18 @@
 //! `TODO` marker is left.  The actual disk I/O will be added in the next
 //! iteration.
 
-use super::ActiveStream;
-use std::collections::HashMap;
-use std::sync::Arc;
-use std::time::Duration;
+use std::{collections::HashMap, sync::Arc, time::Duration};
 
+use quelay_domain::ConnStats as DomainConnStats;
+#[allow(unused_imports)]
+use quelay_domain::QueLaySession as _;
 // ---
-
 use tokio::sync::{mpsc, oneshot, Mutex, Notify};
-
 // ---
-
 use uuid::Uuid;
 
+use super::ActiveStream;
 // ---
-
 use crate::{
     // ---
     write_connect_header,
@@ -63,28 +60,28 @@ use crate::{
     WireStreamStartStatus,
 };
 
-use quelay_domain::ConnStats as DomainConnStats;
-#[allow(unused_imports)]
-use quelay_domain::QueLaySession as _;
-
 // ---------------------------------------------------------------------------
 // SessionCommand
 // ---------------------------------------------------------------------------
 #[derive(Debug)]
 /// Commands the SessionManger actor
-pub(crate) enum SessionCommand {
+pub(crate) enum SessionCommand
+{
     // ---
-    StreamStart {
+    StreamStart
+    {
         uuid: Uuid,
         info: DomainStreamInfo,
         priority: Priority,
         reply_tx: oneshot::Sender<StreamStartResponse>,
     },
-    StreamFinished {
-        uuid: String,
+    StreamFinished
+    {
+        uuid: String
     },
     /// Request a snapshot of QUIC connection statistics.
-    GetConnStats {
+    GetConnStats
+    {
         reply_tx: oneshot::Sender<DomainConnStats>,
     },
     /// Update the maximum number of concurrent active uplinks at runtime.
@@ -110,17 +107,20 @@ pub(crate) type SessionCommandQueue = mpsc::Sender<SessionCommand>;
 /// For server mode we retain `sess_rx` — the channel the `listen()` accept
 /// loop already writes into — rather than calling `listen()` again on
 /// reconnect (which would spawn a competing accept loop on the same endpoint).
-pub enum TransportConfig {
+pub enum TransportConfig
+{
     // ---
     /// Server mode: hold the existing accept-loop receiver and `recv()` again
     /// after each disconnection.
-    Server {
+    Server
+    {
         sess_rx: mpsc::Receiver<quelay_quic::QuicSession>,
     },
 
     /// Client mode: reconnect by constructing a new `QuicTransport` and
     /// calling `connect()`.
-    Client {
+    Client
+    {
         peer: String,
         server_name: String,
         cert_der: rustls_pki_types::CertificateDer<'static>,
@@ -142,7 +142,8 @@ pub enum TransportConfig {
 /// Partially-sent streams are tracked in `RemoteState::active_uplinks` (not
 /// here) because their [`UplinkHandle`] carries the spool and reconnect channel.
 #[derive(Debug)]
-struct PendingStream {
+struct PendingStream
+{
     // ---
     uuid: Uuid,
     info: DomainStreamInfo,
@@ -157,7 +158,8 @@ struct PendingStream {
 ///
 /// Today there is exactly one of these.  Future multi-peer support promotes
 /// this to a `HashMap<RemoteId, RemoteState>` in `SessionManager`.
-struct RemoteState {
+struct RemoteState
+{
     // ---
     /// Live QUIC session.  `None` while reconnecting.
     session: Option<QueLaySessionPtr>,
@@ -190,10 +192,12 @@ struct RemoteState {
 
 // ---
 
-impl RemoteState {
+impl RemoteState
+{
     // ---
 
-    fn new(session: QueLaySessionPtr, max_concurrent: Option<usize>, max_pending: usize) -> Self {
+    fn new(session: QueLaySessionPtr, max_concurrent: Option<usize>, max_pending: usize) -> Self
+    {
         // ---
         Self {
             session: Some(session),
@@ -210,7 +214,8 @@ impl RemoteState {
     /// Insert a stream into `pending` in priority-descending order.
     ///
     /// Returns the 1-based position in the queue (1 = next to be promoted).
-    fn enqueue(&mut self, pending_stream: PendingStream) -> usize {
+    fn enqueue(&mut self, pending_stream: PendingStream) -> usize
+    {
         // ---
         let pri = pending_stream.priority;
 
@@ -229,7 +234,8 @@ impl RemoteState {
     // ---
 
     /// Send queue status update to client callback.
-    async fn send_queue_status(&self, cb_tx: &CallbackTx) {
+    async fn send_queue_status(&self, cb_tx: &CallbackTx)
+    {
         // ---
         let status = QueueStatus {
             active_count: self.active_uplinks.len() as i32,
@@ -244,21 +250,25 @@ impl RemoteState {
     // ---
 
     /// True if another active stream can be opened.
-    fn has_active_slot(&self) -> bool {
+    fn has_active_slot(&self) -> bool
+    {
         // ---
-        match self.max_concurrent {
+        match self.max_concurrent
+        {
             Some(max_concurrent) => self.active_uplinks.len() < max_concurrent,
             None => true,
         }
     }
 
-    fn pending_queue_full(&self) -> bool {
+    fn pending_queue_full(&self) -> bool
+    {
         // ---
         self.pending.len() >= self.max_pending
     }
 
     #[allow(dead_code)]
-    fn is_unlimited(&self) -> bool {
+    fn is_unlimited(&self) -> bool
+    {
         // ---
         self.max_concurrent.is_none()
     }
@@ -268,12 +278,14 @@ impl RemoteState {
 // SessionManager
 // ---------------------------------------------------------------------------
 
-pub(crate) struct SessionManagerConfig {
+pub(crate) struct SessionManagerConfig
+{
     pub max_pending: usize,
     pub max_concurrent: usize,
 }
 
-pub(crate) struct SessionManager {
+pub(crate) struct SessionManager
+{
     // ---
     /// Single remote peer.
     ///
@@ -316,7 +328,8 @@ pub(crate) struct SessionManager {
 
 // ---
 
-impl SessionManager {
+impl SessionManager
+{
     // ---
 
     /// Create a new `SessionManager` with an already-established session.
@@ -327,15 +340,19 @@ impl SessionManager {
         cb_tx: CallbackTx,
         bw_cap_bps: Option<u64>,
         config: SessionManagerConfig,
-    ) -> (Self, SessionCommandQueue, mpsc::Receiver<SessionCommand>) {
+    ) -> (Self, SessionCommandQueue, mpsc::Receiver<SessionCommand>)
+    {
         // ---
         // Depth of 64 matches the AgentCmd channel — enough to absorb bursts
         // from the Thrift thread pool without back-pressuring callers.
         let (cmd_tx, cmd_rx) = mpsc::channel(64);
 
-        let max_concurrent = if config.max_concurrent == 0 {
+        let max_concurrent = if config.max_concurrent == 0
+        {
             None
-        } else {
+        }
+        else
+        {
             Some(config.max_concurrent)
         };
 
@@ -380,16 +397,19 @@ impl SessionManager {
         uuid: Uuid,
         info: DomainStreamInfo,
         priority: Priority,
-    ) {
+    )
+    {
         // ---
 
         use WireStreamStartStatus as Status;
 
         let mut guard = self.remote.lock().await;
 
-        let remote = match guard.as_mut() {
+        let remote = match guard.as_mut()
+        {
             Some(r) => r,
-            None => {
+            None =>
+            {
                 tracing::warn!(%uuid, "stream_start: remote slot is empty (not connected)");
 
                 let _ = reply_tx.send(
@@ -407,8 +427,10 @@ impl SessionManager {
         };
 
         // Session is live and an active slot is available — open immediately.
-        if remote.has_active_slot() {
-            if let Some(session) = remote.session.as_ref() {
+        if remote.has_active_slot()
+        {
+            if let Some(session) = remote.session.as_ref()
+            {
                 match Self::open_stream_on_session(
                     session,
                     &pending_stream,
@@ -418,7 +440,8 @@ impl SessionManager {
                 )
                 .await
                 {
-                    Ok(handle) => {
+                    Ok(handle) =>
+                    {
                         tracing::debug!(%uuid, "stream_start: stream opened on live session");
 
                         remote.send_queue_status(&self.cb_tx).await;
@@ -426,7 +449,8 @@ impl SessionManager {
                         let _ = reply_tx.send(StreamStartResponse::new(Status::RUNNING, None));
                         return;
                     }
-                    Err(e) => {
+                    Err(e) =>
+                    {
                         tracing::warn!(%uuid, "stream_start: open_stream failed ({e}), queuing");
                         // Fall through to enqueue below.
                     }
@@ -434,7 +458,8 @@ impl SessionManager {
             }
         }
 
-        if remote.pending_queue_full() {
+        if remote.pending_queue_full()
+        {
             // ---
             tracing::warn!(
                 %uuid, max_pending = remote.max_pending,
@@ -465,13 +490,16 @@ impl SessionManager {
     /// 4) On `SessionEvent::X` calls private method handle_X
     /// 5) Also spawns the inbound accept loop, which runs concurrently and is
     ///    re-armed via `session_restored` after each reconnect.
-    pub async fn run(self: Arc<Self>, mut cmd_rx: mpsc::Receiver<SessionCommand>) {
+    pub async fn run(self: Arc<Self>, mut cmd_rx: mpsc::Receiver<SessionCommand>)
+    {
         // ---
         let mut state_rx = {
             let guard = self.remote.lock().await;
-            match guard.as_ref().and_then(|r| r.session.as_ref()) {
+            match guard.as_ref().and_then(|r| r.session.as_ref())
+            {
                 Some(s) => s.link_state_rx(),
-                None => {
+                None =>
+                {
                     tracing::error!("SessionManager::run called with no initial session");
                     return;
                 }
@@ -481,7 +509,8 @@ impl SessionManager {
         // Spawn the inbound (downlink) accept loop.
         tokio::spawn(Arc::clone(&self).accept_loop());
 
-        loop {
+        loop
+        {
             tokio::select! {
                 result = state_rx.changed() => {
                     if result.is_err() {
@@ -541,27 +570,34 @@ impl SessionManager {
     // ---
 
     /// Dispatch a single [`SessionCommand`].
-    async fn dispatch_cmd(&self, cmd: SessionCommand) {
-        match cmd {
+    async fn dispatch_cmd(&self, cmd: SessionCommand)
+    {
+        match cmd
+        {
             SessionCommand::StreamStart {
                 uuid,
                 info,
                 priority,
                 reply_tx,
-            } => {
+            } =>
+            {
                 self.on_stream_start(reply_tx, uuid, info, priority).await;
             }
-            SessionCommand::StreamFinished { uuid } => {
+            SessionCommand::StreamFinished { uuid } =>
+            {
                 tracing::debug!(%uuid, "stream finished — promoting pending");
-                let uuid = match uuid.parse::<Uuid>() {
+                let uuid = match uuid.parse::<Uuid>()
+                {
                     Ok(u) => u,
-                    Err(e) => {
+                    Err(e) =>
+                    {
                         tracing::warn!(%uuid, "StreamFinished: invalid UUID: {e}");
                         return;
                     }
                 };
                 let mut guard = self.remote.lock().await;
-                if let Some(remote) = guard.as_mut() {
+                if let Some(remote) = guard.as_mut()
+                {
                     remote.active_uplinks.remove(&uuid);
                     Self::promote_pending(
                         remote,
@@ -574,7 +610,8 @@ impl SessionManager {
                 }
             }
 
-            SessionCommand::GetConnStats { reply_tx } => {
+            SessionCommand::GetConnStats { reply_tx } =>
+            {
                 let stats = self
                     .remote
                     .lock()
@@ -587,10 +624,12 @@ impl SessionManager {
             }
 
             #[cfg(feature = "test-hooks")]
-            SessionCommand::SetMaxConcurrent(new_limit) => {
+            SessionCommand::SetMaxConcurrent(new_limit) =>
+            {
                 tracing::debug!(?new_limit, "set_max_concurrent: updating session manager");
                 let mut guard = self.remote.lock().await;
-                if let Some(remote) = guard.as_mut() {
+                if let Some(remote) = guard.as_mut()
+                {
                     remote.max_concurrent = new_limit;
                     // A newly-freed limit may allow pending streams to run.
                     Self::promote_pending(
@@ -622,28 +661,34 @@ impl SessionManager {
     ///
     /// When the session fails `accept_stream()` returns an error; the loop
     /// waits on `session_restored` before resuming with the new session.
-    async fn accept_loop(self: Arc<Self>) {
+    async fn accept_loop(self: Arc<Self>)
+    {
         // ---
         use super::{read_stream_open, StreamOpen};
 
-        loop {
+        loop
+        {
             // Snapshot the current session under a short-held lock.
             let session = {
                 let guard = self.remote.lock().await;
                 guard.as_ref().and_then(|r| r.session.clone())
             };
 
-            let session = match session {
+            let session = match session
+            {
                 Some(s) => s,
-                None => {
+                None =>
+                {
                     self.session_restored.notified().await;
                     continue;
                 }
             };
 
-            let mut stream = match session.accept_stream().await {
+            let mut stream = match session.accept_stream().await
+            {
                 Ok(s) => s,
-                Err(e) => {
+                Err(e) =>
+                {
                     tracing::warn!(
                         "accept_stream error ({e}) — closing session to trigger reconnect"
                     );
@@ -659,16 +704,20 @@ impl SessionManager {
             };
 
             // Read the stream-open header to determine new vs reconnect.
-            let open = match read_stream_open(&mut stream).await {
+            let open = match read_stream_open(&mut stream).await
+            {
                 Ok(o) => o,
-                Err(e) => {
+                Err(e) =>
+                {
                     tracing::warn!("accept_loop: read_stream_open failed: {e}");
                     continue;
                 }
             };
 
-            match open {
-                StreamOpen::New(h) => {
+            match open
+            {
+                StreamOpen::New(h) =>
+                {
                     // accept_loop already decoded the header; pass fields
                     // directly to spawn_downlink_from (stream is positioned
                     // past the header — chunk data is next).
@@ -687,30 +736,39 @@ impl SessionManager {
                     };
                     tracing::debug!(%uuid, "downlink: new stream accepted");
                     let cb_tx = self.cb_tx.clone();
-                    match ActiveStream::spawn_downlink_from(uuid, info, stream, cb_tx).await {
-                        Ok(handle) => {
+                    match ActiveStream::spawn_downlink_from(uuid, info, stream, cb_tx).await
+                    {
+                        Ok(handle) =>
+                        {
                             let mut guard = self.remote.lock().await;
-                            if let Some(r) = guard.as_mut() {
+                            if let Some(r) = guard.as_mut()
+                            {
                                 tracing::debug!(%uuid, "downlink: inserting handle into active_downlinks");
                                 r.active_downlinks.insert(uuid, handle);
-                            } else {
+                            }
+                            else
+                            {
                                 tracing::warn!(%uuid, "downlink: remote is None after spawn — handle dropped, stream will not reconnect");
                             }
                         }
-                        Err(e) => {
+                        Err(e) =>
+                        {
                             tracing::warn!(%uuid, "downlink: spawn_downlink_from failed: {e}");
                         }
                     }
                 }
 
-                StreamOpen::Reconnect(h) => {
+                StreamOpen::Reconnect(h) =>
+                {
                     tracing::info!(uuid = %h.uuid, replay_from = h.replay_from, "downlink: reconnect stream accepted");
                     let mut guard = self.remote.lock().await;
-                    if let Some(remote) = guard.as_mut() {
+                    if let Some(remote) = guard.as_mut()
+                    {
                         // Prune dead handles first.
                         remote.active_downlinks.retain(|u, h| {
                             let alive = !h.stream_tx.is_closed();
-                            if !alive {
+                            if !alive
+                            {
                                 tracing::debug!(%u, "accept_loop: pruning completed downlink");
                             }
                             alive
@@ -721,7 +779,8 @@ impl SessionManager {
                             known_uuids = ?remote.active_downlinks.keys().collect::<Vec<_>>(),
                             "accept_loop: active_downlinks at reconnect"
                         );
-                        if let Some(handle) = remote.active_downlinks.get(&h.uuid) {
+                        if let Some(handle) = remote.active_downlinks.get(&h.uuid)
+                        {
                             // bytes_written is read from the handle's shared
                             // atomic — the pump keeps it live as it writes.
                             ActiveStream::deliver_reconnect_stream(
@@ -730,7 +789,9 @@ impl SessionManager {
                                 stream,
                                 h.uuid,
                             );
-                        } else {
+                        }
+                        else
+                        {
                             tracing::warn!(uuid = %h.uuid, "accept_loop: reconnect for unknown downlink — dropping");
                         }
                     }
@@ -747,12 +808,14 @@ impl SessionManager {
     /// their write path; downlink pumps will get a QUIC read error and block
     /// on `stream_rx.recv()`.  Both will resume when `restore_active` /
     /// `accept_loop` deliver fresh streams after reconnect.
-    async fn on_link_failed(&self) {
+    async fn on_link_failed(&self)
+    {
         // ---
         tracing::warn!("link failed — clearing dead session, pausing active streams");
 
         let mut guard = self.remote.lock().await;
-        if let Some(remote) = guard.as_mut() {
+        if let Some(remote) = guard.as_mut()
+        {
             remote.session = None;
             tracing::debug!(
                 "link failed — {} uplinks, {} downlinks paused",
@@ -767,20 +830,25 @@ impl SessionManager {
     /// Retry establishing a session with exponential back-off (1s → 30s cap).
     ///
     /// Returns when a new live session is available.
-    async fn reconnect_loop(&self) -> QueLaySessionPtr {
+    async fn reconnect_loop(&self) -> QueLaySessionPtr
+    {
         // ---
         let mut backoff = Duration::from_secs(1);
         const MAX_BACKOFF: Duration = Duration::from_secs(30);
 
-        loop {
+        loop
+        {
             tracing::info!("attempting reconnect (backoff {}s)...", backoff.as_secs());
 
-            match self.try_connect().await {
-                Ok(session) => {
+            match self.try_connect().await
+            {
+                Ok(session) =>
+                {
                     tracing::info!("reconnect succeeded");
                     return session;
                 }
-                Err(e) => {
+                Err(e) =>
+                {
                     tracing::warn!("reconnect failed: {e} — retrying in {}s", backoff.as_secs());
                     tokio::time::sleep(backoff).await;
                     backoff = (backoff * 2).min(MAX_BACKOFF);
@@ -792,16 +860,19 @@ impl SessionManager {
     // ---
 
     /// Single attempt to (re)establish the session based on `transport_cfg`.
-    async fn try_connect(&self) -> anyhow::Result<QueLaySessionPtr> {
+    async fn try_connect(&self) -> anyhow::Result<QueLaySessionPtr>
+    {
         // ---
         let mut cfg_guard = self.transport_cfg.lock().await;
-        match &mut *cfg_guard {
+        match &mut *cfg_guard
+        {
             TransportConfig::Client {
                 peer,
                 server_name,
                 cert_der,
                 congestion_algo,
-            } => {
+            } =>
+            {
                 use quelay_domain::QueLayTransport;
 
                 // Resolve hostname at connect time so Docker DNS changes
@@ -821,7 +892,8 @@ impl SessionManager {
                 Ok(Arc::new(session))
             }
 
-            TransportConfig::Server { sess_rx } => {
+            TransportConfig::Server { sess_rx } =>
+            {
                 let session = sess_rx
                     .recv()
                     .await
@@ -847,16 +919,20 @@ impl SessionManager {
     /// When `true`: no-op — `restore_active` calls `link_up` after the
     /// reconnect loop delivers fresh streams.
     #[cfg(feature = "test-hooks")]
-    async fn link_enable(&self, enabled: bool) {
+    async fn link_enable(&self, enabled: bool)
+    {
         // ---
         tracing::info!(enabled, "link_enable");
 
-        if !enabled {
+        if !enabled
+        {
             // Signal all active uplinks to drain and rewind.
             {
                 let guard = self.remote.lock().await;
-                if let Some(remote) = guard.as_ref() {
-                    for handle in remote.active_uplinks.values() {
+                if let Some(remote) = guard.as_ref()
+                {
+                    for handle in remote.active_uplinks.values()
+                    {
                         handle.notify_link_down();
                     }
                 }
@@ -866,7 +942,8 @@ impl SessionManager {
                 let guard = self.remote.lock().await;
                 guard.as_ref().and_then(|r| r.session.clone())
             };
-            if let Some(s) = session {
+            if let Some(s) = session
+            {
                 tracing::info!("link_enable(false) — closing session to trigger reconnect loop");
                 let _ = s.close().await;
             }
@@ -886,16 +963,20 @@ impl SessionManager {
         cb_tx: CallbackTx,
         arl: Arc<AggregateRateLimiter>,
         session_cmd_tx: SessionCommandQueue,
-    ) {
+    )
+    {
         // ---
-        let session = match remote.session.as_ref() {
+        let session = match remote.session.as_ref()
+        {
             Some(s) => s.clone(),
             None => return,
         };
 
         let mut promoted = Vec::new();
-        for (i, pending_stream) in remote.pending.iter().enumerate() {
-            if !remote.has_active_slot() {
+        for (i, pending_stream) in remote.pending.iter().enumerate()
+        {
+            if !remote.has_active_slot()
+            {
                 break;
             }
             let status = Self::open_stream_on_session(
@@ -907,20 +988,24 @@ impl SessionManager {
             )
             .await;
 
-            match status {
-                Ok(handle) => {
+            match status
+            {
+                Ok(handle) =>
+                {
                     tracing::debug!(uuid = %pending_stream.uuid, "pending stream re-issued after reconnect");
                     remote.active_uplinks.insert(pending_stream.uuid, handle);
                     promoted.push(i);
                 }
-                Err(e) => {
+                Err(e) =>
+                {
                     tracing::warn!(uuid = %pending_stream.uuid, "re-issue failed: {e} — leaving in pending");
                 }
             }
         }
 
         // Remove promoted entries back-to-front to preserve indices.
-        for i in promoted.into_iter().rev() {
+        for i in promoted.into_iter().rev()
+        {
             remote.pending.remove(i);
         }
     }
@@ -937,13 +1022,16 @@ impl SessionManager {
         cb_tx: CallbackTx,
         arl: Arc<AggregateRateLimiter>,
         session_cmd_tx: SessionCommandQueue,
-    ) {
+    )
+    {
         // ---
-        if remote.pending.is_empty() || !remote.has_active_slot() {
+        if remote.pending.is_empty() || !remote.has_active_slot()
+        {
             return;
         }
 
-        let session = match remote.session.as_ref() {
+        let session = match remote.session.as_ref()
+        {
             Some(s) => s.clone(),
             None => return,
         };
@@ -958,13 +1046,15 @@ impl SessionManager {
         )
         .await
         {
-            Ok(handle) => {
+            Ok(handle) =>
+            {
                 let uuid = remote.pending[0].uuid;
                 tracing::debug!(%uuid, "pending stream promoted to active");
                 remote.active_uplinks.insert(uuid, handle);
                 remote.pending.remove(0);
             }
-            Err(e) => {
+            Err(e) =>
+            {
                 tracing::warn!(uuid = %remote.pending[0].uuid, "promote_pending: open_stream failed: {e}");
             }
         }
@@ -993,7 +1083,8 @@ impl SessionManager {
         cb_tx: CallbackTx,
         arl: Arc<AggregateRateLimiter>,
         session_cmd_tx: SessionCommandQueue,
-    ) -> anyhow::Result<super::UplinkHandle> {
+    ) -> anyhow::Result<super::UplinkHandle>
+    {
         // ---
         let mut stream = session.open_stream(pending.priority).await?;
 
@@ -1039,38 +1130,49 @@ impl SessionManager {
     /// where the sender's replay starts.
     ///
     /// Handles whose pump has already exited are pruned.
-    async fn restore_active(remote: &mut RemoteState) {
+    async fn restore_active(remote: &mut RemoteState)
+    {
         // ---
-        let session = match remote.session.as_ref() {
+        let session = match remote.session.as_ref()
+        {
             Some(s) => s,
             None => return,
         };
 
         let uuids: Vec<Uuid> = remote.active_uplinks.keys().copied().collect();
 
-        for uuid in uuids {
-            let handle = match remote.active_uplinks.get(&uuid) {
+        for uuid in uuids
+        {
+            let handle = match remote.active_uplinks.get(&uuid)
+            {
                 Some(h) => h,
                 None => continue,
             };
 
             let replay_from = handle.bytes_acked().await;
 
-            match session.open_stream(handle.priority).await {
-                Ok(mut stream) => {
+            match session.open_stream(handle.priority).await
+            {
+                Ok(mut stream) =>
+                {
                     let reconnect_hdr = ReconnectHeader { uuid, replay_from };
-                    if let Err(e) = write_reconnect_header(&mut stream, &reconnect_hdr).await {
+                    if let Err(e) = write_reconnect_header(&mut stream, &reconnect_hdr).await
+                    {
                         tracing::warn!(%uuid, "restore_active: reconnect header write failed: {e}");
                         continue;
                     }
-                    if handle.stream_tx.try_send(stream).is_err() {
+                    if handle.stream_tx.try_send(stream).is_err()
+                    {
                         tracing::debug!(%uuid, "restore_active: pump already exited, pruning");
                         remote.active_uplinks.remove(&uuid);
-                    } else {
+                    }
+                    else
+                    {
                         tracing::info!(%uuid, replay_from, "restore_active: fresh stream delivered to pump");
                     }
                 }
-                Err(e) => {
+                Err(e) =>
+                {
                     tracing::warn!(%uuid, "restore_active: open_stream failed: {e}");
                 }
             }
@@ -1079,7 +1181,8 @@ impl SessionManager {
         // Prune handles whose pump exited cleanly.
         remote.active_uplinks.retain(|uuid, h| {
             let alive = !h.stream_tx.is_closed();
-            if !alive {
+            if !alive
+            {
                 tracing::debug!(%uuid, "restore_active: pruning completed uplink");
             }
             alive

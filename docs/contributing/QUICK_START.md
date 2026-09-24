@@ -18,7 +18,7 @@ cargo build --workspace
 ## Run Tests
 
 ```bash
-cargo test --workspace
+cargo nextest run --workspace
 ```
 
 ## Run the Smoke Test

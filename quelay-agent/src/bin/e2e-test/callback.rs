@@ -7,19 +7,23 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use crate::*;
 
 #[derive(Debug)]
-pub enum TestCallbackEvent {
+pub enum TestCallbackEvent
+{
     // ---
     #[allow(unused)]
-    Started {
+    Started
+    {
         uuid: String,
         port: u16,
     },
-    Done {
+    Done
+    {
         #[allow(unused)]
         uuid: String,
         bytes: u64,
     },
-    Failed {
+    Failed
+    {
         #[allow(unused)]
         uuid: String,
         reason: String,
@@ -33,16 +37,19 @@ pub enum TestCallbackEvent {
 // TestCallbackHandler
 // ---------------------------------------------------------------------------
 
-pub struct TestCallbackHandler {
+pub struct TestCallbackHandler
+{
     tx: Mutex<mpsc::Sender<TestCallbackEvent>>,
     progress_count: Arc<AtomicUsize>,
     last_dot: Mutex<std::time::Instant>,
 }
 
-impl QueLayCallbackSyncHandler for TestCallbackHandler {
+impl QueLayCallbackSyncHandler for TestCallbackHandler
+{
     // ---
 
-    fn handle_ping(&self) -> thrift::Result<()> {
+    fn handle_ping(&self) -> thrift::Result<()>
+    {
         Ok(())
     }
 
@@ -51,7 +58,8 @@ impl QueLayCallbackSyncHandler for TestCallbackHandler {
         uuid: String,
         _info: StreamInfo,
         port: i32,
-    ) -> thrift::Result<()> {
+    ) -> thrift::Result<()>
+    {
         tracing::info!(%uuid, port, "callback: stream_started");
         let _ = self.tx.lock().unwrap().send(TestCallbackEvent::Started {
             uuid,
@@ -64,14 +72,17 @@ impl QueLayCallbackSyncHandler for TestCallbackHandler {
         &self,
         _uuid: String,
         progress: quelay_thrift::ProgressInfo,
-    ) -> thrift::Result<()> {
+    ) -> thrift::Result<()>
+    {
         // ---
 
         self.progress_count.fetch_add(1, Ordering::Relaxed);
 
         let mut last = self.last_dot.lock().unwrap();
-        if last.elapsed() >= std::time::Duration::from_secs(1) {
-            match progress.percent_done {
+        if last.elapsed() >= std::time::Duration::from_secs(1)
+        {
+            match progress.percent_done
+            {
                 Some(pct) => print!("\rdownload percent:  {pct:.1}%   "),
                 None => print!("\r  {} bytes   ", progress.bytes_transferred.unwrap_or(0)),
             }
@@ -87,10 +98,14 @@ impl QueLayCallbackSyncHandler for TestCallbackHandler {
         uuid: String,
         bytes_transferred: i64,
         bytes_wire: i64,
-    ) -> thrift::Result<()> {
-        let wire_eff = if bytes_wire > 0 {
+    ) -> thrift::Result<()>
+    {
+        let wire_eff = if bytes_wire > 0
+        {
             bytes_transferred as f64 / bytes_wire as f64
-        } else {
+        }
+        else
+        {
             0.0
         };
         tracing::info!(%uuid, bytes_transferred, bytes_wire,
@@ -108,7 +123,8 @@ impl QueLayCallbackSyncHandler for TestCallbackHandler {
         uuid: String,
         _code: FailReason,
         reason: String,
-    ) -> thrift::Result<()> {
+    ) -> thrift::Result<()>
+    {
         tracing::warn!(%uuid, %reason, "callback: stream_failed");
         let _ = self
             .tx
@@ -118,7 +134,8 @@ impl QueLayCallbackSyncHandler for TestCallbackHandler {
         Ok(())
     }
 
-    fn handle_link_status_update(&self, state: LinkState) -> thrift::Result<()> {
+    fn handle_link_status_update(&self, state: LinkState) -> thrift::Result<()>
+    {
         tracing::info!(?state, "callback: link_status_update");
         let _ = self
             .tx
@@ -128,7 +145,8 @@ impl QueLayCallbackSyncHandler for TestCallbackHandler {
         Ok(())
     }
 
-    fn handle_queue_status_update(&self, status: QueueStatus) -> thrift::Result<()> {
+    fn handle_queue_status_update(&self, status: QueueStatus) -> thrift::Result<()>
+    {
         let _ = self
             .tx
             .lock()
@@ -142,16 +160,19 @@ impl QueLayCallbackSyncHandler for TestCallbackHandler {
 // TestCallbackServer
 // ---------------------------------------------------------------------------
 
-pub struct TestCallbackServer {
+pub struct TestCallbackServer
+{
     addr: SocketAddr,
     rx: mpsc::Receiver<TestCallbackEvent>,
     progress_count: Arc<AtomicUsize>,
 }
 
-impl TestCallbackServer {
+impl TestCallbackServer
+{
     // ---
 
-    pub fn bind(advertise_ip: std::net::IpAddr) -> anyhow::Result<Self> {
+    pub fn bind(advertise_ip: std::net::IpAddr) -> anyhow::Result<Self>
+    {
         let listener = std::net::TcpListener::bind("0.0.0.0:0")?;
         let port = listener.local_addr()?.port();
         let addr = std::net::SocketAddr::new(advertise_ip, port);
@@ -180,7 +201,8 @@ impl TestCallbackServer {
                     4,
                 );
                 let _ = ready_tx.send(());
-                if let Err(e) = server.listen(&addr_str) {
+                if let Err(e) = server.listen(&addr_str)
+                {
                     tracing::warn!("test callback server exiting: {e}");
                 }
             })?;
@@ -197,15 +219,18 @@ impl TestCallbackServer {
         })
     }
 
-    pub fn endpoint(&self) -> String {
+    pub fn endpoint(&self) -> String
+    {
         self.addr.to_string()
     }
 
-    pub fn progress_count(&self) -> usize {
+    pub fn progress_count(&self) -> usize
+    {
         self.progress_count.load(Ordering::Relaxed)
     }
 
-    pub fn recv_event(&self, timeout: Duration) -> anyhow::Result<TestCallbackEvent> {
+    pub fn recv_event(&self, timeout: Duration) -> anyhow::Result<TestCallbackEvent>
+    {
         self.rx
             .recv_timeout(timeout)
             .map_err(|e| anyhow::anyhow!("test callback recv timeout: {e}"))
@@ -213,16 +238,20 @@ impl TestCallbackServer {
 
     /// Drain all pending events and return the last `QueueStatus` seen,
     /// or `None` if none arrived within `timeout`.  Other event types discarded.
-    pub fn last_queue_status(&self, timeout: Duration) -> Option<QueueStatus> {
+    pub fn last_queue_status(&self, timeout: Duration) -> Option<QueueStatus>
+    {
         let deadline = std::time::Instant::now() + timeout;
         let mut last: Option<QueueStatus> = None;
 
-        while let Some(d) = deadline.checked_duration_since(std::time::Instant::now()) {
+        while let Some(d) = deadline.checked_duration_since(std::time::Instant::now())
+        {
             let remaining = d;
 
-            match self.rx.recv_timeout(remaining) {
+            match self.rx.recv_timeout(remaining)
+            {
                 Ok(TestCallbackEvent::QueueStatus(s)) => last = Some(s),
-                Ok(_) => {} // discard stream lifecycle and link events
+                Ok(_) =>
+                {} // discard stream lifecycle and link events
                 Err(_) => break,
             }
         }
@@ -232,13 +261,12 @@ impl TestCallbackServer {
     /// Like `recv_event`, but discards events whose UUID does not match
     /// `uuid`.  Use when multiple streams are active on a single callback
     /// endpoint and you need events for one specific stream.
-    pub fn recv_event_for(
-        &self,
-        uuid: &str,
-        timeout: Duration,
-    ) -> anyhow::Result<TestCallbackEvent> {
+    pub fn recv_event_for(&self, uuid: &str, timeout: Duration)
+        -> anyhow::Result<TestCallbackEvent>
+    {
         let deadline = std::time::Instant::now() + timeout;
-        loop {
+        loop
+        {
             let remaining = deadline
                 .checked_duration_since(std::time::Instant::now())
                 .ok_or_else(|| {
@@ -247,14 +275,16 @@ impl TestCallbackServer {
             let event = self.rx.recv_timeout(remaining).map_err(|e| {
                 anyhow::anyhow!("test callback recv timeout waiting for uuid={uuid}: {e}")
             })?;
-            let event_uuid = match &event {
+            let event_uuid = match &event
+            {
                 TestCallbackEvent::Started { uuid, .. } => Some(uuid.as_str()),
                 TestCallbackEvent::Done { uuid, .. } => Some(uuid.as_str()),
                 TestCallbackEvent::Failed { uuid, .. } => Some(uuid.as_str()),
                 TestCallbackEvent::LinkState(_) => None,
                 TestCallbackEvent::QueueStatus(_) => None,
             };
-            if event_uuid == Some(uuid) {
+            if event_uuid == Some(uuid)
+            {
                 return Ok(event);
             }
             // Not our stream — discard and keep waiting.

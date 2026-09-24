@@ -2,7 +2,7 @@
 set -euo pipefail
 
 echo "==> fmt check"
-cargo fmt --all -- --check
+cargo xfmt --check
 
 echo "==> clippy"
 cargo clippy --all-targets -- -D warnings
