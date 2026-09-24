@@ -259,33 +259,35 @@ This metric is important for SATCOM link characterization and should be resolved
 
 > **Update (PR #28):** narrower than originally thought. Re-running
 > Degraded-BLOS with NewReno/BBR/Cubic selectable (see
-> [Future Work #1](#1-bbr-congestion-controller--done-pr-28-v040)) shows
+> [Completed Investigations #1](#1-bbr-congestion-controller-pr-28-v040)) shows
 > Cubic and NewReno both report real RTT values (753–849 ms); only
 > **BBR** still reports 0ms throughout the transfer. See
-> [Future Work #3](#3-resolve-rtt-reporting-bbr-specific) for the narrowed
+> [Remaining Future Work #2](#2-resolve-rtt-reporting-bbr-specific) for the narrowed
 > issue.
 
-### BW Utilization Assert Fails on Impaired Links
+### BW Utilization Assert Fails on Impaired Links — Resolved (PR #28)
 
-The `multi-file` BW utilization check asserts realized BW is within ±10% of
-the Quelay cap. This is correct for clean links but wrong for impaired ones —
-on a degraded link Quinn should self-limit well below cap. The assertion should
-be suppressed or replaced with an upper-bound check (`realized ≤ cap`) for
-link-sim runs.
+The original `multi-file` BW utilization check asserted realized BW was within
+±10% of the Quelay cap. That was correct for clean links but wrong for
+impaired ones, where Quinn can legitimately self-limit below the cap. PR #28
+added `--skip-bw-check` for impaired-link runs while preserving the SHA-256
+integrity check; clean-link runs retain the ±10% assertion.
 
 ---
 
-## Future Work
+## Completed Investigations
 
-### 1. BBR Congestion Controller — Done (PR #28, v0.4.0)
+### 1. BBR Congestion Controller (PR #28, v0.4.0)
 
 Quinn supports pluggable congestion controllers via
 `TransportConfig::congestion_controller_factory()`. BBR measures bandwidth and
 RTT directly rather than using loss as a congestion signal, making it far better
 suited to BLOS links.
 
-**Hypothesis:** BBR would achieve 70-80% effective BW on Degraded-BLOS vs
-NewReno's 38%.
+**Prediction (validated directionally):** BBR would achieve 70-80% effective
+BW on Degraded-BLOS versus NewReno's 38%. The reruns measured 70–92% for BBR
+and 38% for NewReno, with the same-cap comparison confirming a substantial
+throughput advantage for BBR.
 
 **Action taken:** Added a `CongestionAlgo` enum (`NewReno` / `Bbr` / `Cubic`)
 to `quelay-quic` (`transport.rs`), wired through
@@ -300,7 +302,7 @@ link) with each algorithm — four bidirectional transfers per algorithm.
 |:----------|:----------------|:-------------------|:-----|:------------|:------------------|
 | NewReno (baseline)¹ | 38% | window collapses instead of counting events | 3000 KiB → collapses to 20–41 KiB | 0 ms (bug) | not measured |
 | Cubic | 92–112% | 0–23 per transfer | 27–66 KiB | 753–849 ms | 0.868–0.939 |
-| **BBR** | **70–92%** | **0** | **1.3–2.4 MiB, stable** | 0 ms (bug, now narrowed — see [#3](#3-resolve-rtt-reporting-bbr-specific)) | 0.935–0.936 |
+| **BBR** | **70–92%** | **0** | **1.3–2.4 MiB, stable** | 0 ms (bug, now narrowed — see [#2](#2-resolve-rtt-reporting-bbr-specific)) | 0.935–0.936 |
 
 ¹ The 38% figure is from the original test session above, which used a
 different bandwidth-cap configuration than the 200 Kbps-cap reruns used for
@@ -334,49 +336,15 @@ it).
 Cubic and NewReno both report real RTT values under this test; only BBR's
 `conn.rtt()` stays at 0ms throughout, pointing at something specific to
 quinn's BBR implementation rather than a general instrumentation bug — see
-[#3](#3-resolve-rtt-reporting-bbr-specific) below.
+[#2](#2-resolve-rtt-reporting-bbr-specific) below.
 
 **Recommendation:** Make BBR the default `--congestion` choice for
 BLOS/Degraded-BLOS deployments given its stability and good-neighbor
 behavior; keep NewReno for compatibility and document Cubic as an
-alternative for links where BBR's still-open RTT-reporting gap ([#3](#3-resolve-rtt-reporting-bbr-specific))
-matters for monitoring.
+alternative for links where BBR's still-open RTT-reporting gap
+([#2](#2-resolve-rtt-reporting-bbr-specific)) matters for monitoring.
 
-### 2. UDT Evaluation
-
-The legacy FTA system used [UDT](https://udt.sourceforge.io/) — a UDP-based
-protocol specifically designed for high-speed, high-BDP data transfer. A Rust
-binding exists at [docs.rs/udt](https://docs.rs/udt/latest/udt/).
-
-UDT's congestion control was built for exactly the BLOS SATCOM use case:
-- High latency (hundreds of ms RTT)
-- Occasional burst loss (solar flares, link outages)
-- Shared bandwidth pool with other contractors
-
-**Action:** Evaluate `udt` crate as an alternative transport backend to
-`quelay-quic`. Compare throughput on Degraded-BLOS profile.
-
-### 3. Resolve RTT Reporting (BBR-specific)
-
-Identify why `conn.rtt()` returns zero and fix. RTT is a critical metric for
-SATCOM link health monitoring.
-
-**Narrowed by PR #28:** this is no longer a general instrumentation bug.
-Re-running Degraded-BLOS with algorithm selection (see
-[#1](#1-bbr-congestion-controller--done-pr-28-v040)) shows Cubic and NewReno
-both report real RTT values (753–849 ms); only **BBR** connections report
-`Duration::ZERO` throughout, including at the end of 40–60s transfers — ruling
-out "not enough ACKs yet." Candidates:
-
-- BBR's internal RTT sampling (min-RTT / bandwidth-probe cycle) isn't
-  surfaced through the same `Connection::rtt()` path NewReno/Cubic use
-- Quinn 0.11.9's BBR implementation has a bug or incomplete RTT wiring
-
-Since BBR is now the recommended algorithm for BLOS links (see #1), this
-should be prioritized — it's the one case where the best-performing CC
-algorithm is also the one without usable RTT telemetry.
-
-### 4. Wire Efficiency Metric — Done (PR #28, v0.4.0)
+### 2. Wire Efficiency Metric (PR #28, v0.4.0)
 
 Added **wire efficiency** to the transfer report:
 
@@ -391,17 +359,54 @@ and produced incorrect numbers over a full transfer — since removed).
 Observed uplink wire efficiency on Degraded-BLOS (200 Kbps cap): 0.935–0.936
 for BBR, 0.868–0.939 for Cubic — roughly 6–13% of wire capacity spent on
 retransmits and QUIC framing overhead, directly comparable across algorithms
-in the [#1](#1-bbr-congestion-controller--done-pr-28-v040) table above.
+in the [BBR comparison](#1-bbr-congestion-controller-pr-28-v040) above.
 
-### 5. BW Utilization for Impaired Links — Done (PR #28, v0.4.0)
+### 3. BW Utilization for Impaired Links (PR #28, v0.4.0)
 
 Replaced the ±10% BW utilization assertion with a mode-aware check: added
 `--skip-bw-check` to the `e2e-test` binary (and `scripts/link-sim-test.sh`),
 which skips the ±10% assertion while preserving the SHA-256 integrity check.
-Clean-link runs keep the original ±10% assertion; impaired-link runs (like
-the Degraded-BLOS reruns in [#1](#1-bbr-congestion-controller--done-pr-28-v040))
-use `--skip-bw-check` since the CC algorithm under test is expected to
-underutilize the cap.
+Clean-link runs keep the original ±10% assertion; impaired-link runs use
+`--skip-bw-check` since the CC algorithm is expected to underutilize the cap.
+
+---
+
+## Remaining Future Work
+
+### 1. UDT Evaluation
+
+The legacy FTA system used [UDT](https://udt.sourceforge.io/) — a UDP-based
+protocol specifically designed for high-speed, high-BDP data transfer. A Rust
+binding exists at [docs.rs/udt](https://docs.rs/udt/latest/udt/).
+
+UDT's congestion control was built for exactly the BLOS SATCOM use case:
+- High latency (hundreds of ms RTT)
+- Occasional burst loss (solar flares, link outages)
+- Shared bandwidth pool with other contractors
+
+**Action:** Evaluate `udt` crate as an alternative transport backend to
+`quelay-quic`. Compare throughput on Degraded-BLOS profile.
+
+### 2. Resolve RTT Reporting (BBR-specific)
+
+Identify why `conn.rtt()` returns zero and fix. RTT is a critical metric for
+SATCOM link health monitoring.
+
+**Narrowed by PR #28:** this is no longer a general instrumentation bug.
+Re-running Degraded-BLOS with algorithm selection (see
+[#1](#1-bbr-congestion-controller-pr-28-v040)) shows Cubic and NewReno
+both report real RTT values (753–849 ms); only **BBR** connections report
+`Duration::ZERO` throughout, including at the end of 40–60s transfers — ruling
+out "not enough ACKs yet." Candidates:
+
+- BBR's internal RTT sampling (min-RTT / bandwidth-probe cycle) isn't
+  surfaced through the same `Connection::rtt()` path NewReno/Cubic use
+- Quinn 0.11.9's BBR implementation has a bug or incomplete RTT wiring
+
+Since BBR is now the recommended algorithm for BLOS links (see
+[Completed Investigations #1](#1-bbr-congestion-controller-pr-28-v040)), this
+should be prioritized — it's the one case where the best-performing CC
+algorithm is also the one without usable RTT telemetry.
 
 ---
 
